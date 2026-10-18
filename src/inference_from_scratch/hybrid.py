@@ -106,10 +106,12 @@ __all__ = [
     "HybridConfig",
     "HybridBlock",
     "HybridState",
+    "StaticHybridState",
     "HybridCache",
     "QwenRMSNorm",
     "ZeroCenteredRMSNorm",
     "TinyHybridLM",
+    "HybridLM",
     "apply_partial_rope",
     "generate_hybrid",
     "partial_rope_dim",
@@ -1129,6 +1131,262 @@ class HybridState:
 HybridCache = HybridState
 
 
+# ---------------------------------------------------------------------------
+# StaticHybridState: preallocated, CUDA-graph-friendly mixed state.
+# ---------------------------------------------------------------------------
+
+
+class StaticHybridState:
+    """Preallocated mixed state for static (graph-friendly) decode.
+
+    Created once from ``(config, batch_size, max_seq_len, device, dtype)``
+    and reused for every decode step:
+
+    * full-attention layers share one :class:`StaticKVCache`
+      (``kv_cache``) of shape ``[n_full, B, H_kv, max_seq_len, head_dim]``
+      -- slice-written in place, never concatenated;
+    * linear layers each own a fixed recurrent tensor
+      ``S [B, Hv, Dk, Dv]`` and conv ring ``conv [B, C, K-1]``
+      (``C = 2*Hk*Dk + Hv*Dv``), stored in ``linear_S`` /
+      ``linear_conv_buffers`` (parallel lists, ``None`` at full layers).
+
+    Position representation: ``position`` is a 0-dim ``torch.long``
+    tensor on ``device`` (also exposed as ``position_tensor``). It is
+    the graph-friendly choice -- a captured graph can read/update it
+    without a Python-int shape change -- at the cost of a host sync
+    when the Python ``seq_len`` property reads it (``int(position)``).
+    Callers that prefer to thread position explicitly may pass a plain
+    Python ``int`` (or a 0-dim tensor) as the ``position=`` argument of
+    :meth:`TinyHybridLM.decode_token_static`; when given it must equal
+    the state's current position. Either way position never changes any
+    tensor *shape*, so no per-step shape data-dependence is introduced.
+
+    ``reset()`` zeroes every buffer *in place* (``data_ptr`` stable --
+    asserted in tests) and rewinds position to 0. ``snapshot()`` is the
+    only copying operation and only runs when explicitly requested: it
+    returns an independent :class:`StaticHybridState` whose tensors are
+    clones. ``copy_from(snapshot)`` copies a snapshot back in place.
+    No method appends to a list or concatenates state tensors.
+    """
+
+    def __init__(
+        self,
+        config: HybridConfig,
+        batch_size: int = 1,
+        max_seq_len: int | None = None,
+        device: torch.device | str | None = None,
+        dtype: torch.dtype | None = None,
+        *,
+        batch: int | None = None,
+    ):
+        if batch is not None:
+            batch_size = batch
+        if int(batch_size) <= 0:
+            raise ValueError(f"batch_size must be positive, got {batch_size}")
+        if max_seq_len is None:
+            max_seq_len = int(config.max_position_embeddings)
+        if int(max_seq_len) <= 0:
+            raise ValueError(f"max_seq_len must be positive, got {max_seq_len}")
+        self.config = config
+        self.batch_size = int(batch_size)
+        self.batch = self.batch_size
+        self.max_seq_len = int(max_seq_len)
+        self.device = torch.device(device) if device is not None else torch.device("cpu")
+        self.dtype = dtype if dtype is not None else torch.float32
+        self.layer_types: list[str] = list(config.layer_types)
+        B, Dtype, Dev = self.batch_size, self.dtype, self.device
+        # Full layers: one shared StaticKVCache, slot per full layer.
+        self._full_slot: dict[int, int] = {}
+        n_full = 0
+        for i, t in enumerate(self.layer_types):
+            if t == "full_attention":
+                self._full_slot[i] = n_full
+                n_full += 1
+        self.num_full_layers = n_full
+        self.num_linear_layers = len(self.layer_types) - n_full
+        if n_full > 0:
+            self.kv_cache: StaticKVCache | None = StaticKVCache(
+                n_layer=n_full, batch_size=B,
+                n_kv_head=config.num_key_value_heads,
+                max_seq_len=self.max_seq_len, head_dim=config.head_dim,
+                device=Dev, dtype=Dtype,
+            )
+        else:
+            self.kv_cache = None
+        # Aliases for the same shared cache object.
+        self.static_kv_cache = self.kv_cache
+        self.full_kv_cache = self.kv_cache
+        self.kv_caches = self.kv_cache
+        # Linear layers: fixed S + conv ring per layer.
+        conv_dim = (
+            2 * config.linear_num_key_heads * config.linear_key_head_dim
+            + config.linear_num_value_heads * config.linear_value_head_dim
+        )
+        self.conv_dim = conv_dim
+        self.linear_S: list[torch.Tensor | None] = []
+        self.linear_conv_buffers: list[torch.Tensor | None] = []
+        for t in self.layer_types:
+            if t == "linear_attention":
+                self.linear_S.append(torch.zeros(
+                    B, config.linear_num_value_heads,
+                    config.linear_key_head_dim, config.linear_value_head_dim,
+                    device=Dev, dtype=Dtype))
+                self.linear_conv_buffers.append(torch.zeros(
+                    B, conv_dim, max(config.linear_conv_kernel_dim - 1, 0),
+                    device=Dev, dtype=Dtype))
+            else:
+                self.linear_S.append(None)
+                self.linear_conv_buffers.append(None)
+        # Aliases (same tensor objects, not copies).
+        self.S_list = self.linear_S
+        self.conv_buffers = self.linear_conv_buffers
+        self.linear_conv = self.linear_conv_buffers
+        # 0-dim position tensor (graph-friendly; see class docstring).
+        self.position = torch.zeros((), dtype=torch.long, device=Dev)
+        self.position_tensor = self.position
+
+    # -- position / length ------------------------------------------------
+
+    @property
+    def seq_len(self) -> int:
+        """Positions already processed (host sync via the 0-dim tensor)."""
+        return int(self.position.item())
+
+    @seq_len.setter
+    def seq_len(self, value: int) -> None:
+        self.position.fill_(int(value))
+
+    @property
+    def pos(self) -> int:
+        return self.seq_len
+
+    # -- per-layer access ---------------------------------------------------
+
+    def __len__(self) -> int:
+        return len(self.layer_types)
+
+    def full_slot(self, layer_idx: int) -> int:
+        """Slot of ``layer_idx`` inside the shared ``kv_cache``."""
+        try:
+            return self._full_slot[int(layer_idx)]
+        except KeyError:
+            raise ValueError(f"layer {layer_idx} is not a full_attention layer") from None
+
+    def linear_state(self, layer_idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """``(S, conv_buffer)`` preallocated tensors of a linear layer."""
+        S, conv = self.linear_S[layer_idx], self.linear_conv_buffers[layer_idx]
+        if S is None or conv is None:
+            raise ValueError(f"layer {layer_idx} is not a linear_attention layer")
+        return (S, conv)
+
+    # Compatibility: HybridState-style names.
+    def linear_state_tensors(self, layer_idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.linear_state(layer_idx)
+
+    @property
+    def linear_states(self) -> list[tuple[torch.Tensor, torch.Tensor] | None]:
+        return [
+            (s, c) if s is not None and c is not None else None
+            for s, c in zip(self.linear_S, self.linear_conv_buffers)
+        ]
+
+    def advance(self, n: int = 1) -> None:
+        """Advance position in place (0-dim tensor, no shape change)."""
+        self.position.add_(int(n))
+
+    # -- lifecycle ----------------------------------------------------------
+
+    def reset(self) -> None:
+        """Zero all state in place; every ``data_ptr`` is preserved."""
+        if self.kv_cache is not None:
+            self.kv_cache.clear()  # zero_() in place, buffers kept
+        for S in self.linear_S:
+            if S is not None:
+                S.zero_()
+        for conv in self.linear_conv_buffers:
+            if conv is not None:
+                conv.zero_()
+        self.position.zero_()
+
+    def snapshot(self) -> "StaticHybridState":
+        """Explicit deep copy (clones every tensor); the only copy path."""
+        out = object.__new__(StaticHybridState)
+        out.config = self.config
+        out.batch_size = self.batch_size
+        out.batch = self.batch
+        out.max_seq_len = self.max_seq_len
+        out.device = self.device
+        out.dtype = self.dtype
+        out.layer_types = list(self.layer_types)
+        out._full_slot = dict(self._full_slot)
+        out.num_full_layers = self.num_full_layers
+        out.num_linear_layers = self.num_linear_layers
+        out.conv_dim = self.conv_dim
+        if self.kv_cache is not None:
+            cache = StaticKVCache(
+                n_layer=self.kv_cache.n_layer, batch_size=self.batch_size,
+                n_kv_head=self.config.num_key_value_heads,
+                max_seq_len=self.max_seq_len, head_dim=self.config.head_dim,
+                device=self.device, dtype=self.dtype)
+            cache.k_cache.copy_(self.kv_cache.k_cache)
+            cache.v_cache.copy_(self.kv_cache.v_cache)
+            cache._len = self.kv_cache._len
+            out.kv_cache = cache
+        else:
+            out.kv_cache = None
+        out.static_kv_cache = out.kv_cache
+        out.full_kv_cache = out.kv_cache
+        out.kv_caches = out.kv_cache
+        out.linear_S = [s.clone() if s is not None else None for s in self.linear_S]
+        out.linear_conv_buffers = [
+            c.clone() if c is not None else None for c in self.linear_conv_buffers]
+        out.S_list = out.linear_S
+        out.conv_buffers = out.linear_conv_buffers
+        out.linear_conv = out.linear_conv_buffers
+        out.position = self.position.clone()
+        out.position_tensor = out.position
+        return out
+
+    clone = snapshot
+
+    def copy_from(self, snapshot: "StaticHybridState") -> None:
+        """Copy ``snapshot`` back into this state in place (ptrs stable)."""
+        if snapshot.batch_size != self.batch_size or snapshot.max_seq_len != self.max_seq_len:
+            raise ValueError("snapshot shape (batch/max_seq_len) does not match this state")
+        if self.kv_cache is not None and snapshot.kv_cache is not None:
+            self.kv_cache.k_cache.copy_(snapshot.kv_cache.k_cache)
+            self.kv_cache.v_cache.copy_(snapshot.kv_cache.v_cache)
+            self.kv_cache._len = snapshot.kv_cache._len
+        for dst, src in zip(self.linear_S, snapshot.linear_S):
+            if dst is not None and src is not None:
+                dst.copy_(src)
+        for dst, src in zip(self.linear_conv_buffers, snapshot.linear_conv_buffers):
+            if dst is not None and src is not None:
+                dst.copy_(src)
+        self.position.copy_(snapshot.position)
+
+    restore_from = copy_from
+
+    def data_ptrs(self) -> dict[str, list[int]]:
+        """Storage pointers of every state tensor (for stability tests)."""
+        ptrs: dict[str, list[int]] = {"linear_S": [], "linear_conv": [], "kv": []}
+        for s in self.linear_S:
+            if s is not None:
+                ptrs["linear_S"].append(s.data_ptr())
+        for c in self.linear_conv_buffers:
+            if c is not None:
+                ptrs["linear_conv"].append(c.data_ptr())
+        if self.kv_cache is not None:
+            ptrs["kv"] = [self.kv_cache.k_cache.data_ptr(), self.kv_cache.v_cache.data_ptr()]
+        ptrs["position"] = [self.position.data_ptr()]
+        return ptrs
+
+    def __repr__(self) -> str:
+        return (f"StaticHybridState(batch={self.batch_size}, "
+                f"max_seq_len={self.max_seq_len}, seq_len={self.seq_len}, "
+                f"layers={len(self.layer_types)})")
+
+
 def _clone_layer_state(state: Any) -> Any:
     if state is None:
         return None
@@ -1285,6 +1543,66 @@ class HybridBlock(nn.Module):
         x = x + mixed
         x = x + self.mlp(self.post_attention_layernorm(x))
         return x, new_state
+
+    def decode_token_static(
+        self,
+        x: torch.Tensor,
+        state: "StaticHybridState",
+        position: int | torch.Tensor | None = None,
+        cos: torch.Tensor | None = None,
+        sin: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """In-place single-token block step over preallocated ``state``.
+
+        ``x`` is hidden ``[B, D]`` or ``[B, 1, D]`` (rank preserved on
+        return) -- a HybridBlock consumes hidden states, not token ids;
+        token-id entry is :meth:`TinyHybridLM.decode_token_static`.
+        For full layers the K/V for this token are slice-written into
+        ``state.kv_cache`` at ``position``; for linear layers
+        :meth:`GatedDeltaNet.step_inplace` mutates the layer's fixed
+        ``S`` / conv ring. No list append / ``torch.cat`` touches state.
+        ``position`` may be a Python int or a 0-dim tensor; when omitted
+        the state's own position is used. The state's position is *not*
+        advanced here -- the LM advances it once after all blocks run,
+        so every layer sees the same absolute position for this token.
+        """
+        if not isinstance(state, StaticHybridState):
+            raise ValueError(
+                f"decode_token_static requires a StaticHybridState, got {type(state).__name__}")
+        if position is None:
+            pos = state.seq_len
+        elif isinstance(position, torch.Tensor):
+            if position.dim() != 0:
+                raise ValueError(f"position tensor must be 0-dim, got shape {tuple(position.shape)}")
+            pos = int(position.item())
+        else:
+            pos = int(position)  # type: ignore[arg-type]
+        was_2d = x.dim() == 2
+        if was_2d:
+            x3 = x.unsqueeze(1)
+        elif x.dim() == 3 and x.shape[1] == 1:
+            x3 = x
+        else:
+            raise ValueError(f"x must be [B, D] or [B, 1, D], got {tuple(x.shape)}")
+        h = self.input_layernorm(x3)
+        if self.layer_type == "full_attention":
+            assert self.self_attn is not None and state.kv_cache is not None
+            mixed = self.self_attn(
+                h, cos, sin, kv_cache=state.kv_cache,
+                layer_idx=state.full_slot(self.layer_idx), start_pos=pos,
+            )
+        else:
+            assert self.linear_attn is not None
+            S, conv_buf = state.linear_state(self.layer_idx)
+            mixed = self.linear_attn.step_inplace(h[:, 0, :], S, conv_buf).unsqueeze(1)
+        out = x3 + mixed
+        out = out + self.mlp(self.post_attention_layernorm(out))
+        return out[:, 0, :] if was_2d else out
+
+    # Aliases: same in-place block step under the other natural names.
+    forward_static = decode_token_static
+    decode_step_static = decode_token_static
+    step_inplace = decode_token_static
 
     def forward(
         self,
@@ -1564,6 +1882,106 @@ class TinyHybridLM(nn.Module):
         return self.forward(token_ids, state=state)
 
     step = decode_step
+
+    def static_state(
+        self,
+        batch_size: int = 1,
+        max_seq_len: int | None = None,
+        device: torch.device | str | None = None,
+        dtype: torch.dtype | None = None,
+    ) -> StaticHybridState:
+        """Allocate a :class:`StaticHybridState` for this model's config."""
+        return StaticHybridState(
+            self.config, batch_size=batch_size,
+            max_seq_len=max_seq_len if max_seq_len is not None else self.config.max_position_embeddings,
+            device=device, dtype=dtype,
+        )
+
+    # Alias name for the same factory.
+    initial_static_state = static_state
+
+    def decode_token_static(
+        self,
+        token_id_1d: torch.Tensor,
+        state: StaticHybridState,
+        position: int | torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Decode one token in place over a :class:`StaticHybridState`.
+
+        ``token_id_1d`` is ``[B]`` (a ``[B, 1]`` column is also accepted);
+        returns logits ``[B, vocab_size]`` for the next token. State is
+        mutated in place -- full layers slice-write into the shared
+        ``StaticKVCache``, linear layers update their fixed ``S`` / conv
+        ring via :meth:`GatedDeltaNet.step_inplace` -- and the state's
+        0-dim position tensor is advanced by one after all blocks run.
+        No list append / ``torch.cat`` touches state in this path.
+
+        ``position`` documents the integer-position choice: omit it to
+        use the state's 0-dim position tensor (graph-friendly), or pass
+        a Python ``int`` / 0-dim tensor that must equal the state's
+        current position. Position never affects any tensor shape.
+
+        Raises ``ValueError`` with a clear message before mutating
+        anything when the next position would reach ``max_seq_len``
+        (overflow) or when shapes / state type do not match.
+        """
+        if not isinstance(state, StaticHybridState):
+            raise ValueError(
+                f"decode_token_static requires a StaticHybridState, got {type(state).__name__}")
+        if token_id_1d.dim() == 2 and token_id_1d.shape[1] == 1:
+            token_ids = token_id_1d[:, 0]
+        elif token_id_1d.dim() == 1:
+            token_ids = token_id_1d
+        else:
+            raise ValueError(
+                f"token_id_1d must be [B] or [B, 1], got {tuple(token_id_1d.shape)}")
+        if token_ids.shape[0] != state.batch_size:
+            raise ValueError(
+                f"token batch {token_ids.shape[0]} does not match state batch_size={state.batch_size}")
+        if position is None:
+            pos = state.seq_len
+        elif isinstance(position, torch.Tensor):
+            if position.dim() != 0:
+                raise ValueError(f"position tensor must be 0-dim, got shape {tuple(position.shape)}")
+            pos = int(position.item())
+        else:
+            pos = int(position)  # type: ignore[arg-type]
+        if pos != state.seq_len:
+            raise ValueError(
+                f"position={pos} does not match state position {state.seq_len} "
+                "(static decode is strictly sequential)")
+        if pos >= state.max_seq_len:
+            raise ValueError(
+                f"StaticHybridState overflow: position {pos} would exceed "
+                f"max_seq_len={state.max_seq_len} (state already holds "
+                f"{state.seq_len} tokens); allocate a larger StaticHybridState "
+                "or reset() it before decoding more tokens")
+        cos, sin = self._rope(pos + 1, token_ids.device, torch.float32)
+        x = self.embed_tokens(token_ids).unsqueeze(1)  # [B, 1, D]
+        for block in self.layers:
+            x = block.decode_token_static(x, state, position=pos, cos=cos, sin=sin)
+        logits = self.lm_head(self.norm(x))  # [B, 1, V]
+        state.advance(1)
+        return logits[:, 0, :]
+
+    # Aliases: same static decode under other natural names.
+    decode_static = decode_token_static
+    step_static = decode_token_static
+
+
+class HybridLM(TinyHybridLM):
+    """General hybrid LM: the same stack as :class:`TinyHybridLM` at any size.
+
+    ``TinyHybridLM`` was named for the tiny test fixtures, but its
+    ``state_dict`` naming already matches the checkpoint target names
+    produced by :func:`list_hybrid_tensor_map` / ``hybrid_checkpoint``
+    (``embed_tokens.weight``, ``layers.{i}.*``, ``norm.weight``,
+    ``lm_head.weight``) for both layer types, so no separate naming
+    layer is needed. ``HybridLM`` is the general-purpose name for
+    full-config construction (e.g. on the ``meta`` device for
+    shape-only validation of the 27B checkpoint); behaviour and
+    naming are identical, and ``TinyHybridLM`` is preserved.
+    """
 
 
 # ---------------------------------------------------------------------------

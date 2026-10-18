@@ -40,6 +40,7 @@ __all__ = [
     "ManifestEntry", "Manifest", "discover_shards", "build_manifest",
     "expected_language_tensors", "validate_manifest", "load_tensor",
     "iter_layer_tensors", "find_default_snapshot",
+    "iter_checkpoint_state", "validate_state_against_model", "load_into_model",
 ]
 
 _BLOCK = (128, 128)
@@ -400,3 +401,318 @@ def iter_layer_tensors(snapshot_dir: Any, layer_idx: int | None = None, *,
     for entry in selected:
         tensor = load_tensor(root, entry.checkpoint_name, dequantize=dequantize, manifest=manifest)
         yield (entry.target_name or entry.checkpoint_name), tensor
+
+
+# ---------------------------------------------------------------------------
+# Full-model assembly: iter / validate-against-model / streaming load.
+#
+# Target naming is exactly TinyHybridLM/HybridLM state_dict naming:
+#   checkpoint model.language_model.embed_tokens.weight -> embed_tokens.weight
+#   checkpoint model.language_model.norm.weight         -> norm.weight (final norm)
+#   checkpoint lm_head.weight                           -> lm_head.weight
+#   checkpoint model.language_model.layers.{i}.*        -> layers.{i}.*
+#   checkpoint mtp.*                                    -> mtp.* (only if include_mtp)
+# Vision (model.visual.* -> None) is always out of scope.  FP8
+# ``*_weight_scale_inv`` companions are consumed by load_tensor's
+# dequantisation pairing and are never yielded / never model targets.
+# ---------------------------------------------------------------------------
+
+
+def _target_to_checkpoint(target_name: str) -> str:
+    if target_name == "embed_tokens.weight":
+        return "model.language_model.embed_tokens.weight"
+    if target_name == "norm.weight":
+        return "model.language_model.norm.weight"
+    if target_name == "lm_head.weight":
+        return "lm_head.weight"
+    if target_name.startswith("mtp."):
+        return target_name
+    if target_name.startswith("layers."):
+        return f"model.language_model.{target_name}"
+    return target_name
+
+
+def _model_order_targets(cfg: HybridConfig, include_mtp: bool = False) -> list[str]:
+    """Target names in deterministic model (state_dict) order.
+
+    Order mirrors TinyHybridLM.state_dict(): embed, then per layer
+    (input/post norms, mixer params in state_dict order, MLP), then
+    final norm and lm_head.  MTP targets, when requested, follow in
+    expected_language_tensors order (pre-fc norms, fc, norm, layers).
+    """
+    out: list[str] = ["embed_tokens.weight"]
+    for i, layer_type in enumerate(cfg.layer_types):
+        p = f"layers.{i}"
+        out.append(f"{p}.input_layernorm.weight")
+        out.append(f"{p}.post_attention_layernorm.weight")
+        if layer_type == "full_attention":
+            for proj in ("q_proj", "k_proj", "v_proj", "o_proj"):
+                out.append(f"{p}.self_attn.{proj}.weight")
+            out.append(f"{p}.self_attn.q_norm.weight")
+            out.append(f"{p}.self_attn.k_norm.weight")
+        else:
+            # GatedDeltaNet direct params precede its Linear children
+            # in state_dict order.
+            out.append(f"{p}.linear_attn.dt_bias")
+            out.append(f"{p}.linear_attn.A_log")
+            for proj in ("in_proj_qkv", "in_proj_z", "in_proj_a", "in_proj_b"):
+                out.append(f"{p}.linear_attn.{proj}.weight")
+            out.append(f"{p}.linear_attn.conv1d.weight")
+            out.append(f"{p}.linear_attn.norm.weight")
+            out.append(f"{p}.linear_attn.out_proj.weight")
+        for proj in ("gate_proj", "up_proj", "down_proj"):
+            out.append(f"{p}.mlp.{proj}.weight")
+    out.append("norm.weight")
+    out.append("lm_head.weight")
+    if include_mtp and int(cfg.mtp_num_hidden_layers) > 0:
+        out.append("mtp.pre_fc_norm_embedding.weight")
+        out.append("mtp.pre_fc_norm_hidden.weight")
+        out.append("mtp.fc.weight")
+        out.append("mtp.norm.weight")
+        for j in range(int(cfg.mtp_num_hidden_layers)):
+            mp = f"mtp.layers.{j}"
+            out.append(f"{mp}.input_layernorm.weight")
+            out.append(f"{mp}.post_attention_layernorm.weight")
+            for proj in ("q_proj", "k_proj", "v_proj", "o_proj"):
+                out.append(f"{mp}.self_attn.{proj}.weight")
+            out.append(f"{mp}.self_attn.q_norm.weight")
+            out.append(f"{mp}.self_attn.k_norm.weight")
+            for proj in ("gate_proj", "up_proj", "down_proj"):
+                out.append(f"{mp}.mlp.{proj}.weight")
+    return out
+
+
+def _resolve_config(snapshot_dir: Any, config: Any = None, model: Any = None) -> HybridConfig:
+    if config is not None:
+        return _as_config(config)
+    if model is not None and getattr(model, "config", None) is not None:
+        return _as_config(model.config)
+    # Try the snapshot's own config.json before falling back to defaults.
+    try:
+        root = _resolve_dir(snapshot_dir)
+        if (root / "config.json").is_file():
+            return HybridConfig.from_text_config(root)
+    except Exception:
+        pass
+    return HybridConfig()
+
+
+def iter_checkpoint_state(
+    snapshot_dir: Any,
+    config: Any = None,
+    include_mtp: bool = False,
+    dequantize: bool = True,
+    *,
+    manifest: Manifest | None = None,
+) -> Iterator[tuple[str, torch.Tensor]]:
+    """Yield ``(target_name, tensor)`` for the whole model, one at a time.
+
+    Deterministic model order (see :func:`_model_order_targets`):
+    ``embed_tokens.weight``, per-layer tensors, final ``norm.weight``,
+    ``lm_head.weight``, then MTP targets only when ``include_mtp=True``
+    (MTP is excluded by default: the LM has no MTP parameters, so its
+    tensors are neither yielded nor, in validation, unexpected).
+    ``weight_scale_inv`` companions are consumed by FP8 dequantisation
+    and never yielded.  Vision tensors are never yielded.  When
+    ``config.tie_word_embeddings`` is set, ``lm_head.weight`` is not
+    yielded separately (it shares ``embed_tokens.weight``).
+
+    Generator: only headers are read until iteration, and each
+    tensor is materialised (and released by the caller) one at a time
+    via :func:`load_tensor`, so a 27B checkpoint is never held whole.
+    ``snapshot_dir`` may be a path or a :class:`Manifest`; ``config``
+    may be a :class:`HybridConfig`, a text-config mapping, or ``None``
+    (snapshot ``config.json`` / defaults).
+    """
+    root = _resolve_dir(snapshot_dir)
+    man = snapshot_dir if isinstance(snapshot_dir, Manifest) else (manifest or build_manifest(root))
+    cfg = _resolve_config(snapshot_dir, config=config)
+    by_target: dict[str, ManifestEntry] = {}
+    for e in man.entries:
+        if e.kind == "scale_inv" or e.target_name is None:
+            continue
+        if e.target_name.startswith("mtp.") and not include_mtp:
+            continue
+        by_target.setdefault(e.target_name, e)
+    for target in _model_order_targets(cfg, include_mtp=include_mtp):
+        if cfg.tie_word_embeddings and target == "lm_head.weight":
+            continue
+        entry = by_target.get(target)
+        if entry is None:
+            continue
+        tensor = load_tensor(root, entry.checkpoint_name, dequantize=dequantize, manifest=man)
+        yield target, tensor
+
+
+def validate_state_against_model(
+    model: Any,
+    snapshot_dir: Any,
+    include_mtp: bool = False,
+    *,
+    config: Any = None,
+    manifest: Manifest | None = None,
+) -> dict[str, Any]:
+    """Compare a checkpoint manifest against a model's state_dict.
+
+    ``model`` is typically a ``meta``-device ``HybridLM`` /
+    ``TinyHybridLM`` instance: only its ``state_dict()`` shapes are
+    read, never tensor data, so validating the 27B checkpoint costs
+    no allocation.  Returns a dict with exact lists:
+
+    * ``missing`` -- model target names (state_dict order) with no
+      checkpoint tensor;
+    * ``unexpected`` -- sorted checkpoint target names (vision and,
+      unless ``include_mtp=True``, MTP excluded; ``scale_inv``
+      excluded) with no model parameter;
+    * ``shape_mismatch`` -- dicts ``{target_name, checkpoint_name,
+      expected_shape, actual_shape, shape, expected}`` where
+      ``expected_shape`` is the model shape;
+    * ``dtype_mismatch`` -- dicts for present targets whose stored
+      dtype cannot serve a BF16 target.  BF16-target policy: every
+      model target is loaded as BF16 (FP8 weights dequantise to
+      BF16, BF16 tensors load as stored) and ``copy_`` casts into
+      the parameter dtype, so a float32 meta model is not itself a
+      mismatch, and float storage (BF16/F32/F16, or FP8 for weights)
+      is acceptable; non-float storage (e.g. integer) is not.
+
+    Plus ``ok``, ``counts``, ``parameter_count`` (from shapes via
+    ``model.parameters()``, tied weights counted once),
+    ``include_mtp`` and ``tied_embeddings``.  A tied ``lm_head`` is
+    not required to have its own checkpoint tensor.
+    """
+    man = snapshot_dir if isinstance(snapshot_dir, Manifest) else manifest
+    if man is None:
+        man = build_manifest(_resolve_dir(snapshot_dir))
+    sd = model.state_dict()
+    model_order = list(sd.keys())
+    tied = False
+    try:
+        tied = bool(model.lm_head.weight is model.embed_tokens.weight)  # type: ignore[attr-defined]
+    except Exception:
+        tied = False
+    required = [k for k in model_order if not (tied and k == "lm_head.weight")]
+    required_set = set(required)
+    by_target: dict[str, ManifestEntry] = {}
+    for e in man.entries:
+        if e.kind == "scale_inv" or e.target_name is None:
+            continue
+        if e.target_name.startswith("mtp.") and not include_mtp:
+            continue
+        by_target.setdefault(e.target_name, e)
+    missing = [t for t in required if t not in by_target]
+    unexpected = sorted(t for t in by_target if t not in required_set)
+    shape_mismatch: list[dict[str, Any]] = []
+    dtype_mismatch: list[dict[str, Any]] = []
+    for target in required:
+        entry = by_target.get(target)
+        if entry is None:
+            continue
+        expected_shape = [int(d) for d in sd[target].shape]
+        if list(entry.shape) != expected_shape:
+            shape_mismatch.append({
+                "target_name": target,
+                "checkpoint_name": entry.checkpoint_name,
+                "expected_shape": expected_shape,
+                "actual_shape": list(entry.shape),
+                "shape": list(entry.shape),
+                "expected": list(expected_shape),
+            })
+        if entry.dtype not in ("BF16", "F32", "F16", "F8_E4M3", "F8_E5M2"):
+            dtype_mismatch.append({
+                "target_name": target,
+                "checkpoint_name": entry.checkpoint_name,
+                "expected_dtype": "BF16",
+                "actual_dtype": entry.dtype,
+                "kind": entry.kind,
+            })
+    try:
+        parameter_count = int(sum(int(p.numel()) for p in model.parameters()))
+    except Exception:
+        parameter_count = int(sum(int(sd[k].numel()) for k in required))
+    counts = {
+        "expected": len(required),
+        "present": len(required) - len(missing),
+        "manifest_entries": len(man.entries),
+        "missing": len(missing),
+        "unexpected": len(unexpected),
+        "shape_mismatch": len(shape_mismatch),
+        "dtype_mismatch": len(dtype_mismatch),
+    }
+    return {
+        "missing": missing,
+        "unexpected": unexpected,
+        "shape_mismatch": shape_mismatch,
+        "dtype_mismatch": dtype_mismatch,
+        "ok": not missing and not unexpected and not shape_mismatch and not dtype_mismatch,
+        "counts": counts,
+        "parameter_count": parameter_count,
+        "total_params": parameter_count,
+        "include_mtp": bool(include_mtp),
+        "tied_embeddings": tied,
+    }
+
+
+def load_into_model(
+    model: Any,
+    snapshot_dir: Any,
+    strict: bool = True,
+    include_mtp: bool = False,
+    dequantize: bool = True,
+    *,
+    config: Any = None,
+    manifest: Manifest | None = None,
+) -> dict[str, Any]:
+    """Stream a checkpoint into ``model`` via per-tensor ``copy_``.
+
+    Pre-validates with :func:`validate_state_against_model` before
+    touching any parameter: with ``strict=True`` (default) a missing,
+    unexpected, shape- or dtype-mismatched checkpoint raises
+    ``RuntimeError`` *before* any tensor is copied, so a failed load
+    leaves the model unmutated.  With ``strict=False``, mismatched /
+    unexpected tensors are skipped and the rest are loaded.
+
+    Each tensor is loaded one at a time via
+    :func:`iter_checkpoint_state` (FP8 dequantised to BF16, scales
+    consumed) and copied with ``copy_`` under ``no_grad`` (which
+    casts BF16 into the parameter dtype).  Returns the validation
+    report plus ``loaded`` (target names, in load order) and
+    ``loaded_count``.  For the real 27B model this is future GPU
+    code; tests exercise it on tiny synthetic fixtures.
+    """
+    cfg = _resolve_config(snapshot_dir, config=config, model=model)
+    man = snapshot_dir if isinstance(snapshot_dir, Manifest) else manifest
+    report = validate_state_against_model(
+        model, snapshot_dir, include_mtp=include_mtp, config=cfg, manifest=man)
+    if strict and not report["ok"]:
+        raise RuntimeError(
+            "load_into_model pre-validation failed: "
+            f"missing={report['missing']} unexpected={report['unexpected']} "
+            f"shape_mismatch={report['shape_mismatch']} "
+            f"dtype_mismatch={report['dtype_mismatch']}")
+    bad_shapes = {m["target_name"] for m in report["shape_mismatch"]}
+    params: dict[str, torch.Tensor] = {}
+    for name, p in model.named_parameters():
+        params.setdefault(name, p)
+    for name, b in model.named_buffers():
+        params.setdefault(name, b)
+    loaded: list[str] = []
+    with torch.no_grad():
+        for target, tensor in iter_checkpoint_state(
+            snapshot_dir, config=cfg, include_mtp=include_mtp,
+            dequantize=dequantize, manifest=man,
+        ):
+            dest = params.get(target)
+            if dest is None or target in bad_shapes:
+                continue
+            if tuple(dest.shape) != tuple(tensor.shape):
+                if strict:
+                    raise RuntimeError(
+                        f"shape mismatch for {target!r}: model {tuple(dest.shape)} "
+                        f"vs checkpoint {tuple(tensor.shape)}")
+                continue
+            dest.copy_(tensor)
+            loaded.append(target)
+    out = dict(report)
+    out["loaded"] = loaded
+    out["loaded_count"] = len(loaded)
+    return out

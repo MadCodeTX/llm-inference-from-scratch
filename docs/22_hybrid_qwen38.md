@@ -136,6 +136,63 @@ ok: True
 
 Total safetensors payload is 30,866,663,264 bytes (≈ 30.87 GB). The 1273 expected tensors are the language model + MTP + `lm_head`; the remaining 333 manifest entries are the deferred vision tower. Synthetic multi-shard fixtures and lazy-dequant parity are covered by `tests/test_hybrid_checkpoint.py`.
 
+## Full-model assembly: mechanically provable without allocating 27B
+
+`TinyHybridLM`'s `state_dict` naming already matches the checkpoint target names from `list_hybrid_tensor_map` (`embed_tokens.weight`, `layers.{i}.*` for both layer types, final `norm.weight`, `lm_head.weight`), so no renaming layer was needed; `HybridLM` in [hybrid.py](../src/inference_from_scratch/hybrid.py) is the general (any-size) name for the same stack, with `TinyHybridLM` preserved. Three functions in [hybrid_checkpoint.py](../src/inference_from_scratch/hybrid_checkpoint.py) assemble the full model on top of the manifest/`load_tensor` primitives above:
+
+1. **`iter_checkpoint_state(snapshot_dir, config, include_mtp=False, dequantize=True)`** — a generator yielding `(target_name, tensor)` one tensor at a time in deterministic model order: `embed_tokens.weight`, per-layer tensors in `state_dict` order (linear: `dt_bias`/`A_log` before the `in_proj_*`/`conv1d`/`norm`/`out_proj` children; full: `q/k/v/o_proj`, `q/k_norm`; then the SwiGLU MLP), final `norm.weight`, then `lm_head.weight` (skipped when embeddings are tied). FP8 `weight_scale_inv` companions are consumed by dequantisation and never yielded; vision tensors are never yielded; MTP (`mtp.*`) is yielded only with `include_mtp=True`, appended after `lm_head` — excluded by default because the LM has no MTP parameters.
+2. **`validate_state_against_model(model, snapshot_dir)`** — compares the header manifest against a (typically `meta`-device) model's `state_dict()` shapes. It returns exact `missing` (model order), `unexpected` (sorted; vision and, unless `include_mtp=True`, MTP excluded), `shape_mismatch` and `dtype_mismatch` lists, plus `ok`, `counts` and `parameter_count` computed from shapes. BF16-target policy: every target loads as BF16 (FP8 dequantises to BF16, BF16 loads as stored) and `copy_` casts into the parameter dtype, so the meta model's float32 dtype is not a mismatch and float storage (BF16/F32/F16 or FP8) is acceptable; non-float storage is a `dtype_mismatch`.
+3. **`load_into_model(model, snapshot_dir, strict=True)`** — streaming load: it pre-validates with (2) *before* copying anything, so a strict failure raises `RuntimeError` with the model unmutated, then copies one tensor at a time via `iter_checkpoint_state` + `copy_` under `no_grad`. `strict=False` skips missing/mismatched/unexpected tensors and loads the rest. On the real 27B model this entry point is reserved for future GPU code; it is exercised end-to-end only on tiny synthetic fixtures.
+
+Synthetic proof ([test_hybrid_assembly.py](../tests/test_hybrid_assembly.py)): a multi-shard checkpoint is built from a tiny `HybridLM`'s own `state_dict` transformed through the checkpoint naming, with one tensor artificially FP8-block-quantized. Meta-validation is `ok`; streaming iteration reproduces the model's `state_dict` order with no `scale_inv` yielded; a streaming load into a differently-seeded BF16 model reproduces logits with `torch.equal`, the quantized tensor loads exactly equal to its dequantized reference (tolerance only on that intentionally quantized path's logits), and a dropped `norm.weight` is reported as `missing == ["norm.weight"]` with the strict load raising before mutating any tensor.
+
+Verified on the real snapshot (`scripts/validate_hybrid_assembly.py`, CPU, headers + meta shapes only, no tensor data loaded):
+
+```
+manifest entries: 1606
+model state_dict tensors: 851
+parameter_count: 26895998464
+missing: []
+unexpected: []
+shape_mismatch: []
+dtype_mismatch: []
+counts: {'expected': 851, 'present': 851, 'manifest_entries': 1606, 'missing': 0, 'unexpected': 0, 'shape_mismatch': 0, 'dtype_mismatch': 0}
+ok: True
+```
+
+The 851 model tensors are the language model without MTP (the 15 non-scale MTP tensors are out of scope unless `include_mtp=True`; the remaining manifest entries are 407 `scale_inv` companions and 333 deferred vision tensors). Meta-device construction of the real-config model needed no device-agnostic fixes: it already works, so the count above is computed from real shapes, not a formula.
+
+## Real-layer parity: one linear + one full layer, measured
+
+Until this section every real-checkpoint claim above was headers, shapes and names. [parity_real_layer.py](../scripts/parity_real_layer.py) closes the numeric loop for exactly one layer of each kind, on CPU, against transformers 5.20.1 in `.venv` (the reference implementation; Kiely sec. 4.2.4 stance):
+
+```
+.venv/bin/python scripts/parity_real_layer.py --layer 0 --tokens 4 --seed 0
+.venv/bin/python scripts/parity_real_layer.py --layer 3 --tokens 4 --seed 0
+.venv/bin/python scripts/parity_real_layer.py --layer 0 --tokens 4 --seed 0 --fp32
+```
+
+**Method.** The script builds the single HF `Qwen3_5DecoderLayer` for the real `text_config` at that index (layer 0 is `linear_attention`, layer 3 the first `full_attention`) and our `HybridBlock` at the same index. It loads, via `hybrid_checkpoint.iter_layer_tensors`, dequantized FP8→BF16 plus stored-BF16 tensors for *only that layer* (14 tensors for layer 0, 11 for layer 3; `weight_scale_inv` companions are consumed by dequantisation, never loaded as weights). Checkpoint target names `layers.{N}.<rest>` map explicitly to `<rest>`, the `state_dict` key in *both* modules; the script asserts `missing_hf=[] missing_ours=[] extra=[]` and exact key-set equality before `load_state_dict(strict=True)` into both. Both layers then receive the identical seeded hidden state `[1, 4, 5120]` (`randn * 0.5`, seed 0, bf16 — the checkpoint's dtype policy) plus the HF-signature position inputs: `Qwen3_5TextRotaryEmbedding` cos/sin from positions `[0..3]` for the full layer (with a production causal mask, as in the tiny-dims test) and no cache/mask for the linear layer (fresh zero recurrent state; HF evaluates it chunkwise, ours sequentially — the two production/reference forms of the same recurrence). Per-submodule diffs are isolated on a *common* input (each norm/mixer/MLP is fed the HF-side tensor, so errors are located, not cascaded), then the whole block is compared end-to-end. Tensors are deleted and `gc` run before exit; only one layer is ever materialised.
+
+**Tolerance expectations.** bf16 outputs will not agree to 1e-6: bf16 carries ~3 decimal digits, so judge by relative error against the output RMS (`rel_rms = diff_rms / ref_rms`), not by absolute diff alone. The `--fp32` control reruns both sides with the same dequantized weights and inputs cast to fp32: a maths error (wrong q/gate split, ones- vs zero-centred norm gain, wrong RoPE width) would stay O(1) there, while dtype noise collapses to ~1e-6.
+
+**Measured** (seed 0, T=4, this machine, CPU):
+
+| Run | Submodule | max_abs | rel_rms |
+|---|---|---|---|
+| layer 0 (linear), bf16 | input_layernorm | 0 | 0 |
+| layer 0 (linear), bf16 | mixer (gated delta) | 0.015625 | 0.00520 |
+| layer 0 (linear), bf16 | mlp (common input) | 0 | 0 |
+| layer 0 (linear), bf16 | whole block | 0.03125 | 0.00151 |
+| layer 3 (full), bf16 | every submodule + whole block | 0 | 0 |
+| layer 0 (linear), fp32 | mixer | 2.88e-06 | 6.73e-07 |
+| layer 0 (linear), fp32 | whole block | 7.63e-06 | 1.21e-07 |
+| layer 3 (full), fp32 | whole block | 0 | 0 |
+
+Whole-block output RMS is 1.173 (layer 0) / 1.284 (layer 3) in bf16, output norms 167.8 / 183.8 over `[1, 4, 5120]`. Layer 3 agrees bit-exactly in both dtypes — both sides run the same bf16/fp32 matmuls, norms and eager attention arithmetic. Layer 0's only nonzero diffs are in the gated-delta mixer: `max_abs = 0.015625` is one bf16 ULP at that magnitude, and the fp32 control collapses the whole-block relative error from 1.5e-3 to 1.2e-7, which is the chunkwise-vs-sequential re-association signature, not a maths error. No engine fix was needed; the bisect (norms and MLP exact, mixer diff vanishing in fp32) is what rules out a root cause in our code.
+
+The durable test is [test_real_layer_parity.py](../tests/test_real_layer_parity.py), env-gated (`RUN_REAL_LAYER_PARITY=1`, three subprocess runs of the script: both layers in bf16 plus the layer-0 fp32 control, asserting whole-block `rel_rms < 0.02` in bf16 and `< 1e-5` in fp32). It skips by default, and a skip is not counted as green evidence — the script runs above are the evidence. Measured gated run: `3 passed in 14.26s`.
+
 ## Summary in 30 seconds
 
 Parse the real `text_config` into `HybridConfig`; dispatch each block by `layer_types`; run linear layers as gated-delta recurrences (ch 21) and full layers as gated attention — fused per-head Q+gate split, per-head zero-centred Q/K norms, 64-of-256 partial RoPE, GQA over a reused KVCache, sigmoid output gate — behind one mixed snapshot/restore, with checkpoint names mapped from shard headers and the MTP/vision towers specified but deliberately not executed.
