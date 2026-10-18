@@ -11,6 +11,19 @@ Our pipeline-by-layers bridge ran the FULL 27B model across both GPUs and genera
 
 Integration smoke re-check (this window, incumbent stopped first via `launch.sh --stop`): `scripts/gpu_smoke_hybrid.py` → `RESULT: PASS` (fp32 prefill/decode max_abs ≤1.5e-07, static vs legacy 0.0, chunkwise 1.19e-07; peak 9,043,968 B on cuda:0); `scripts/run_qwen38_gpu.py --max-new-tokens 8` on the single `capital` probe → 8/8 generated ids exact vs the recorded vLLM prefix (`first_divergence: null`, finite logits, prefill 0.92 s, decode 1.82 tok/s, load 27.4 s, peak 15,885,218,304 B / 15,931,358,720 B). Smoke re-check only; no new throughput claim. Restore the incumbent with `/home/nick/llm/vllm/launch.sh qwen3.8-27b-fp8 --no-cc`.
 
+## Candidate table (measured; bridge rows same 3 probes × 32 tok)
+
+| Candidate | Decode tok/s | TPOT p50 | Token agreement |
+|---|---|---|---|
+| vLLM Arm A (greedy short c1) | ~49/stream (2745 tok/min) | 20.3 ms | reference |
+| ours bridge v1 (reference dequant) | 1.83 | ~548 ms | 32/32 exact ×3 |
+| ours bridge v2 (Triton fused, default) | 19.6–19.7 | ~50.7 ms | 32/32 exact ×3 |
+| Roofline floor (TP2 batch-1, bound only) | 52.2 ceiling | 19.17 ms floor | n/a — not a measurement |
+
+Bridge v2 detail: prefill 0.54 s (first, JIT) / 0.10–0.12 s, load 23.5 s, peak ~15.0 / ~15.1 GB/GPU. Re-check this window: 8-token capital probe 8/8 prefix exact at 18.98 tok/s, prefill 0.52 s. No candidate clears the win thresholds; Arm B unmeasured.
+
+Raw v2 record: `benchmarks/baseline/ours_pipeline_fastfp8.json` (`--sampling-sync batched --grad-mode inference`; A/B toggles `--fp8-path reference --sampling-sync per-token --grad-mode no-grad` reproduce v1 at 1.82 tok/s, 8/8 prefix). v2 is ~10.7× v1, driven by removing the profiled dequant cost (`benchmarks/profile/SUMMARY.md`: ~243 ms/token/GPU dequant vs ~25 ms matmul). Batched-vs-per-token sampling sync alone was 19.57 vs 19.56 tok/s — no measurable difference once dequant is gone, so no speed is claimed for it. Other profile candidates were audited and skipped where evidence does not justify a change: no `BlockFP8Linear` is called twice with the same weight in one forward (each projection fires once per block), and the pipeline boundary transfer is one `[1, 1, 5120]` BF16 tensor per token (~10 KB), negligible next to the dequant traffic — neither was changed. `--grad-mode inference` (default) replaces `no_grad` with `inference_mode`; `--grad-mode no-grad` reproduces the old context. **Not a win vs Arm A:** Arm A greedy short c1 is TPOT p50 20.3 ms (~49 tok/s/stream, 2745 tok/min); v2 TPOT is ~50.7 ms (~19.7 tok/s, ~1180 tok/min). v2 clears neither the throughput nor the TPOT threshold above, and Arm B is still unmeasured.
+
 ## Metrics
 
 All timings are end-to-end wall time measured by the client
