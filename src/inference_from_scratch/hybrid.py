@@ -372,6 +372,11 @@ def _apply_rope_with_tables(
     return torch.cat([rotated, x[..., rotary_dim:]], dim=-1)
 
 
+def _is_capturing(tensor: torch.Tensor) -> bool:
+    """True when ``tensor`` is CUDA and its stream is capturing a graph."""
+    return bool(tensor.is_cuda and torch.cuda.is_current_stream_capturing())
+
+
 # ---------------------------------------------------------------------------
 # HybridConfig: the real text_config as a dataclass.
 # ---------------------------------------------------------------------------
@@ -856,7 +861,7 @@ class GatedFullAttention(nn.Module):
         sin: torch.Tensor | None = None,
         kv_cache: KVCache | StaticKVCache | None = None,
         layer_idx: int = 0,
-        start_pos: int = 0,
+        start_pos: int | torch.Tensor = 0,
         attention_mask: torch.Tensor | None = None,
         position_ids: torch.Tensor | None = None,
         **kwargs: Any,
@@ -899,6 +904,18 @@ class GatedFullAttention(nn.Module):
         k = self.k_norm(k).transpose(1, 2)  # [B, Hkv, T, Dh]
         v = v.transpose(1, 2)  # [B, Hkv, T, Dh]
 
+        # Graph-safe tensor position: 0-dim tensor read on-device, no
+        # .item() and no Python-int slice baked into a captured graph.
+        pos_tensor: torch.Tensor | None = None
+        if isinstance(start_pos, torch.Tensor):
+            if start_pos.dim() != 0:
+                raise ValueError(
+                    f"start_pos tensor must be 0-dim, got {tuple(start_pos.shape)}")
+            if position_ids is not None:
+                raise ValueError("pass only one of position_ids / tensor start_pos")
+            if T != 1:
+                raise ValueError("tensor start_pos supports decode T=1 only")
+            pos_tensor = start_pos
         if position_ids is not None:
             if not isinstance(position_ids, torch.Tensor) or position_ids.shape[-1] != T:
                 got = tuple(position_ids.shape) if isinstance(position_ids, torch.Tensor) else type(position_ids).__name__
@@ -911,23 +928,40 @@ class GatedFullAttention(nn.Module):
             )
             q = _apply_rope_with_tables(q, pos_cos, pos_sin, self.rotary_dim)
             k = _apply_rope_with_tables(k, pos_cos, pos_sin, self.rotary_dim)
+        elif pos_tensor is not None:
+            if cos is None or sin is None:
+                cos, sin = self._rope_tables(1, x.device, x.dtype)
+            # Gather the single RoPE row on-device: [R] -> [1, R] tables.
+            # index_select (not advanced indexing, which syncs during
+            # capture) keeps this a single capturable kernel.
+            pos1 = pos_tensor.reshape(1)
+            row_cos = cos.index_select(0, pos1)
+            row_sin = sin.index_select(0, pos1)
+            q = _apply_rope_with_tables(q, row_cos, row_sin, self.rotary_dim)
+            k = _apply_rope_with_tables(k, row_cos, row_sin, self.rotary_dim)
         else:
             if cos is None or sin is None:
-                cos, sin = self._rope_tables(start_pos + T, x.device, x.dtype)
-            q = apply_partial_rope(q, cos, sin, start_pos=start_pos, rotary_dim=self.rotary_dim)
-            k = apply_partial_rope(k, cos, sin, start_pos=start_pos, rotary_dim=self.rotary_dim)
+                cos, sin = self._rope_tables(int(start_pos) + T, x.device, x.dtype)  # type: ignore[arg-type]
+            q = apply_partial_rope(q, cos, sin, start_pos=int(start_pos), rotary_dim=self.rotary_dim)  # type: ignore[arg-type]
+            k = apply_partial_rope(k, cos, sin, start_pos=int(start_pos), rotary_dim=self.rotary_dim)  # type: ignore[arg-type]
 
         if kv_cache is not None:
-            if isinstance(kv_cache, StaticKVCache):
-                k, v = kv_cache.update(layer_idx, k, v, start_pos)
+            if pos_tensor is not None:
+                if not isinstance(kv_cache, StaticKVCache):
+                    raise ValueError("tensor start_pos requires a StaticKVCache")
+                k, v = kv_cache.update_tensor_position(layer_idx, k, v, pos_tensor)
+            elif isinstance(kv_cache, StaticKVCache):
+                k, v = kv_cache.update(layer_idx, k, v, int(start_pos))  # type: ignore[arg-type]
             else:
                 k, v = kv_cache.update(layer_idx, k, v)
 
         k = repeat_kv(k, self.n_rep)
         v = repeat_kv(v, self.n_rep)
 
-        if self.attn_implementation == "sdpa":
-            attn = self._sdpa(q, k, v, start_pos=start_pos)
+        if pos_tensor is not None:
+            attn = self._decode_attn_tensor_pos(q, k, v, pos_tensor)
+        elif self.attn_implementation == "sdpa":
+            attn = self._sdpa(q, k, v, start_pos=int(start_pos))  # type: ignore[arg-type]
         else:
             attn = manual_scaled_dot_product_attention(q, k, v, is_causal=True)
 
@@ -937,6 +971,32 @@ class GatedFullAttention(nn.Module):
         elif self.gate_activation == "silu":
             merged = merged * F.silu(gate)
         return self.o_proj(merged)
+
+    def _decode_attn_tensor_pos(
+        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
+        position: torch.Tensor,
+    ) -> torch.Tensor:
+        """Decode attention over the full static KV buffer (T_q=1).
+
+        Keys past ``position`` are masked with ``-inf`` built from an
+        on-device comparison, so the shape is fixed at ``T_max`` and no
+        host sync is needed -- the graph-safe twin of the int-position
+        prefix attention.
+        """
+        t_k = k.shape[2]
+        if self.attn_implementation == "sdpa":
+            k_pos = torch.arange(t_k, device=k.device)
+            future = k_pos > position
+            mask = torch.zeros(1, t_k, device=q.device, dtype=q.dtype)
+            mask = mask.masked_fill(future, float("-inf"))
+            return F.scaled_dot_product_attention(
+                q, k, v, attn_mask=mask.view(1, 1, 1, t_k),
+                is_causal=False, scale=self.scaling)
+        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(q.shape[-1])
+        k_pos = torch.arange(t_k, device=k.device)
+        future = k_pos > position
+        scores = scores.masked_fill(future.view(1, 1, 1, t_k), float("-inf"))
+        return torch.matmul(torch.softmax(scores, dim=-1), v)
 
     def _sdpa(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, start_pos: int = 0) -> torch.Tensor:
         T_q, T_k = q.shape[2], k.shape[2]
@@ -1571,12 +1631,17 @@ class HybridBlock(nn.Module):
         if not isinstance(state, StaticHybridState):
             raise ValueError(
                 f"decode_token_static requires a StaticHybridState, got {type(state).__name__}")
-        if position is None:
-            pos = state.seq_len
-        elif isinstance(position, torch.Tensor):
+        # Tensor position (or omitted position while capturing) stays a
+        # tensor end-to-end: no .item(), so no host sync is captured.
+        pos: int | torch.Tensor
+        if isinstance(position, torch.Tensor):
             if position.dim() != 0:
                 raise ValueError(f"position tensor must be 0-dim, got shape {tuple(position.shape)}")
-            pos = int(position.item())
+            pos = position
+        elif position is None and _is_capturing(state.position):
+            pos = state.position
+        elif position is None:
+            pos = state.seq_len
         else:
             pos = int(position)  # type: ignore[arg-type]
         was_2d = x.dim() == 2
@@ -1937,6 +2002,17 @@ class TinyHybridLM(nn.Module):
         a Python ``int`` / 0-dim tensor that must equal the state's
         current position. Position never affects any tensor shape.
 
+        Graph-safe form: when ``position`` is a 0-dim tensor (expected
+        to be ``state.position`` itself), or when it is omitted while a
+        CUDA graph capture is in progress, position stays a tensor
+        end-to-end -- RoPE rows are gathered on-device, the KV write
+        uses ``index_copy_`` at the tensor position, and full attention
+        masks the fixed ``max_seq_len`` buffer on-device. No ``.item()``
+        runs in that form (outside capture, the usual equality /
+        overflow checks still read it once, before any kernel runs);
+        during capture those Python checks cannot run, so the caller
+        must guarantee ``steps <= max_seq_len`` before capturing.
+
         Raises ``ValueError`` with a clear message before mutating
         anything when the next position would reach ``max_seq_len``
         (overflow) or when shapes / state type do not match.
@@ -1954,25 +2030,44 @@ class TinyHybridLM(nn.Module):
         if token_ids.shape[0] != state.batch_size:
             raise ValueError(
                 f"token batch {token_ids.shape[0]} does not match state batch_size={state.batch_size}")
-        if position is None:
-            pos = state.seq_len
-        elif isinstance(position, torch.Tensor):
+        pos: int | torch.Tensor
+        capturing = _is_capturing(state.position)
+        if isinstance(position, torch.Tensor):
             if position.dim() != 0:
                 raise ValueError(f"position tensor must be 0-dim, got shape {tuple(position.shape)}")
-            pos = int(position.item())
+            pos = position
+        elif position is None and capturing:
+            pos = state.position
+        elif position is None:
+            pos = state.seq_len
         else:
             pos = int(position)  # type: ignore[arg-type]
-        if pos != state.seq_len:
-            raise ValueError(
-                f"position={pos} does not match state position {state.seq_len} "
-                "(static decode is strictly sequential)")
-        if pos >= state.max_seq_len:
-            raise ValueError(
-                f"StaticHybridState overflow: position {pos} would exceed "
-                f"max_seq_len={state.max_seq_len} (state already holds "
-                f"{state.seq_len} tokens); allocate a larger StaticHybridState "
-                "or reset() it before decoding more tokens")
-        cos, sin = self._rope(pos + 1, token_ids.device, torch.float32)
+        if isinstance(pos, torch.Tensor):
+            if not capturing:
+                pos_int = int(pos.item())
+                if pos_int != state.seq_len:
+                    raise ValueError(
+                        f"position={pos_int} does not match state position "
+                        f"{state.seq_len} (static decode is strictly sequential)")
+                if pos_int >= state.max_seq_len:
+                    raise ValueError(
+                        f"StaticHybridState overflow: position {pos_int} would exceed "
+                        f"max_seq_len={state.max_seq_len} (state already holds "
+                        f"{state.seq_len} tokens); allocate a larger StaticHybridState "
+                        "or reset() it before decoding more tokens")
+            cos, sin = self.cos, self.sin
+        else:
+            if pos != state.seq_len:
+                raise ValueError(
+                    f"position={pos} does not match state position {state.seq_len} "
+                    "(static decode is strictly sequential)")
+            if pos >= state.max_seq_len:
+                raise ValueError(
+                    f"StaticHybridState overflow: position {pos} would exceed "
+                    f"max_seq_len={state.max_seq_len} (state already holds "
+                    f"{state.seq_len} tokens); allocate a larger StaticHybridState "
+                    "or reset() it before decoding more tokens")
+            cos, sin = self._rope(pos + 1, token_ids.device, torch.float32)
         x = self.embed_tokens(token_ids).unsqueeze(1)  # [B, 1, D]
         for block in self.layers:
             x = block.decode_token_static(x, state, position=pos, cos=cos, sin=sin)

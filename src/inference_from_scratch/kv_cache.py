@@ -161,6 +161,32 @@ class StaticKVCache:
             self.v_cache[layer_idx, :, :, :end],
         )
 
+    def update_tensor_position(
+        self, layer_idx: int, k: torch.Tensor, v: torch.Tensor,
+        position: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Graph-safe single-token write at a 0-dim tensor ``position``.
+
+        ``k``/``v`` are ``[B, H_kv, 1, D_h]``; ``position`` is a 0-dim
+        long tensor. The write uses ``index_copy_`` on the time dim so
+        no Python int (and no ``.item()`` host sync) is baked into a
+        captured CUDA graph: on replay the kernel reads the position
+        tensor's current value. Returns the *full* buffers
+        ``[B, H_kv, T_max, D_h]`` (fixed shape); the caller must mask
+        positions past ``position`` in attention. ``_len`` (a Python
+        int) is deliberately untouched -- graph-mode callers track
+        length in the position tensor itself.
+        """
+        if not isinstance(position, torch.Tensor) or position.dim() != 0:
+            raise ValueError("position must be a 0-dim tensor")
+        if k.shape[2] != 1 or v.shape[2] != 1:
+            raise ValueError(
+                f"update_tensor_position expects T_new=1, got {k.shape[2]}")
+        pos1 = position.reshape(1).to(dtype=torch.long)
+        self.k_cache[layer_idx].index_copy_(2, pos1, k)
+        self.v_cache[layer_idx].index_copy_(2, pos1, v)
+        return self.k_cache[layer_idx], self.v_cache[layer_idx]
+
     @property
     def seq_len(self) -> int:
         """Filled time length (high-water mark of written positions)."""

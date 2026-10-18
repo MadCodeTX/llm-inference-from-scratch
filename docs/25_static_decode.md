@@ -80,6 +80,55 @@ Static state removes state allocation and shape dependence from the *model step*
 
 That is parity within noise, and it is the expected CPU result: at tiny dims Python overhead dominates both paths, and the static path's payoff — fixed addresses and shapes a CUDA graph can capture (sec. 4.1) — is a GPU property this CPU benchmark cannot measure. No win is claimed; the script prints whichever way a given machine falls.
 
+## CUDA graph capture: measured (tiny hybrid, cuda:0, fp32)
+
+[scripts/cuda_graph_smoke.py](../scripts/cuda_graph_smoke.py) captures ONE `decode_token_static` step into a `torch.cuda.CUDAGraph`. Static input is a `[1]` token tensor; static output is a `[1, 97]` logits buffer filled inside the graph by `static_output.copy_(logits)`, because `decode_token_static` returns fresh logits per call (the task-preferred wrapper: no model change was needed for output freshness). Greedy feedback stays outside the graph: after each `graph.replay()`, `argmax` on the static output is `copy_`-ed into the static input for the next replay. Sampling is not captured (v1). Warmup runs 3 tensor-position steps on a side stream; the caller guarantees `tokens (16) <= max_seq_len (32)` upfront, because Python overflow checks cannot run during capture.
+
+Measured on this machine (`.venv-gpu/bin/python scripts/cuda_graph_smoke.py`, torch 2.11.0+cu128, RTX 4090, two runs):
+
+```text
+capture: OK (one decode_token_static step, static input + static output buffers)
+correctness: tokens_equal=True (16/16, [49, 9, 84, 57, 49, 13, 72, 92, 5, 34, 14, 79, 96, 86, 19, 84])
+correctness: logits max_abs_diff=2.980e-08 state_position=16
+timing: eager=1441.8 us/token graph=302.5 us/token speedup=4.77x (run 2: 1331.5 / 295.3, 4.51x)
+peak_memory_bytes=25867776 (24.67 MiB)
+```
+
+That is launch-overhead removal on a tiny model, not a 27B claim: at D=32 the maths is negligible, so the ~4.6x is the per-step Python/launch/host-sync cost the graph eliminates. The graph path still pays one `replay()` launch plus the outside-graph `argmax`/`copy_` launches per token (hence ~300 us/token, not ~0). Never claim this speedup for the bridge without same-prompt token agreement there (see below).
+
+### What was graph-hostile, and the fix
+
+Naive capture failed at one exact op, reproduced before the fix:
+
+```text
+hybrid.py decode_token_static -> pos = state.seq_len
+hybrid.py StaticHybridState.seq_len -> int(self.position.item())
+torch.AcceleratorError: CUDA error: operation not permitted when stream is capturing
+```
+
+`seq_len` ([hybrid.py:1315](../src/inference_from_scratch/hybrid.py:1315)) is a host sync, and both `TinyHybridLM.decode_token_static` and `HybridBlock.decode_token_static` read it (or `int(position.item())`) before any kernel. A second, subtler failure followed: `cos[pos_tensor]` advanced indexing also syncs during capture. Fixing the sync alone would still have been wrong, because a Python-int position bakes the RoPE row, the KV slice offset, and the attention prefix length into the graph at capture time, so replays would recompute token 0's position forever.
+
+The graph-safe form therefore keeps position as the state's 0-dim tensor end-to-end (engaged when `position=` is a 0-dim tensor, or when `position` is omitted while `_is_capturing` ([hybrid.py:375](../src/inference_from_scratch/hybrid.py:375)) detects capture):
+
+- RoPE rows are gathered with `index_select` ([hybrid.py:938](../src/inference_from_scratch/hybrid.py:938)), a single capturable kernel;
+- the KV write is `StaticKVCache.update_tensor_position` ([kv_cache.py:164](../src/inference_from_scratch/kv_cache.py:164)): `index_copy_` at the tensor position, returning the full fixed-shape buffers (its Python `_len` is deliberately untouched; length lives in the position tensor);
+- full attention over that full buffer is `_decode_attn_tensor_pos` ([hybrid.py:975](../src/inference_from_scratch/hybrid.py:975)): scores masked by an on-device `k_pos > position` comparison, so unfilled slots get exactly zero softmax weight;
+- `state.advance(1)` is an in-place `add_` on the position tensor, captured like any other kernel, so replay *n* reads position *n*.
+
+Python equality/overflow checks still run once (reading `.item()`) for tensor-position calls *outside* capture, preserving the existing `ValueError` contract; inside capture they are skipped, which is why the smoke script asserts `tokens <= max_seq_len` before capturing. CPU tests pin the equivalence: tensor-position logits equal int-position logits over 7 tokens (`atol 1e-5`, KV buffers included) in [test_static_decode.py](../tests/test_static_decode.py). Known limit: the graph form uses the model's fixed RoPE buffers (`self.cos`/`self.sin`), so captured positions must stay within the precomputed table length.
+
+## Bridge applicability: what remains graph-hostile in the 27B pipeline path
+
+The tiny-hybrid result does **not** transfer to the two-GPU bridge ([run_qwen38_gpu.py](../scripts/run_qwen38_gpu.py) + `DeviceMappedHybridRunner`) today. The bridge does not use `decode_token_static`/`StaticHybridState` at all; it runs the legacy `forward_with_state` path per token. Remaining blockers, by file:
+
+- **No static state in the loop.** `DeviceMappedHybridRunner.run` ([hybrid.py:2397](../src/inference_from_scratch/hybrid.py:2397)) builds a new `entries` list and a new `HybridState` per call, and full layers go through the concatenating `KVCache.update` (`torch.cat`, [kv_cache.py](../src/inference_from_scratch/kv_cache.py)) while linear layers allocate a fresh recurrent state per token via the legacy `step`/`forward_prefill` chain. Every state address changes per token, so there is nothing stable to capture.
+- **`.item()` / host syncs in the decode loop.** `DeviceMappedHybridRunner.generate_greedy` does `int(logits[0, -1].argmax().item())` per token ([hybrid.py:2457](../src/inference_from_scratch/hybrid.py:2457), [hybrid.py:2464](../src/inference_from_scratch/hybrid.py:2464)) and allocates `torch.tensor([[nxt]], ...)` per token ([hybrid.py:2462](../src/inference_from_scratch/hybrid.py:2462)). The bridge script's `per-token` sampling mode does the same ([run_qwen38_gpu.py:103](../scripts/run_qwen38_gpu.py:103), [run_qwen38_gpu.py:118](../scripts/run_qwen38_gpu.py:118), plus `bool(torch.isfinite(...))` and `float(topv[...])` probes); the `batched` mode already removes these from the loop and is the graph-compatible starting point. `generate_hybrid` likewise syncs on `bool(finished.all())` and `torch.cat`s the output ids per token ([hybrid.py:2168](../src/inference_from_scratch/hybrid.py:2168)–[hybrid.py:2182](../src/inference_from_scratch/hybrid.py:2182)), and `sample_next` re-homes a device-mismatched generator with a `.item()` seed draw per call ([sampling.py:171](../src/inference_from_scratch/sampling.py:171)) before `torch.multinomial` -- sampling stays outside any v1 graph regardless.
+- **Cross-device transfers per token.** `run` moves hidden states with `x.to(dev)` at the pipeline split and `x.to(self.device1)` for the head ([hybrid.py:2419](../src/inference_from_scratch/hybrid.py:2419), [hybrid.py:2441](../src/inference_from_scratch/hybrid.py:2441)), and moves `idx` to `device0` per call ([hybrid.py:2405](../src/inference_from_scratch/hybrid.py:2405)). A CUDA graph is per-device stream state; a two-device step would need one captured graph per device plus captured cross-device copies with fixed addresses, none of which exists yet.
+- **Per-forward FP8 dequant allocations (reference path).** `BlockFP8Linear.forward` ([fp8_linear.py:281](../src/inference_from_scratch/fp8_linear.py:281)) calls `dequantize_block_fp8` on every forward ([fp8_linear.py:291](../src/inference_from_scratch/fp8_linear.py:291)), materialising a fresh dense BF16 weight per layer per token (`w_fp8.to(float32)` + blocked multiply + `.to(out_dtype)` in [quantization.py:441](../src/inference_from_scratch/quantization.py:441)–[quantization.py:447](../src/inference_from_scratch/quantization.py:447)). Inside a graph those addresses would come from the graph pool, but the dequant maths itself (~243 ms/token/GPU measured, see benchmarks/profile/SUMMARY.md) is the dominant cost graphs cannot remove.
+- **Triton path is not allocation-free either.** `fp8_triton_linear` converts per call: `x.to(bfloat16).contiguous()`, `scale_inv.to(float32).contiguous()`, and a fresh `torch.empty` output ([fp8_triton.py:164](../src/inference_from_scratch/fp8_triton.py:164)–[fp8_triton.py:167](../src/inference_from_scratch/fp8_triton.py:167)), and `BlockFP8Linear._try_triton` adds Python shape/device branching plus a `bias.to(bfloat16)` per call ([fp8_linear.py:242](../src/inference_from_scratch/fp8_linear.py:242)). The Triton kernel launch itself is capturable in principle, but the surrounding per-call conversions/allocations and Python dispatch must be hoisted or frozen before capture, and the fallback-on-exception logic cannot run inside a graph.
+
+So the bridge order of operations is unchanged: fused FP8 first (the dominant term: 243 ms/token/GPU measured, ~44% of per-segment latency), then a static-state single-device (or per-device-graph) decode loop with batched sampling sync. CUDA graphs attack only the launch term, measured here at ~1.1 ms/token of eager overhead on the tiny model; the bridge's 548 ms/token is dequant- and serialization-bound, not launch-bound.
+
 ## Check yourself
 
 <details>

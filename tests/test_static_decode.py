@@ -209,6 +209,49 @@ def test_static_overflow_raises_clear_error_before_mutation():
     assert st.seq_len == 1
 
 
+def test_tensor_position_logits_equal_int_position_path():
+    # Graph-safe form: position stays a 0-dim tensor end-to-end (RoPE
+    # gather, KV index_copy_, masked full-buffer attention). On CPU it
+    # must compute the same logits as the Python-int path.
+    m = _tiny_lm(seed=11)
+    idx = torch.randint(0, VOCAB, (2, 7))
+    with torch.no_grad():
+        st_int = m.static_state(batch_size=2, max_seq_len=16)
+        int_logits = [m.decode_token_static(idx[:, t], st_int) for t in range(7)]
+        st_t = m.static_state(batch_size=2, max_seq_len=16)
+        t_logits = [
+            m.decode_token_static(idx[:, t], st_t, position=st_t.position)
+            for t in range(7)
+        ]
+    assert st_t.seq_len == st_int.seq_len == 7
+    for a, b in zip(int_logits, t_logits):
+        assert torch.allclose(a, b, atol=1e-5), (a - b).abs().max()
+    # Tensor path wrote the same KV entries at the same positions.
+    assert torch.allclose(
+        st_t.kv_cache.k_cache, st_int.kv_cache.k_cache, atol=1e-6)
+    # A mismatched tensor position still raises before mutation (CPU).
+    with torch.no_grad(), pytest.raises(ValueError, match="does not match"):
+        m.decode_token_static(
+            idx[:, 0], st_t, position=torch.tensor(99))
+    assert st_t.seq_len == 7
+
+
+def test_update_tensor_position_writes_only_that_slot():
+    cache = StaticKVCache(n_layer=1, batch_size=1, n_kv_head=2,
+                          max_seq_len=4, head_dim=3)
+    pos = torch.tensor(2)
+    k = torch.ones(1, 2, 1, 3)
+    v = torch.full((1, 2, 1, 3), 2.0)
+    k_all, v_all = cache.update_tensor_position(0, k, v, pos)
+    # Full fixed-shape buffers are returned for masked attention.
+    assert k_all.shape == (1, 2, 4, 3) and v_all.shape == (1, 2, 4, 3)
+    assert torch.equal(k_all[0, :, 2], torch.ones(2, 3))
+    assert k_all[0, :, :2].abs().max().item() == 0.0
+    assert k_all[0, :, 3].abs().max().item() == 0.0
+    with pytest.raises(ValueError):
+        cache.update_tensor_position(0, k, v, torch.tensor([2]))
+
+
 def test_static_explicit_position_forms():
     m = _tiny_lm(seed=7)
     idx = torch.randint(0, VOCAB, (2, 3))
