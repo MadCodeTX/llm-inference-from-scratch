@@ -107,11 +107,161 @@ from .hybrid import HybridBlock, HybridConfig, QwenRMSNorm
 
 __all__ = [
     "INFERRED_JOINS",
+    "WIRING_AXES",
+    "PRUNED_WIRING",
+    "LEADING_WIRING",
+    "resolve_wiring",
+    "enumerate_wiring_candidates",
+    "teacher_forced_draft_indices",
+    "clone_mtp_state",
+    "mtp_state_length",
     "MTPConfig",
     "MTPHead",
+    "MTPDraftModule",
+    "TPMTPDraftModule",
     "mtp_tensor_spec",
     "expected_mtp_tensors",
 ]
+
+# Candidate wiring space, enumerated explicitly as data. Each axis lists
+# every shape-compatible reading; an option is *live* until the checkpoint
+# (names / shapes / config) rules it out, in which case it moves to
+# PRUNED_WIRING with its reason and never reaches the acceptance sweep.
+# Axes (see docs/24):
+#   fc_concat_order  -- which normed branch occupies fc's first H columns
+#   norm_pairing     -- which pre_fc norm feeds which branch
+#   hidden_source    -- target hidden fed to the head, before/after the
+#                       target's final norm (both are [H]; shape-silent)
+#   embedding_source -- token embedding table (see PRUNED_WIRING)
+#   position_rule    -- absolute RoPE position of one MTP draft step:
+#                       the hidden's own position t, the fed token's
+#                       position t+1, or the predicted token's t+2
+#   lm_head_input    -- shared lm_head reads mtp.norm's output or the
+#                       raw block output (mtp.norm would be unused then)
+WIRING_AXES: dict[str, tuple[str, ...]] = {
+    "fc_concat_order": ("hidden_first", "embedding_first"),
+    "norm_pairing": ("named", "swapped"),
+    "hidden_source": ("pre_final_norm", "post_final_norm"),
+    "embedding_source": ("shared_embed_tokens",),
+    "position_rule": ("hidden_pos", "input_token_pos", "predicted_pos"),
+    "lm_head_input": ("mtp_norm", "raw_block"),
+}
+
+# Options the checkpoint itself rules out (never swept):
+# a dedicated MTP embedding would need a vocab-sized mtp.* tensor (none
+# exists among the 22) and config mtp_use_dedicated_embeddings=false.
+PRUNED_WIRING: tuple[dict[str, str], ...] = (
+    {"axis": "embedding_source", "option": "dedicated_mtp_embedding",
+     "reason": "no vocab-sized mtp.* tensor exists and "
+               "mtp_use_dedicated_embeddings=false; only the shared "
+               "embed_tokens table is available"},
+)
+
+
+def enumerate_wiring_candidates() -> list[dict[str, str]]:
+    """All live candidate wirings: the cartesian product of WIRING_AXES.
+
+    2 (fc order) x 2 (norm pairing) x 2 (hidden source) x 3 (position)
+    x 2 (lm_head input) = 48 candidates, each a dict axis -> option.
+    Pruned options (PRUNED_WIRING) are excluded by construction.
+    """
+    import itertools
+    axes = list(WIRING_AXES)
+    return [dict(zip(axes, combo))
+            for combo in itertools.product(*(WIRING_AXES[a] for a in axes))]
+
+
+# Leading candidate from benchmarks/mtp/wiring_sweep.json (2026-10-18):
+# the sweep is UNRESOLVED (top rows tie at 0.8721, margin_over_second=0),
+# so this is not a proven wiring -- it is the first-ranked candidate,
+# used as the draft modules' default behind the wiring= parameter.
+# fc=embedding_first is decisive (0.665-0.872 vs 0.005-0.016); the tied
+# axes (hidden_source, position_rule, lm_head_input) follow the top row.
+LEADING_WIRING: dict[str, str] = {
+    "fc_concat_order": "embedding_first",
+    "norm_pairing": "named",
+    "hidden_source": "post_final_norm",
+    "embedding_source": "shared_embed_tokens",
+    "position_rule": "hidden_pos",
+    "lm_head_input": "raw_block",
+}
+
+_POSITION_OFFSET = {"hidden_pos": 0, "input_token_pos": 1, "predicted_pos": 2}
+
+
+def resolve_wiring(wiring: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Validate/complete a wiring dict against :data:`WIRING_AXES`.
+
+    ``None`` selects :data:`LEADING_WIRING` (the sweep's first-ranked,
+    unresolved candidate). Unknown axes/options raise ``ValueError``;
+    the pruned dedicated-embedding option is rejected by construction.
+    """
+    out = dict(LEADING_WIRING if wiring is None else wiring)
+    for axis, option in out.items():
+        if axis not in WIRING_AXES:
+            raise ValueError(f"unknown wiring axis {axis!r}; axes are {sorted(WIRING_AXES)}")
+        if option not in WIRING_AXES[axis]:
+            raise ValueError(f"wiring[{axis!r}] must be one of {WIRING_AXES[axis]}, got {option!r}")
+    for axis in WIRING_AXES:
+        out.setdefault(axis, LEADING_WIRING[axis])
+    return out
+
+
+def clone_mtp_state(state: Any) -> Any:
+    """Deep-copy an MTP draft state (tensors cloned; structure kept)."""
+    if state is None or isinstance(state, (int, float, str, bool)):
+        return state
+    if isinstance(state, torch.Tensor):
+        return state.clone()
+    if isinstance(state, list):
+        return [clone_mtp_state(s) for s in state]
+    if isinstance(state, tuple):
+        return tuple(clone_mtp_state(s) for s in state)
+    if isinstance(state, dict):
+        return {k: clone_mtp_state(v) for k, v in state.items()}
+    clone = getattr(state, "clone", None)
+    if callable(clone):
+        return clone()
+    raise TypeError(f"cannot clone MTP state entry of type {type(state).__name__}")
+
+
+def mtp_state_length(state: Any) -> int:
+    """Positions held in an MTP draft state (0 for a fresh state).
+
+    Dense states are per-layer ``(k, v)`` pairs / ``None``; TP states
+    are per-layer local ``(k, v)`` pairs / ``None``. The length is the
+    KV time dim of the first non-empty layer.
+    """
+    if state is None:
+        return 0
+    entries = state if isinstance(state, (list, tuple)) else [state]
+    for entry in entries:
+        if entry is None:
+            continue
+        if isinstance(entry, (list, tuple)) and entry and isinstance(entry[0], torch.Tensor):
+            return int(entry[0].shape[-2])
+        if isinstance(entry, torch.Tensor):
+            return int(entry.shape[-2])
+    return 0
+
+
+def teacher_forced_draft_indices(seq_len: int) -> list[tuple[int, int, int]]:
+    """Teacher-forced MTP index arithmetic for one trajectory.
+
+    For a token sequence ``S[0..L-1]`` with target hidden states
+    ``h[t]`` aligned to ``S[t]``, the MTP draft at step ``t`` fuses
+    ``h[t]`` with ``embed(S[t+1])`` and predicts ``S[t+2]`` (DeepSeek-
+    style MTP semantics, docs/24). Returns one
+    ``(hidden_index, embedding_token_index, target_index)`` triple per
+    valid step, i.e. ``t`` in ``[0, L-3]``; empty when ``L < 3``.
+    Example: ``teacher_forced_draft_indices(5)`` over ``[10,11,12,13,14]``
+    gives steps predicting 12 from (h0, embed 11), 13 from (h1, embed
+    12) and 14 from (h2, embed 13).
+    """
+    if int(seq_len) < 0:
+        raise ValueError(f"seq_len must be >= 0, got {seq_len}")
+    return [(t, t + 1, t + 2) for t in range(int(seq_len) - 2)]
+
 
 # Choices the tensor shapes cannot fix. Kept as data so docs/tests and
 # future parity work have exactly one place to challenge them.
@@ -346,8 +496,22 @@ class MTPHead(nn.Module):
     layer_type = "full_attention"  # proven by mtp.layers.0 tensors; see docs
     concat_order = ("hidden", "embedding")  # INFERRED_JOINS[0]
 
-    def __init__(self, config: Any = None):
+    def __init__(self, config: Any = None, *,
+                 fc_concat_order: str = "hidden_first",
+                 norm_pairing: str = "named",
+                 lm_head_input: str = "mtp_norm"):
         super().__init__()
+        if fc_concat_order not in WIRING_AXES["fc_concat_order"]:
+            raise ValueError(f"fc_concat_order must be one of {WIRING_AXES['fc_concat_order']}")
+        if norm_pairing not in WIRING_AXES["norm_pairing"]:
+            raise ValueError(f"norm_pairing must be one of {WIRING_AXES['norm_pairing']}")
+        if lm_head_input not in WIRING_AXES["lm_head_input"]:
+            raise ValueError(f"lm_head_input must be one of {WIRING_AXES['lm_head_input']}")
+        # Wiring options (defaults are the inferred name-ordered reading;
+        # the acceptance sweep overrides them per candidate).
+        self.fc_concat_order = fc_concat_order
+        self.norm_pairing = norm_pairing
+        self.lm_head_input = lm_head_input
         self.config = MTPConfig.from_config(config) if config is not None else MTPConfig()
         cfg = self.config
         H = cfg.hidden_size
@@ -456,9 +620,15 @@ class MTPHead(nn.Module):
         if e3.shape[-1] != H:
             raise ValueError(f"token embedding last dim must be hidden_size={H}, got {e3.shape[-1]}")
 
-        fused = self.fc(torch.cat(
-            [self.pre_fc_norm_hidden(h3), self.pre_fc_norm_embedding(e3)], dim=-1
-        ))
+        if self.norm_pairing == "named":
+            h_normed = self.pre_fc_norm_hidden(h3)
+            e_normed = self.pre_fc_norm_embedding(e3)
+        else:  # swapped: each branch through the other branch's norm
+            h_normed = self.pre_fc_norm_embedding(h3)
+            e_normed = self.pre_fc_norm_hidden(e3)
+        branches = ([h_normed, e_normed] if self.fc_concat_order == "hidden_first"
+                    else [e_normed, h_normed])
+        fused = self.fc(torch.cat(branches, dim=-1))
 
         if state is None:
             layer_states: list[Any] = self.initial_state()
@@ -478,7 +648,7 @@ class MTPHead(nn.Module):
             )
             new_state.append(new_layer_state)
 
-        draft_hidden = self.norm(x)
+        draft_hidden = self.norm(x) if self.lm_head_input == "mtp_norm" else x
         if squeeze:
             draft_hidden = draft_hidden[:, 0, :]
         logits = lm_head(draft_hidden) if lm_head is not None else None
@@ -496,3 +666,360 @@ class MTPHead(nn.Module):
         draft_hidden, logits, new_state = self.forward(*args, lm_head=lm_head, **kwargs)
         assert logits is not None  # lm_head was required above
         return torch.argmax(logits, dim=-1), draft_hidden, new_state
+
+
+# ---------------------------------------------------------------------------
+# MTPDraftModule: reusable single-step drafter (dense + tensor-parallel).
+#
+# State semantics (the MTP block is a proven full-attention layer, so its
+# state is KV, not recurrent): draft_token NEVER mutates its input state.
+# The returned state is TENTATIVE -- it holds the KV entry for the token
+# just consumed. The caller commits it only when the target accepts the
+# associated token run, and simply keeps the old state on rejection
+# (functional commit-on-accept; snapshot_state/restore_state give the
+# explicit deep-copy form). The state therefore advances only on
+# accepted tokens, which is exactly the speculative-decoding contract:
+# speculative greedy output must equal target greedy token-for-token.
+# If a future MTP layer were linear-attention, the same functional
+# contract would carry its (S, conv) pair instead of KV.
+# ---------------------------------------------------------------------------
+
+
+def _as_token_ids(token_id_t1: Any, batch: int, device: torch.device) -> torch.Tensor:
+    if isinstance(token_id_t1, int):
+        return torch.full((batch,), int(token_id_t1), dtype=torch.long, device=device)
+    ids = torch.as_tensor(token_id_t1, device=device)
+    if ids.dim() == 0:
+        return ids.to(torch.long).expand(batch).reshape(batch)
+    ids = ids.reshape(-1).to(torch.long)
+    if ids.shape[0] == 1 and batch > 1:
+        return ids.expand(batch)
+    if ids.shape[0] != batch:
+        raise ValueError(f"token_id_t1 must be a scalar or [{batch}], got {tuple(ids.shape)}")
+    return ids
+
+
+class MTPDraftModule(nn.Module):
+    """Reusable one-step MTP drafter over a dense :class:`MTPHead`.
+
+    ``draft_token(hidden_t, token_id_t1, state, position)`` fuses the
+    target's final hidden at ``t`` (which norm side is given by
+    ``wiring["hidden_source"]``; the leading candidate reads the
+    post-final-norm hidden) with the embedding of the target's chosen
+    token for ``t+1`` and returns ``(draft_token_id, draft_logits,
+    tentative_state)`` predicting ``t+2``. With ``top_k=k`` the second
+    value is ``(top_values, top_indices)`` instead of full logits.
+    ``embedding`` / ``lm_head`` are the target's shared modules (the
+    head owns neither); pass them here or per call. ``wiring`` selects
+    a candidate from :func:`enumerate_wiring_candidates`; the default
+    is :data:`LEADING_WIRING` because the sweep is unresolved -- no
+    wiring is claimed proven.
+    """
+
+    def __init__(self, config: Any = None, *,
+                 embedding: Any = None, lm_head: Any = None,
+                 wiring: Mapping[str, str] | None = None,
+                 head: MTPHead | None = None):
+        super().__init__()
+        self.wiring = resolve_wiring(wiring)
+        if head is not None:
+            self.head = head
+            self.wiring.update({
+                "fc_concat_order": head.fc_concat_order,
+                "norm_pairing": head.norm_pairing,
+                "lm_head_input": head.lm_head_input})
+            self.config = head.config
+        else:
+            self.config = MTPConfig.from_config(config) if config is not None else MTPConfig()
+            self.head = MTPHead(
+                self.config,
+                fc_concat_order=self.wiring["fc_concat_order"],
+                norm_pairing=self.wiring["norm_pairing"],
+                lm_head_input=self.wiring["lm_head_input"])
+        # Shared target modules: referenced, never owned/registered.
+        object.__setattr__(self, "_embedding", embedding)
+        object.__setattr__(self, "_lm_head", lm_head)
+
+    def initial_state(self) -> list[Any]:
+        """Fresh draft state (one empty KV entry per MTP layer)."""
+        return self.head.initial_state()
+
+    @staticmethod
+    def snapshot_state(state: Any) -> Any:
+        """Deep-copy a draft state for later restore/branching."""
+        return clone_mtp_state(state)
+
+    @staticmethod
+    def restore_state(snapshot: Any) -> Any:
+        """Clone a snapshot into an independently continuable state."""
+        return clone_mtp_state(snapshot)
+
+    def draft_token(self, hidden_t: torch.Tensor, token_id_t1: Any,
+                    state: Any = None, position: int = 0, *,
+                    top_k: int | None = None,
+                    embedding: Any = None, lm_head: Any = None):
+        """One draft step: ``(draft_token_id, logits_or_topk, state')``.
+
+        ``hidden_t`` is ``[H]`` or ``[B, H]``; ``token_id_t1`` a scalar
+        or ``[B]`` token id tensor. ``position`` is the hidden's own
+        absolute position ``t``; the wiring's ``position_rule`` offset
+        is applied internally. Input ``state`` is never mutated: the
+        returned state is tentative until the caller commits it on
+        acceptance (see the section comment above).
+        """
+        emb = embedding if embedding is not None else self._embedding
+        head_fn = lm_head if lm_head is not None else self._lm_head
+        if emb is None:
+            raise ValueError("no embedding: pass embedding= or construct with one "
+                             "(mtp_use_dedicated_embeddings=false, shared table)")
+        if head_fn is None:
+            raise ValueError("no lm_head: pass lm_head= or construct with one "
+                             "(the MTP head owns no vocab projection)")
+        if not isinstance(hidden_t, torch.Tensor) or hidden_t.dim() not in (1, 2):
+            raise ValueError(f"hidden_t must be [H] or [B, H], got "
+                             f"{tuple(hidden_t.shape) if isinstance(hidden_t, torch.Tensor) else type(hidden_t).__name__}")
+        single = hidden_t.dim() == 1
+        h2 = hidden_t.unsqueeze(0) if single else hidden_t
+        ids = _as_token_ids(token_id_t1, int(h2.shape[0]), h2.device)
+        abs_pos = int(position) + _POSITION_OFFSET[self.wiring["position_rule"]]
+        _, logits, new_state = self.head(
+            h2, token_ids=ids, embedding=emb, lm_head=head_fn,
+            start_pos=abs_pos, state=state)
+        assert logits is not None
+        draft_id = torch.argmax(logits, dim=-1)
+        second: Any = logits
+        if top_k is not None:
+            if int(top_k) <= 0:
+                raise ValueError(f"top_k must be positive, got {top_k}")
+            second = torch.topk(logits, int(top_k), dim=-1)
+            second = (second.values, second.indices)
+        if single:
+            draft_id = draft_id[0]
+            second = (second[0][0], second[1][0]) if isinstance(second, tuple) else second[0]
+        return draft_id, second, new_state
+
+    forward = draft_token
+
+
+class TPMTPDraftModule(nn.Module):
+    """Tensor-parallel MTP drafter: the MTP block sharded like a block.
+
+    ``fc`` and the pre-fc / final norms are replicated on every rank
+    (docs/23: ``mtp.fc`` replicated so both fused branches stay local);
+    the MTP layer itself is a :class:`DistributedHybridBlock`, so its
+    collectives are exactly a normal full-attention block's (one
+    all-reduce in attention's ``o_proj``, one in the MLP ``down_proj``).
+    State is this rank's local KV shard per MTP layer, with the same
+    commit-on-accept semantics as :class:`MTPDraftModule`.
+    """
+
+    def __init__(self, ctx: Any, dense_head: MTPHead, *,
+                 embedding: Any = None, lm_head: Any = None,
+                 wiring: Mapping[str, str] | None = None):
+        super().__init__()
+        import copy as _copy
+        from .tp_distributed import DistributedHybridBlock
+        self.ctx = ctx
+        self.wiring = resolve_wiring(wiring)
+        self.wiring.update({
+            "fc_concat_order": dense_head.fc_concat_order,
+            "norm_pairing": dense_head.norm_pairing,
+            "lm_head_input": dense_head.lm_head_input})
+        self.config = dense_head.config
+        dev = ctx.device
+        self.pre_fc_norm_embedding = _copy.deepcopy(dense_head.pre_fc_norm_embedding).to(dev)
+        self.pre_fc_norm_hidden = _copy.deepcopy(dense_head.pre_fc_norm_hidden).to(dev)
+        self.fc = nn.Linear(dense_head.fc.in_features, dense_head.fc.out_features, bias=False)
+        with torch.no_grad():
+            self.fc.weight.copy_(dense_head.fc.weight.data.to(dev))
+        self.fc = self.fc.to(dev)
+        hybrid_cfg = self.config.to_hybrid_config()
+        self.layers = nn.ModuleList([
+            DistributedHybridBlock(ctx, block, config=hybrid_cfg)
+            for block in dense_head.layers])
+        self.norm = _copy.deepcopy(dense_head.norm).to(dev)
+        object.__setattr__(self, "_embedding", embedding)
+        object.__setattr__(self, "_lm_head", lm_head)
+
+    @classmethod
+    def from_dense(cls, ctx: Any, dense_head: MTPHead, **kwargs: Any) -> "TPMTPDraftModule":
+        return cls(ctx, dense_head, **kwargs)
+
+    @classmethod
+    def empty(cls, ctx: Any, config: Any = None, *, fp8: bool = False) -> "TPMTPDraftModule":
+        """Shard-shaped empty TP draft module on meta (loader fills it)."""
+        from .hybrid import QwenRMSNorm
+        from .tp_distributed import DistributedHybridBlock
+        obj = cls.__new__(cls)
+        nn.Module.__init__(obj)
+        obj.ctx = ctx
+        obj.wiring = resolve_wiring(None)
+        obj.config = MTPConfig.from_config(config) if config is not None else MTPConfig()
+        cfg = obj.config
+        meta = torch.device("meta")
+        obj.pre_fc_norm_embedding = QwenRMSNorm(cfg.hidden_size, eps=cfg.rms_norm_eps).to(meta)
+        obj.pre_fc_norm_hidden = QwenRMSNorm(cfg.hidden_size, eps=cfg.rms_norm_eps).to(meta)
+        obj.fc = nn.Linear(2 * cfg.hidden_size, cfg.hidden_size, bias=False)
+        obj.fc.weight = nn.Parameter(torch.empty(
+            (cfg.hidden_size, 2 * cfg.hidden_size), device=meta))
+        hybrid_cfg = cfg.to_hybrid_config()
+        obj.layers = nn.ModuleList([
+            DistributedHybridBlock.empty(ctx, hybrid_cfg, j, fp8=fp8)
+            for j in range(cfg.mtp_num_hidden_layers)])
+        obj.norm = QwenRMSNorm(cfg.hidden_size, eps=cfg.rms_norm_eps).to(meta)
+        object.__setattr__(obj, "_embedding", None)
+        object.__setattr__(obj, "_lm_head", None)
+        return obj
+
+    def set_ctx(self, ctx: Any) -> "TPMTPDraftModule":
+        self.ctx = ctx
+        for module in self.modules():
+            if "ctx" in module.__dict__:
+                module.ctx = ctx
+        return self
+
+    def initial_state(self) -> list[Any]:
+        """Fresh per-rank draft state (empty local KV per MTP layer)."""
+        return [None] * len(self.layers)
+
+    @staticmethod
+    def snapshot_state(state: Any) -> Any:
+        return clone_mtp_state(state)
+
+    @staticmethod
+    def restore_state(snapshot: Any) -> Any:
+        return clone_mtp_state(snapshot)
+
+    def draft_token(self, hidden_t: torch.Tensor, token_id_t1: Any,
+                    state: Any = None, position: int = 0, *,
+                    top_k: int | None = None,
+                    embedding: Any = None, lm_head: Any = None):
+        """TP draft step; same contract as :meth:`MTPDraftModule.draft_token`.
+
+        ``hidden_t`` / token ids live on ``ctx.device`` (replicated
+        inputs); the returned logits are the full replicated logits
+        when ``lm_head`` is a replicated head (e.g. the target LM's
+        ``lm_head``), so every rank returns the same draft id.
+        """
+        emb = embedding if embedding is not None else self._embedding
+        head_fn = lm_head if lm_head is not None else self._lm_head
+        if emb is None:
+            raise ValueError("no embedding: pass embedding= or construct with one")
+        if head_fn is None:
+            raise ValueError("no lm_head: pass lm_head= or construct with one")
+        if not isinstance(hidden_t, torch.Tensor) or hidden_t.dim() not in (1, 2):
+            raise ValueError("hidden_t must be [H] or [B, H]")
+        single = hidden_t.dim() == 1
+        h2 = hidden_t.unsqueeze(0) if single else hidden_t
+        ids = _as_token_ids(token_id_t1, int(h2.shape[0]), h2.device)
+        e2 = emb(ids) if callable(emb) else emb
+        if isinstance(e2, torch.Tensor) and e2.dim() == 2 and h2.dim() == 2:
+            pass
+        else:
+            e2 = torch.as_tensor(e2)
+        if self.wiring["norm_pairing"] == "named":
+            h_n, e_n = self.pre_fc_norm_hidden(h2), self.pre_fc_norm_embedding(e2)
+        else:
+            h_n, e_n = self.pre_fc_norm_embedding(h2), self.pre_fc_norm_hidden(e2)
+        branches = ([h_n, e_n] if self.wiring["fc_concat_order"] == "hidden_first"
+                    else [e_n, h_n])
+        x = self.fc(torch.cat(branches, dim=-1)).unsqueeze(1)  # [B, 1, H]
+        layer_states = list(state) if state is not None else self.initial_state()
+        if len(layer_states) != len(self.layers):
+            raise ValueError(f"state must hold {len(self.layers)} per-layer entries")
+        abs_pos = int(position) + _POSITION_OFFSET[self.wiring["position_rule"]]
+        new_state: list[Any] = []
+        for block, layer_state in zip(self.layers, layer_states):
+            x, new_layer_state = block.step(x, layer_state=layer_state, start_pos=abs_pos)
+            new_state.append(new_layer_state)
+        draft_hidden = self.norm(x[:, 0, :]) if self.wiring["lm_head_input"] == "mtp_norm" else x[:, 0, :]
+        logits = head_fn(draft_hidden)
+        draft_id = torch.argmax(logits, dim=-1)
+        second: Any = logits
+        if top_k is not None:
+            if int(top_k) <= 0:
+                raise ValueError(f"top_k must be positive, got {top_k}")
+            top = torch.topk(logits, int(top_k), dim=-1)
+            second = (top.values, top.indices)
+        if single:
+            draft_id = draft_id[0]
+            second = (second[0][0], second[1][0]) if isinstance(second, tuple) else second[0]
+        return draft_id, second, new_state
+
+    def initial_static_state(self, batch_size: int = 1,
+                             max_seq_len: int = 128,
+                             dtype: torch.dtype | None = None):
+        """Preallocated static KV state for :meth:`draft_token_static`.
+
+        A :class:`~inference_from_scratch.tp_distributed.TPStaticState`
+        over this head's own hybrid config (all full-attention layers):
+        KV slots are sequential (one per committed draft) and
+        ``state.position`` counts committed drafts only.
+        """
+        from .tp_distributed import TPStaticState
+        if dtype is None:
+            dtype = self.fc.weight.dtype
+        return TPStaticState(
+            self.config.to_hybrid_config(), batch_size=int(batch_size),
+            max_seq_len=int(max_seq_len), device=self.ctx.device,
+            dtype=dtype, ctx=self.ctx)
+
+    def draft_token_static(self, hidden_t: torch.Tensor, token_id_t1: Any,
+                           state: Any, *, rope_position: Any = None,
+                           embedding: Any = None, lm_head: Any = None,
+                           out: torch.Tensor | None = None):
+        """Static twin of :meth:`draft_token` over a TPStaticState.
+
+        Same maths and wiring as :meth:`draft_token`, but the MTP
+        block runs through ``step_static``: K/V land in place at
+        ``state.position`` (the sequential committed-draft slot) and
+        RoPE uses ``rope_position`` (0-dim tensor or int; default
+        ``state.position``) -- the target's absolute hidden position,
+        which advances by 2 per accepted cycle and so cannot double
+        as the KV slot. ``state.position`` is NOT advanced here: the
+        caller advances it only when the draft is committed (accepted),
+        which is the static form of commit-on-accept. Returns
+        ``(draft_token_id, logits)``; ``out`` optionally receives the
+        logits by copy (the CUDA-graph form).
+        """
+        emb = embedding if embedding is not None else self._embedding
+        head_fn = lm_head if lm_head is not None else self._lm_head
+        if emb is None:
+            raise ValueError("no embedding: pass embedding= or construct with one")
+        if head_fn is None:
+            raise ValueError("no lm_head: pass lm_head= or construct with one")
+        if not isinstance(hidden_t, torch.Tensor) or hidden_t.dim() not in (1, 2):
+            raise ValueError("hidden_t must be [H] or [B, H]")
+        single = hidden_t.dim() == 1
+        h2 = hidden_t.unsqueeze(0) if single else hidden_t
+        ids = _as_token_ids(token_id_t1, int(h2.shape[0]), h2.device)
+        e2 = emb(ids) if callable(emb) else emb
+        e2 = torch.as_tensor(e2)
+        if self.wiring["norm_pairing"] == "named":
+            h_n, e_n = self.pre_fc_norm_hidden(h2), self.pre_fc_norm_embedding(e2)
+        else:
+            h_n, e_n = self.pre_fc_norm_embedding(h2), self.pre_fc_norm_hidden(e2)
+        branches = ([h_n, e_n] if self.wiring["fc_concat_order"] == "hidden_first"
+                    else [e_n, h_n])
+        x = self.fc(torch.cat(branches, dim=-1)).unsqueeze(1)  # [B, 1, H]
+        if rope_position is None:
+            rope_t = None
+        elif isinstance(rope_position, torch.Tensor):
+            rope_t = rope_position
+        else:
+            rope_t = torch.tensor(int(rope_position), dtype=torch.long,
+                                  device=h2.device)
+        for block in self.layers:
+            x = block.step_static(x, state, rope_position=rope_t)
+        draft_hidden = self.norm(x[:, 0, :]) if self.wiring["lm_head_input"] == "mtp_norm" else x[:, 0, :]
+        logits = head_fn(draft_hidden)
+        if out is not None:
+            out.copy_(logits)
+            logits = out
+        draft_id = torch.argmax(logits, dim=-1)
+        if single:
+            draft_id = draft_id[0]
+            logits = logits[0]
+        return draft_id, logits
+
+    forward = draft_token

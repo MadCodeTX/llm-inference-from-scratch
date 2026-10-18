@@ -1847,8 +1847,9 @@ class TinyHybridLM(nn.Module):
         position_ids: torch.Tensor | None = None,
         prefill_method: str = "sequential",
         chunk_size: int = 64,
+        return_hidden: bool = False,
         **kwargs: Any,
-    ) -> tuple[torch.Tensor, HybridState]:
+    ) -> tuple[torch.Tensor, HybridState] | tuple[torch.Tensor, HybridState, torch.Tensor]:
         """Token ids ``[B, T]`` -> ``(logits [B, T, V], new_state)``.
 
         ``state=None`` prefills from position 0; otherwise processing
@@ -1920,12 +1921,38 @@ class TinyHybridLM(nn.Module):
                     prefill_method=prefill_method, chunk_size=chunk_size,
                 )
                 new_entries.append(("linear", linear_payload))
+        hidden_pre_norm = x
         logits = self.lm_head(self.norm(x))
-        return logits, HybridState(
+        new_state = HybridState(
             entries=new_entries,
             seq_len=start_pos + T,
             layer_types=self.config.layer_types,
         )
+        if return_hidden:
+            # Target-hidden capture for the MTP draft step: the hidden
+            # is the final block output BEFORE the final norm (the
+            # final-norm input); norm(hidden) feeds lm_head. Default
+            # off: the return value is exactly the 2-tuple above.
+            return logits, new_state, hidden_pre_norm
+        return logits, new_state
+
+    def forward_with_hidden(
+        self,
+        idx: torch.Tensor,
+        state: HybridState | None = None,
+        **kwargs: Any,
+    ) -> tuple[torch.Tensor, HybridState, torch.Tensor, torch.Tensor]:
+        """``(logits, new_state, hidden_pre_norm, hidden_post_norm)``.
+
+        Hook-free target-hidden capture: ``hidden_pre_norm`` is the
+        last block's output (the final norm's input, ``[B, T, D]``) and
+        ``hidden_post_norm`` is ``self.norm(hidden_pre_norm)`` -- the
+        tensor ``lm_head`` actually reads. No hooks are installed and
+        the plain :meth:`forward` result is unchanged.
+        """
+        logits, new_state, hidden_pre = self.forward(
+            idx, state=state, return_hidden=True, **kwargs)
+        return logits, new_state, hidden_pre, self.norm(hidden_pre)
 
     def prefill(
         self,
@@ -1935,27 +1962,36 @@ class TinyHybridLM(nn.Module):
         prefill_method: str = "sequential",
         chunk_size: int = 64,
         position_ids: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, HybridState]:
-        """Prefill ``idx`` ``[B, T]`` (from scratch unless ``state`` given)."""
+        return_hidden: bool = False,
+    ) -> tuple[torch.Tensor, HybridState] | tuple[torch.Tensor, HybridState, torch.Tensor]:
+        """Prefill ``idx`` ``[B, T]`` (from scratch unless ``state`` given).
+
+        With ``return_hidden=True`` a third value, the pre-final-norm
+        hidden ``[B, T, D]``, is appended (see :meth:`forward`).
+        """
         return self.forward(
             idx, state=state, prefill_method=prefill_method,
             chunk_size=chunk_size, position_ids=position_ids,
+            return_hidden=return_hidden,
         )
 
     forward_prefill = prefill
 
     def decode_step(
-        self, token_ids: torch.Tensor, state: HybridState
-    ) -> tuple[torch.Tensor, HybridState]:
+        self, token_ids: torch.Tensor, state: HybridState,
+        return_hidden: bool = False,
+    ) -> tuple[torch.Tensor, HybridState] | tuple[torch.Tensor, HybridState, torch.Tensor]:
         """One decode step: ``token_ids`` ``[B]`` or ``[B, 1]``.
 
-        Returns ``(logits [B, 1, V], new_state)``.
+        Returns ``(logits [B, 1, V], new_state)``; with
+        ``return_hidden=True`` the pre-final-norm hidden ``[B, 1, D]``
+        is appended as a third value.
         """
         if token_ids.dim() == 1:
             token_ids = token_ids.unsqueeze(1)
         if token_ids.dim() != 2 or token_ids.shape[1] != 1:
             raise ValueError(f"token_ids must be [B] or [B, 1], got {tuple(token_ids.shape)}")
-        return self.forward(token_ids, state=state)
+        return self.forward(token_ids, state=state, return_hidden=return_hidden)
 
     step = decode_step
 
@@ -2376,12 +2412,16 @@ class DeviceMappedHybridRunner:
     ``TinyHybridLM.forward`` is untouched, so single-device tests keep
     their semantics. ``rms_hook(layer_idx, hidden)``, when given, is
     called after every block (per-layer hidden-RMS bisect aid).
+    ``hidden_hook(hidden_pre_norm, hidden_post_norm)``, when given, is
+    called once per :meth:`run` with the final hidden state before the
+    model's final norm and the same state after it (both ``[B, T, D]``
+    on ``device1``); the default ``None`` changes nothing.
     """
 
     def __init__(self, model: TinyHybridLM, split: int,
                  device0: str | torch.device = "cuda:0",
                  device1: str | torch.device = "cuda:1",
-                 rms_hook: Any = None):
+                 rms_hook: Any = None, hidden_hook: Any = None):
         self.model = model
         self.plan = pipeline_device_plan(
             len(model.layers), split, device0, device1)
@@ -2389,6 +2429,7 @@ class DeviceMappedHybridRunner:
         self.device1 = torch.device(self.plan["device1"])
         self.split = int(split)
         self.rms_hook = rms_hook
+        self.hidden_hook = hidden_hook
         self._rope_cache: dict[torch.device, tuple[torch.Tensor, torch.Tensor]] = {}
 
     def _tables(self, device: torch.device, end: int):
@@ -2448,7 +2489,10 @@ class DeviceMappedHybridRunner:
                 self.rms_hook(i, x)
         if x.device != self.device1:
             x = x.to(self.device1)
-        logits = model.lm_head(model.norm(x))
+        hidden_post = model.norm(x)
+        if self.hidden_hook is not None:
+            self.hidden_hook(x, hidden_post)
+        logits = model.lm_head(hidden_post)
         return logits, HybridState(
             entries=new_entries, seq_len=start_pos + T,
             layer_types=model.config.layer_types)

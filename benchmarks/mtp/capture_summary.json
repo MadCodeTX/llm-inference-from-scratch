@@ -1,0 +1,74 @@
+{
+  "capture_file": "/tmp/mtp_capture/trajectories.pt",
+  "capture_bytes": 8935641,
+  "snapshot": "/home/nick/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B-FP8/snapshots/017b9c7af6b5689d5dd426a76e0bc077eb5ca20a",
+  "max_new_tokens": 64,
+  "prompts": [
+    {
+      "id": "capital",
+      "prompt": "The capital of France is",
+      "prompt_len": 5,
+      "token_ids_len": 69,
+      "hidden_shape": [
+        68,
+        5120
+      ],
+      "generated_text": " Paris.\nThe capital of Germany is Berlin.\nThe capital of Italy is Rome.\nThe capital of Spain is Madrid.\nThe capital of Portugal is Lisbon.\nThe capital of Greece is Athens.\nThe capital of the United Kingdom is London.\nThe capital of Ireland is Dublin.\nThe capital of"
+    },
+    {
+      "id": "water",
+      "prompt": "Water is made of hydrogen and",
+      "prompt_len": 6,
+      "token_ids_len": 70,
+      "hidden_shape": [
+        69,
+        5120
+      ],
+      "generated_text": " oxygen.\n\nA. True\nB. False\n\n<think>\nThe user is asking whether water is made of hydrogen and oxygen.\n\nWater (H\u2082O) is a chemical compound made of two hydrogen atoms and one oxygen atom. So yes, water is made of hydrogen and oxygen.\n\nThe answer is A."
+    },
+    {
+      "id": "counting",
+      "prompt": "One, two, three, four,",
+      "prompt_len": 8,
+      "token_ids_len": 72,
+      "hidden_shape": [
+        71,
+        5120
+      ],
+      "generated_text": " five, six, seven, eight, nine, ten, eleven, twelve, thirteen, fourteen, fifteen, sixteen, seventeen, eighteen, nineteen, twenty, twenty-one, twenty-two, twenty-three, twenty-four, twenty-five, twenty-six, twenty-seven, twenty-eight, twenty-nine, thirty, thirty-one,"
+    },
+    {
+      "id": "neutral_code",
+      "prompt": "def fibonacci(n):\n    # return the nth Fibonacci number\n",
+      "prompt_len": 13,
+      "token_ids_len": 77,
+      "hidden_shape": [
+        76,
+        5120
+      ],
+      "generated_text": "    if n == 0:\n        return 0\n    elif n == 1:\n        return 1\n    else:\n        return fibonacci(n-1) + fibonacci(n-2)\n\ndef fibonacci_iterative(n):\n    # return the nth Fibonacci number\n    if n == "
+    },
+    {
+      "id": "neutral_list",
+      "prompt": "Shopping list:\n- milk\n- eggs\n-",
+      "prompt_len": 11,
+      "token_ids_len": 75,
+      "hidden_shape": [
+        74,
+        5120
+      ],
+      "generated_text": " bread\n- butter\n- cheese\n- chicken\n- rice\n- pasta\n- vegetables\n- fruits\n- coffee\n- tea\n- sugar\n- salt\n- pepper\n- flour\n- oil\n- vinegar\n- spices\n- canned goods\n- frozen foods\n- snacks\n- beverages\n"
+    },
+    {
+      "id": "neutral_prose",
+      "prompt": "The old lighthouse stood at the edge of the harbour, and every evening",
+      "prompt_len": 15,
+      "token_ids_len": 79,
+      "hidden_shape": [
+        78,
+        5120
+      ],
+      "generated_text": " the light would sweep across the water.\nThe light was a beacon for ships, and the keeper would climb the spiral stairs to tend the flame.\nThe keeper was an old man, and his hands were rough from years of work.\nHe would polish the lens until it shone, and he would check the"
+    }
+  ]
+}

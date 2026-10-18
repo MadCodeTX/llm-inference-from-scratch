@@ -190,6 +190,10 @@ def build_parser() -> argparse.ArgumentParser:
                          "batched (default) does one host transfer at the end")
     ap.add_argument("--grad-mode", choices=["inference", "no-grad"], default="inference",
                     help="inference (default) uses torch.inference_mode; no-grad reproduces torch.no_grad")
+    ap.add_argument("--dump-hidden", default=None, metavar="PATH",
+                    help="also save per-probe {token_ids, hidden_pre_norm, "
+                         "hidden_post_norm} (BF16, hidden rows aligned with "
+                         "token_ids[:-1]) to this .pt path; default off")
     return ap
 
 
@@ -276,8 +280,16 @@ def main() -> int:
             rms_log.append({"layer": layer_idx,
                             "rms": float(h.float().pow(2).mean().sqrt())})
 
-    runner = DeviceMappedHybridRunner(model, args.split, args.device0,
-                                      args.device1, rms_hook=hook)
+    dump_chunks: dict[str, list] = {"pre": [], "post": []}
+
+    def hidden_hook(pre, post):
+        dump_chunks["pre"].append(pre.detach().to("cpu", torch.bfloat16).clone())
+        dump_chunks["post"].append(post.detach().to("cpu", torch.bfloat16).clone())
+
+    runner = DeviceMappedHybridRunner(
+        model, args.split, args.device0, args.device1, rms_hook=hook,
+        hidden_hook=hidden_hook if args.dump_hidden else None)
+    dump_payload: dict = {"prompts": {}}
     for d in (args.device0, args.device1):
         torch.cuda.reset_peak_memory_stats(d)
 
@@ -287,6 +299,7 @@ def main() -> int:
         prompt_ids = tok.encode(probe["prompt"])
         assert prompt_ids == probe["prompt_token_ids"], (prompt_ids, probe)
         ref = probe["output_token_ids"]
+        dump_chunks["pre"].clear(); dump_chunks["post"].clear()
         with grad_ctx():
             gen = greedy_generate_bridge(
                 runner, prompt_ids, args.max_new_tokens, args.device1,
@@ -311,6 +324,13 @@ def main() -> int:
             "peak_memory_bytes": peak,
         }
         results.append(row)
+        if args.dump_hidden:
+            dump_payload["prompts"][probe["id"]] = {
+                "prompt": probe["prompt"], "prompt_len": len(prompt_ids),
+                "token_ids": list(prompt_ids) + [int(v) for v in gen_ids],
+                "hidden_pre_norm": torch.cat(dump_chunks["pre"], dim=1)[0],
+                "hidden_post_norm": torch.cat(dump_chunks["post"], dim=1)[0],
+            }
         print(f"[{probe['id']}] finite={finite} match={matching}/{len(ref)} "
               f"first_div={first_div} prefill={prefill_s:.2f}s "
               f"decode={(len(gen_ids)-1)/decode_s:.2f} tok/s text={text!r}", flush=True)
@@ -343,6 +363,11 @@ def main() -> int:
         out["rms_log_first_prefill"] = rms_log[: config.num_hidden_layers]
     Path(args.out).write_text(json.dumps(out, indent=2) + "\n")
     print(f"wrote {args.out}")
+    if args.dump_hidden:
+        dp = Path(args.dump_hidden)
+        dp.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(dump_payload, dp)
+        print(f"wrote {dp} ({dp.stat().st_size / 1e6:.2f} MB hidden dump)")
     ok = len(results) == len(probes) and all(r["logits_finite"] for r in results)
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
