@@ -1,0 +1,209 @@
+{
+  "base_url": "http://127.0.0.1:8000",
+  "model": "Qwen/Qwen3.8-27B-FP8",
+  "max_tokens": 32,
+  "probes": [
+    {
+      "id": "capital",
+      "prompt": "The capital of France is",
+      "prompt_token_ids": [
+        760,
+        6511,
+        314,
+        9338,
+        369
+      ],
+      "request": {
+        "temperature": 0.0,
+        "max_tokens": 32,
+        "seed": 42,
+        "repetition_penalty": 1.0,
+        "ignore_eos": false
+      },
+      "text": " Paris.\nThe capital of Germany is Berlin.\nThe capital of Italy is Rome.\nThe capital of Spain is Madrid.\nThe capital of Portugal is",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 5,
+        "total_tokens": 37,
+        "completion_tokens": 32,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "created_cache_tokens": null,
+          "multimodal_tokens": null
+        },
+        "completion_tokens_details": null
+      },
+      "output_token_ids": [
+        11751,
+        13,
+        198,
+        760,
+        6511,
+        314,
+        9564,
+        369,
+        19241,
+        13,
+        198,
+        760,
+        6511,
+        314,
+        14898,
+        369,
+        21047,
+        13,
+        198,
+        760,
+        6511,
+        314,
+        17163,
+        369,
+        23327,
+        13,
+        198,
+        760,
+        6511,
+        314,
+        32208,
+        369
+      ],
+      "output_token_ids_source": "retokenized_local"
+    },
+    {
+      "id": "water",
+      "prompt": "Water is made of hydrogen and",
+      "prompt_token_ids": [
+        27336,
+        369,
+        1801,
+        314,
+        33536,
+        321
+      ],
+      "request": {
+        "temperature": 0.0,
+        "max_tokens": 32,
+        "seed": 42,
+        "repetition_penalty": 1.0,
+        "ignore_eos": false
+      },
+      "text": " oxygen.\n\nA. True\nB. False\n\n<think>\nThe user is asking whether water is made of hydrogen and oxygen.\n\nWater (H\u2082O",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 6,
+        "total_tokens": 38,
+        "completion_tokens": 32,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "created_cache_tokens": null,
+          "multimodal_tokens": null
+        },
+        "completion_tokens_details": null
+      },
+      "output_token_ids": [
+        22817,
+        13,
+        271,
+        32,
+        13,
+        2912,
+        198,
+        33,
+        13,
+        3439,
+        271,
+        248068,
+        198,
+        760,
+        1156,
+        369,
+        9859,
+        3315,
+        2919,
+        369,
+        1801,
+        314,
+        33536,
+        321,
+        22817,
+        13,
+        271,
+        27336,
+        318,
+        39,
+        30763,
+        46
+      ],
+      "output_token_ids_source": "retokenized_local"
+    },
+    {
+      "id": "counting",
+      "prompt": "One, two, three, four,",
+      "prompt_token_ids": [
+        3833,
+        11,
+        1330,
+        11,
+        2250,
+        11,
+        2943,
+        11
+      ],
+      "request": {
+        "temperature": 0.0,
+        "max_tokens": 32,
+        "seed": 42,
+        "repetition_penalty": 1.0,
+        "ignore_eos": false
+      },
+      "text": " five, six, seven, eight, nine, ten, eleven, twelve, thirteen, fourteen, fifteen, sixteen, seventeen, eighteen, nineteen, twenty,",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 8,
+        "total_tokens": 40,
+        "completion_tokens": 32,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "created_cache_tokens": null,
+          "multimodal_tokens": null
+        },
+        "completion_tokens_details": null
+      },
+      "output_token_ids": [
+        4097,
+        11,
+        4590,
+        11,
+        7840,
+        11,
+        7810,
+        11,
+        11292,
+        11,
+        5600,
+        11,
+        42744,
+        11,
+        28279,
+        11,
+        58614,
+        11,
+        60163,
+        11,
+        35442,
+        11,
+        56091,
+        11,
+        78592,
+        11,
+        59942,
+        11,
+        90600,
+        11,
+        16570,
+        11
+      ],
+      "output_token_ids_source": "retokenized_local"
+    }
+  ]
+}

@@ -153,6 +153,45 @@ def test_percentile_aggregation_on_fake_stream_events():
     assert empty["ttft_s"] is None and empty["inter_token_s"] == []
 
 
+def test_arms_filter_selects_subset():
+    suite = _suite()
+    assert run_bench.selected_arms(suite) == ["greedy", "sampled"]
+    assert run_bench.selected_arms(suite, ["greedy"]) == ["greedy"]
+    assert run_bench.selected_arms(suite, ["greedy,sampled"]) == [
+        "greedy", "sampled"]
+    with pytest.raises(ValueError):
+        run_bench.selected_arms(suite, ["nope"])
+    plan = run_bench.build_plan(suite, limit_concurrency=4, arms=["greedy"])
+    assert plan["arms"] == ["greedy"]
+    assert plan["total_batches"] == 4 * 2 * 2  # shapes x conc x repeats
+    assert {b["arm"] for b in plan["batches"]} == {"greedy"}
+
+
+def test_quality_probe_payload_and_parsing():
+    spec = importlib.util.spec_from_file_location(
+        "quality_probe", _REPO / "benchmarks" / "quality_probe.py")
+    qp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(qp)
+    assert len(qp.PROBES) == 3
+    payload = qp.build_payload("m", "hi")
+    assert payload["temperature"] == 0.0
+    assert payload["max_tokens"] == 32
+    assert payload["repetition_penalty"] == 1.0
+    assert payload["ignore_eos"] is False
+    tok = _FakeTokenizer()
+    body = {"choices": [{"text": " Paris", "finish_reason": "stop",
+                         "logprobs": {"token_ids": [11, 12]}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 2}}
+    parsed = qp.parse_completion(body, tok)
+    assert parsed["output_token_ids"] == [11, 12]
+    assert parsed["output_token_ids_source"] == "server_logprobs"
+    assert parsed["finish_reason"] == "stop"
+    body2 = {"choices": [{"text": " Paris", "finish_reason": "length"}],
+             "usage": {"prompt_tokens": 5, "completion_tokens": 1}}
+    parsed2 = qp.parse_completion(body2, tok)
+    assert parsed2["output_token_ids_source"] == "retokenized_local"
+
+
 def test_dry_run_plan_counts_without_network(monkeypatch):
     def _boom(*a, **k):
         raise AssertionError("dry-run must not touch the network")

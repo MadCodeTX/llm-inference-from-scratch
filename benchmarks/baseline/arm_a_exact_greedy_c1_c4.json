@@ -1,0 +1,1162 @@
+[
+  {
+    "shape": "short",
+    "arm": "greedy",
+    "concurrency": 1,
+    "run": 0,
+    "wall_s": 11.1996,
+    "ok": 1,
+    "failed": 0,
+    "prompt_tokens": 2033,
+    "prompt_tokens_actual": 2033,
+    "target_prompt_tokens": 2048,
+    "target_tokens_approximate": false,
+    "prompt_words": 1728,
+    "total_output_tokens": 512,
+    "aggregate_output_tps": 45.72,
+    "tokens_per_minute": 2743.0,
+    "per_stream_tps": 45.72,
+    "ttft": {
+      "n": 1,
+      "mean": 0.8040260979905725,
+      "p50": 0.8040260979905725,
+      "p90": 0.8040260979905725,
+      "p99": 0.8040260979905725,
+      "min": 0.8040260979905725,
+      "max": 0.8040260979905725
+    },
+    "tpot": {
+      "n": 511,
+      "mean": 0.020342903115117737,
+      "p50": 0.020313305780291557,
+      "p90": 0.02052969764918089,
+      "p99": 0.020985645661130547,
+      "min": 0.019899677950888872,
+      "max": 0.022187773138284683
+    },
+    "latency": {
+      "n": 1,
+      "mean": 11.199328870046884,
+      "p50": 11.199328870046884,
+      "p90": 11.199328870046884,
+      "p99": 11.199328870046884,
+      "min": 11.199328870046884,
+      "max": 11.199328870046884
+    },
+    "errors": [],
+    "requests_detail": [
+      {
+        "ttft_s": 0.8040260979905725,
+        "latency_s": 11.199328870046884,
+        "completion_tokens": 512,
+        "prompt_tokens": 2033,
+        "prompt_tokens_actual": 2033,
+        "prompt_words": 1728,
+        "ok": true
+      }
+    ],
+    "label": "run_bench",
+    "model": "Qwen/Qwen3.8-27B-FP8"
+  },
+  {
+    "shape": "short",
+    "arm": "greedy",
+    "concurrency": 1,
+    "run": 1,
+    "wall_s": 11.1838,
+    "ok": 1,
+    "failed": 0,
+    "prompt_tokens": 2032,
+    "prompt_tokens_actual": 2032,
+    "target_prompt_tokens": 2048,
+    "target_tokens_approximate": false,
+    "prompt_words": 1726,
+    "total_output_tokens": 512,
+    "aggregate_output_tps": 45.78,
+    "tokens_per_minute": 2746.8,
+    "per_stream_tps": 45.78,
+    "ttft": {
+      "n": 1,
+      "mean": 0.7821966479532421,
+      "p50": 0.7821966479532421,
+      "p90": 0.7821966479532421,
+      "p99": 0.7821966479532421,
+      "min": 0.7821966479532421,
+      "max": 0.7821966479532421
+    },
+    "tpot": {
+      "n": 511,
+      "mean": 0.020354731393879583,
+      "p50": 0.02034464804455638,
+      "p90": 0.020515055861324072,
+      "p99": 0.02089050421491265,
+      "min": 0.019110198132693768,
+      "max": 0.021968610119074583
+    },
+    "latency": {
+      "n": 1,
+      "mean": 11.183535309042782,
+      "p50": 11.183535309042782,
+      "p90": 11.183535309042782,
+      "p99": 11.183535309042782,
+      "min": 11.183535309042782,
+      "max": 11.183535309042782
+    },
+    "errors": [],
+    "requests_detail": [
+      {
+        "ttft_s": 0.7821966479532421,
+        "latency_s": 11.183535309042782,
+        "completion_tokens": 512,
+        "prompt_tokens": 2032,
+        "prompt_tokens_actual": 2032,
+        "prompt_words": 1726,
+        "ok": true
+      }
+    ],
+    "label": "run_bench",
+    "model": "Qwen/Qwen3.8-27B-FP8"
+  },
+  {
+    "shape": "short",
+    "arm": "greedy",
+    "concurrency": 4,
+    "run": 0,
+    "wall_s": 14.4068,
+    "ok": 4,
+    "failed": 0,
+    "prompt_tokens": 2033,
+    "prompt_tokens_actual": 2033,
+    "target_prompt_tokens": 2048,
+    "target_tokens_approximate": false,
+    "prompt_words": 1728,
+    "total_output_tokens": 2048,
+    "aggregate_output_tps": 142.16,
+    "tokens_per_minute": 8529.3,
+    "per_stream_tps": 35.54,
+    "ttft": {
+      "n": 4,
+      "mean": 1.920661096693948,
+      "p50": 2.4942705382127315,
+      "p90": 2.4944679354317487,
+      "p99": 2.4945321681350467,
+      "min": 0.19956400524824858,
+      "max": 2.49453930510208
+    },
+    "tpot": {
+      "n": 2044,
+      "mean": 0.024399278243938043,
+      "p50": 0.02328208740800619,
+      "p90": 0.023523625265806914,
+      "p99": 0.02444271818734705,
+      "min": 0.019418129697442055,
+      "max": 1.7455785502679646
+    },
+    "latency": {
+      "n": 4,
+      "mean": 14.388813530327752,
+      "p50": 14.405860187718645,
+      "p90": 14.406004311004654,
+      "p99": 14.40605310336221,
+      "min": 14.337475221138448,
+      "max": 14.406058524735272
+    },
+    "errors": [],
+    "requests_detail": [
+      {
+        "ttft_s": 0.19956400524824858,
+        "latency_s": 14.337475221138448,
+        "completion_tokens": 512,
+        "prompt_tokens": 2033,
+        "prompt_tokens_actual": 2033,
+        "prompt_words": 1728,
+        "ok": true
+      },
+      {
+        "ttft_s": 2.49453930510208,
+        "latency_s": 14.406058524735272,
+        "completion_tokens": 512,
+        "prompt_tokens": 2033,
+        "prompt_tokens_actual": 2033,
+        "prompt_words": 1728,
+        "ok": true
+      },
+      {
+        "ttft_s": 2.494301406200975,
+        "latency_s": 14.405877812299877,
+        "completion_tokens": 512,
+        "prompt_tokens": 2033,
+        "prompt_tokens_actual": 2033,
+        "prompt_words": 1728,
+        "ok": true
+      },
+      {
+        "ttft_s": 2.494239670224488,
+        "latency_s": 14.405842563137412,
+        "completion_tokens": 512,
+        "prompt_tokens": 2033,
+        "prompt_tokens_actual": 2033,
+        "prompt_words": 1728,
+        "ok": true
+      }
+    ],
+    "label": "run_bench",
+    "model": "Qwen/Qwen3.8-27B-FP8"
+  },
+  {
+    "shape": "short",
+    "arm": "greedy",
+    "concurrency": 4,
+    "run": 1,
+    "wall_s": 14.4033,
+    "ok": 4,
+    "failed": 0,
+    "prompt_tokens": 2032,
+    "prompt_tokens_actual": 2032,
+    "target_prompt_tokens": 2048,
+    "target_tokens_approximate": false,
+    "prompt_words": 1726,
+    "total_output_tokens": 2048,
+    "aggregate_output_tps": 142.19,
+    "tokens_per_minute": 8531.4,
+    "per_stream_tps": 35.55,
+    "ttft": {
+      "n": 4,
+      "mean": 1.9180510555161163,
+      "p50": 2.4909801695030183,
+      "p90": 2.4913049618247896,
+      "p99": 2.4914195698080586,
+      "min": 0.19881157903000712,
+      "max": 2.4914323040284216
+    },
+    "tpot": {
+      "n": 2044,
+      "mean": 0.024397311148273808,
+      "p50": 0.023303497349843383,
+      "p90": 0.023562934063374997,
+      "p99": 0.023845009063370524,
+      "min": 0.01945562893524766,
+      "max": 1.7431800169870257
+    },
+    "latency": {
+      "n": 4,
+      "mean": 14.385201469180174,
+      "p50": 14.402175509370863,
+      "p90": 14.402348721399903,
+      "p99": 14.402408853592352,
+      "min": 14.334039323031902,
+      "max": 14.402415534947067
+    },
+    "errors": [],
+    "requests_detail": [
+      {
+        "ttft_s": 0.19881157903000712,
+        "latency_s": 14.334039323031902,
+        "completion_tokens": 512,
+        "prompt_tokens": 2032,
+        "prompt_tokens_actual": 2032,
+        "prompt_words": 1726,
+        "ok": true
+      },
+      {
+        "ttft_s": 2.4914323040284216,
+        "latency_s": 14.402415534947067,
+        "completion_tokens": 512,
+        "prompt_tokens": 2032,
+        "prompt_tokens_actual": 2032,
+        "prompt_words": 1727,
+        "ok": true
+      },
+      {
+        "ttft_s": 2.491007830016315,
+        "latency_s": 14.40215819561854,
+        "completion_tokens": 512,
+        "prompt_tokens": 2032,
+        "prompt_tokens_actual": 2032,
+        "prompt_words": 1727,
+        "ok": true
+      },
+      {
+        "ttft_s": 2.4909525089897215,
+        "latency_s": 14.402192823123187,
+        "completion_tokens": 512,
+        "prompt_tokens": 2032,
+        "prompt_tokens_actual": 2032,
+        "prompt_words": 1727,
+        "ok": true
+      }
+    ],
+    "label": "run_bench",
+    "model": "Qwen/Qwen3.8-27B-FP8"
+  },
+  {
+    "shape": "medium",
+    "arm": "greedy",
+    "concurrency": 1,
+    "run": 0,
+    "wall_s": 26.9046,
+    "ok": 1,
+    "failed": 0,
+    "prompt_tokens": 16262,
+    "prompt_tokens_actual": 16262,
+    "target_prompt_tokens": 16384,
+    "target_tokens_approximate": false,
+    "prompt_words": 13817,
+    "total_output_tokens": 1024,
+    "aggregate_output_tps": 38.06,
+    "tokens_per_minute": 2283.6,
+    "per_stream_tps": 38.06,
+    "ttft": {
+      "n": 1,
+      "mean": 5.689659763127565,
+      "p50": 5.689659763127565,
+      "p90": 5.689659763127565,
+      "p99": 5.689659763127565,
+      "min": 5.689659763127565,
+      "max": 5.689659763127565
+    },
+    "tpot": {
+      "n": 1023,
+      "mean": 0.020736906156289817,
+      "p50": 0.020721079781651497,
+      "p90": 0.020921999216079713,
+      "p99": 0.021406129542738194,
+      "min": 0.016767052002251148,
+      "max": 0.024255889002233744
+    },
+    "latency": {
+      "n": 1,
+      "mean": 26.903658714145422,
+      "p50": 26.903658714145422,
+      "p90": 26.903658714145422,
+      "p99": 26.903658714145422,
+      "min": 26.903658714145422,
+      "max": 26.903658714145422
+    },
+    "errors": [],
+    "requests_detail": [
+      {
+        "ttft_s": 5.689659763127565,
+        "latency_s": 26.903658714145422,
+        "completion_tokens": 1024,
+        "prompt_tokens": 16262,
+        "prompt_tokens_actual": 16262,
+        "prompt_words": 13817,
+        "ok": true
+      }
+    ],
+    "label": "run_bench",
+    "model": "Qwen/Qwen3.8-27B-FP8"
+  },
+  {
+    "shape": "medium",
+    "arm": "greedy",
+    "concurrency": 1,
+    "run": 1,
+    "wall_s": 26.8981,
+    "ok": 1,
+    "failed": 0,
+    "prompt_tokens": 16261,
+    "prompt_tokens_actual": 16261,
+    "target_prompt_tokens": 16384,
+    "target_tokens_approximate": false,
+    "prompt_words": 13815,
+    "total_output_tokens": 1024,
+    "aggregate_output_tps": 38.07,
+    "tokens_per_minute": 2284.2,
+    "per_stream_tps": 38.07,
+    "ttft": {
+      "n": 1,
+      "mean": 5.68930262606591,
+      "p50": 5.68930262606591,
+      "p90": 5.68930262606591,
+      "p99": 5.68930262606591,
+      "min": 5.68930262606591,
+      "max": 5.68930262606591
+    },
+    "tpot": {
+      "n": 1023,
+      "mean": 0.020731276265807078,
+      "p50": 0.020710038021206856,
+      "p90": 0.02090638130903244,
+      "p99": 0.02119722532108426,
+      "min": 0.011831812094897032,
+      "max": 0.03541261702775955
+    },
+    "latency": {
+      "n": 1,
+      "mean": 26.897541658952832,
+      "p50": 26.897541658952832,
+      "p90": 26.897541658952832,
+      "p99": 26.897541658952832,
+      "min": 26.897541658952832,
+      "max": 26.897541658952832
+    },
+    "errors": [],
+    "requests_detail": [
+      {
+        "ttft_s": 5.68930262606591,
+        "latency_s": 26.897541658952832,
+        "completion_tokens": 1024,
+        "prompt_tokens": 16261,
+        "prompt_tokens_actual": 16261,
+        "prompt_words": 13815,
+        "ok": true
+      }
+    ],
+    "label": "run_bench",
+    "model": "Qwen/Qwen3.8-27B-FP8"
+  },
+  {
+    "shape": "medium",
+    "arm": "greedy",
+    "concurrency": 4,
+    "run": 0,
+    "wall_s": 42.2435,
+    "ok": 4,
+    "failed": 0,
+    "prompt_tokens": 16262,
+    "prompt_tokens_actual": 16262,
+    "target_prompt_tokens": 16384,
+    "target_tokens_approximate": false,
+    "prompt_words": 13817,
+    "total_output_tokens": 4096,
+    "aggregate_output_tps": 96.96,
+    "tokens_per_minute": 5817.7,
+    "per_stream_tps": 24.24,
+    "ttft": {
+      "n": 4,
+      "mean": 11.981156066409312,
+      "p50": 11.154020930174738,
+      "p90": 16.29918766380288,
+      "p99": 17.192688965690323,
+      "min": 8.324615517165512,
+      "max": 17.29196688812226
+    },
+    "tpot": {
+      "n": 4092,
+      "mean": 0.029528039036785688,
+      "p50": 0.02436956111341715,
+      "p90": 0.02465335438027978,
+      "p99": 0.025368781364522874,
+      "min": 0.01943155098706484,
+      "max": 3.054945465642959
+    },
+    "latency": {
+      "n": 4,
+      "mean": 42.188561589689925,
+      "p50": 42.17823233222589,
+      "p90": 42.22909920718521,
+      "p99": 42.24038615134545,
+      "min": 42.15614143805578,
+      "max": 42.24164025625214
+    },
+    "errors": [],
+    "requests_detail": [
+      {
+        "ttft_s": 8.325339053291827,
+        "latency_s": 42.15662790508941,
+        "completion_tokens": 1024,
+        "prompt_tokens": 16262,
+        "prompt_tokens_actual": 16262,
+        "prompt_words": 13817,
+        "ok": true
+      },
+      {
+        "ttft_s": 8.324615517165512,
+        "latency_s": 42.15614143805578,
+        "completion_tokens": 1024,
+        "prompt_tokens": 16262,
+        "prompt_tokens_actual": 16262,
+        "prompt_words": 13817,
+        "ok": true
+      },
+      {
+        "ttft_s": 13.982702807057649,
+        "latency_s": 42.19983675936237,
+        "completion_tokens": 1024,
+        "prompt_tokens": 16262,
+        "prompt_tokens_actual": 16262,
+        "prompt_words": 13817,
+        "ok": true
+      },
+      {
+        "ttft_s": 17.29196688812226,
+        "latency_s": 42.24164025625214,
+        "completion_tokens": 1024,
+        "prompt_tokens": 16262,
+        "prompt_tokens_actual": 16262,
+        "prompt_words": 13817,
+        "ok": true
+      }
+    ],
+    "label": "run_bench",
+    "model": "Qwen/Qwen3.8-27B-FP8"
+  },
+  {
+    "shape": "medium",
+    "arm": "greedy",
+    "concurrency": 4,
+    "run": 1,
+    "wall_s": 42.4991,
+    "ok": 4,
+    "failed": 0,
+    "prompt_tokens": 16261,
+    "prompt_tokens_actual": 16261,
+    "target_prompt_tokens": 16384,
+    "target_tokens_approximate": false,
+    "prompt_words": 13815,
+    "total_output_tokens": 4096,
+    "aggregate_output_tps": 96.38,
+    "tokens_per_minute": 5782.7,
+    "per_stream_tps": 24.09,
+    "ttft": {
+      "n": 4,
+      "mean": 10.285824730875902,
+      "p50": 11.7734869485721,
+      "p90": 16.50383426458575,
+      "p99": 17.23578594911378,
+      "min": 0.2792111122980714,
+      "max": 17.317113914061338
+    },
+    "tpot": {
+      "n": 4092,
+      "mean": 0.03141042791313345,
+      "p50": 0.024519969942048192,
+      "p90": 0.02498085252009332,
+      "p99": 0.02773685624357315,
+      "min": 0.017696792725473642,
+      "max": 3.0444391681812704
+    },
+    "latency": {
+      "n": 4,
+      "mean": 42.41885396791622,
+      "p50": 42.432642204687,
+      "p90": 42.484514887910336,
+      "p99": 42.495684468746184,
+      "min": 42.31320592900738,
+      "max": 42.4969255332835
+    },
+    "errors": [],
+    "requests_detail": [
+      {
+        "ttft_s": 0.2792111122980714,
+        "latency_s": 42.31320592900738,
+        "completion_tokens": 1024,
+        "prompt_tokens": 16261,
+        "prompt_tokens_actual": 16261,
+        "prompt_words": 13815,
+        "ok": true
+      },
+      {
+        "ttft_s": 8.940792148001492,
+        "latency_s": 42.40972769400105,
+        "completion_tokens": 1024,
+        "prompt_tokens": 16261,
+        "prompt_tokens_actual": 16261,
+        "prompt_words": 13816,
+        "ok": true
+      },
+      {
+        "ttft_s": 14.606181749142706,
+        "latency_s": 42.45555671537295,
+        "completion_tokens": 1024,
+        "prompt_tokens": 16261,
+        "prompt_tokens_actual": 16261,
+        "prompt_words": 13816,
+        "ok": true
+      },
+      {
+        "ttft_s": 17.317113914061338,
+        "latency_s": 42.4969255332835,
+        "completion_tokens": 1024,
+        "prompt_tokens": 16261,
+        "prompt_tokens_actual": 16261,
+        "prompt_words": 13816,
+        "ok": true
+      }
+    ],
+    "label": "run_bench",
+    "model": "Qwen/Qwen3.8-27B-FP8"
+  },
+  {
+    "shape": "long",
+    "arm": "greedy",
+    "concurrency": 1,
+    "run": 0,
+    "wall_s": 36.7087,
+    "ok": 1,
+    "failed": 0,
+    "prompt_tokens": 48785,
+    "prompt_tokens_actual": 48785,
+    "target_prompt_tokens": 49152,
+    "target_tokens_approximate": false,
+    "prompt_words": 41450,
+    "total_output_tokens": 1024,
+    "aggregate_output_tps": 27.9,
+    "tokens_per_minute": 1673.7,
+    "per_stream_tps": 27.9,
+    "ttft": {
+      "n": 1,
+      "mean": 14.37572049535811,
+      "p50": 14.37572049535811,
+      "p90": 14.37572049535811,
+      "p99": 14.37572049535811,
+      "min": 14.37572049535811,
+      "max": 14.37572049535811
+    },
+    "tpot": {
+      "n": 1023,
+      "mean": 0.021829419602746487,
+      "p50": 0.02176633896306157,
+      "p90": 0.02210007682442665,
+      "p99": 0.02516967902891338,
+      "min": 0.006256741937249899,
+      "max": 0.026614713948220015
+    },
+    "latency": {
+      "n": 1,
+      "mean": 36.70736676128581,
+      "p50": 36.70736676128581,
+      "p90": 36.70736676128581,
+      "p99": 36.70736676128581,
+      "min": 36.70736676128581,
+      "max": 36.70736676128581
+    },
+    "errors": [],
+    "requests_detail": [
+      {
+        "ttft_s": 14.37572049535811,
+        "latency_s": 36.70736676128581,
+        "completion_tokens": 1024,
+        "prompt_tokens": 48785,
+        "prompt_tokens_actual": 48785,
+        "prompt_words": 41450,
+        "ok": true
+      }
+    ],
+    "label": "run_bench",
+    "model": "Qwen/Qwen3.8-27B-FP8"
+  },
+  {
+    "shape": "long",
+    "arm": "greedy",
+    "concurrency": 1,
+    "run": 1,
+    "wall_s": 36.1524,
+    "ok": 1,
+    "failed": 0,
+    "prompt_tokens": 48785,
+    "prompt_tokens_actual": 48785,
+    "target_prompt_tokens": 49152,
+    "target_tokens_approximate": false,
+    "prompt_words": 41448,
+    "total_output_tokens": 1024,
+    "aggregate_output_tps": 28.32,
+    "tokens_per_minute": 1699.5,
+    "per_stream_tps": 28.32,
+    "ttft": {
+      "n": 1,
+      "mean": 14.301973295863718,
+      "p50": 14.301973295863718,
+      "p90": 14.301973295863718,
+      "p99": 14.301973295863718,
+      "min": 14.301973295863718,
+      "max": 14.301973295863718
+    },
+    "tpot": {
+      "n": 1023,
+      "mean": 0.02135754557497588,
+      "p50": 0.021342929918318987,
+      "p90": 0.021568126603960992,
+      "p99": 0.022023247070610524,
+      "min": 0.011198446154594421,
+      "max": 0.024757280945777893
+    },
+    "latency": {
+      "n": 1,
+      "mean": 36.15086785517633,
+      "p50": 36.15086785517633,
+      "p90": 36.15086785517633,
+      "p99": 36.15086785517633,
+      "min": 36.15086785517633,
+      "max": 36.15086785517633
+    },
+    "errors": [],
+    "requests_detail": [
+      {
+        "ttft_s": 14.301973295863718,
+        "latency_s": 36.15086785517633,
+        "completion_tokens": 1024,
+        "prompt_tokens": 48785,
+        "prompt_tokens_actual": 48785,
+        "prompt_words": 41448,
+        "ok": true
+      }
+    ],
+    "label": "run_bench",
+    "model": "Qwen/Qwen3.8-27B-FP8"
+  },
+  {
+    "shape": "long",
+    "arm": "greedy",
+    "concurrency": 4,
+    "run": 0,
+    "wall_s": 75.8905,
+    "ok": 4,
+    "failed": 0,
+    "prompt_tokens": 48785,
+    "prompt_tokens_actual": 48785,
+    "target_prompt_tokens": 49152,
+    "target_tokens_approximate": false,
+    "prompt_words": 41450,
+    "total_output_tokens": 4096,
+    "aggregate_output_tps": 53.97,
+    "tokens_per_minute": 3238.4,
+    "per_stream_tps": 13.49,
+    "ttft": {
+      "n": 4,
+      "mean": 24.599608330288902,
+      "p50": 24.771924590924755,
+      "p90": 43.49400351769291,
+      "p99": 48.15626297198701,
+      "min": 0.18029233906418085,
+      "max": 48.67429180024192
+    },
+    "tpot": {
+      "n": 4092,
+      "mean": 0.049933576423247854,
+      "p50": 0.026633934350684285,
+      "p90": 0.02691202159039676,
+      "p99": 0.03140388930216433,
+      "min": 0.004304219037294388,
+      "max": 3.517135683912784
+    },
+    "latency": {
+      "n": 4,
+      "mean": 75.68180569610558,
+      "p50": 75.68931272625923,
+      "p90": 75.83922594040632,
+      "p99": 75.87877980703487,
+      "min": 75.46542265079916,
+      "max": 75.88317468110472
+    },
+    "errors": [],
+    "requests_detail": [
+      {
+        "ttft_s": 0.18029233906418085,
+        "latency_s": 75.46542265079916,
+        "completion_tokens": 1024,
+        "prompt_tokens": 48785,
+        "prompt_tokens_actual": 48785,
+        "prompt_words": 41450,
+        "ok": true
+      },
+      {
+        "ttft_s": 18.137184990104288,
+        "latency_s": 75.64194657374173,
+        "completion_tokens": 1024,
+        "prompt_tokens": 48785,
+        "prompt_tokens_actual": 48785,
+        "prompt_words": 41450,
+        "ok": true
+      },
+      {
+        "ttft_s": 31.40666419174522,
+        "latency_s": 75.73667887877673,
+        "completion_tokens": 1024,
+        "prompt_tokens": 48785,
+        "prompt_tokens_actual": 48785,
+        "prompt_words": 41450,
+        "ok": true
+      },
+      {
+        "ttft_s": 48.67429180024192,
+        "latency_s": 75.88317468110472,
+        "completion_tokens": 1024,
+        "prompt_tokens": 48785,
+        "prompt_tokens_actual": 48785,
+        "prompt_words": 41450,
+        "ok": true
+      }
+    ],
+    "label": "run_bench",
+    "model": "Qwen/Qwen3.8-27B-FP8"
+  },
+  {
+    "shape": "long",
+    "arm": "greedy",
+    "concurrency": 4,
+    "run": 1,
+    "wall_s": 87.893,
+    "ok": 4,
+    "failed": 0,
+    "prompt_tokens": 48785,
+    "prompt_tokens_actual": 48785,
+    "target_prompt_tokens": 49152,
+    "target_tokens_approximate": false,
+    "prompt_words": 41448,
+    "total_output_tokens": 4096,
+    "aggregate_output_tps": 46.6,
+    "tokens_per_minute": 2796.1,
+    "per_stream_tps": 11.65,
+    "ttft": {
+      "n": 4,
+      "mean": 32.97492645122111,
+      "p50": 35.517543490510434,
+      "p90": 56.07062193807215,
+      "p99": 60.22994645774364,
+      "min": 0.17252519726753235,
+      "max": 60.692093626596034
+    },
+    "tpot": {
+      "n": 4092,
+      "mean": 0.05345887265929211,
+      "p50": 0.026625096099451184,
+      "p90": 0.026938218204304577,
+      "p99": 0.030885998341254918,
+      "min": 0.01150882476940751,
+      "max": 3.490786158014089
+    },
+    "latency": {
+      "n": 4,
+      "mean": 87.66346356726717,
+      "p50": 87.6871746010147,
+      "p90": 87.85098936888389,
+      "p99": 87.88589568088297,
+      "min": 87.3897309070453,
+      "max": 87.88977415999398
+    },
+    "errors": [],
+    "requests_detail": [
+      {
+        "ttft_s": 0.17252519726753235,
+        "latency_s": 87.3897309070453,
+        "completion_tokens": 1024,
+        "prompt_tokens": 48785,
+        "prompt_tokens_actual": 48785,
+        "prompt_words": 41448,
+        "ok": true
+      },
+      {
+        "ttft_s": 25.747898982837796,
+        "latency_s": 87.61385767906904,
+        "completion_tokens": 1024,
+        "prompt_tokens": 48785,
+        "prompt_tokens_actual": 48785,
+        "prompt_words": 41449,
+        "ok": true
+      },
+      {
+        "ttft_s": 45.28718799818307,
+        "latency_s": 87.76049152296036,
+        "completion_tokens": 1024,
+        "prompt_tokens": 48785,
+        "prompt_tokens_actual": 48785,
+        "prompt_words": 41449,
+        "ok": true
+      },
+      {
+        "ttft_s": 60.692093626596034,
+        "latency_s": 87.88977415999398,
+        "completion_tokens": 1024,
+        "prompt_tokens": 48785,
+        "prompt_tokens_actual": 48785,
+        "prompt_words": 41449,
+        "ok": true
+      }
+    ],
+    "label": "run_bench",
+    "model": "Qwen/Qwen3.8-27B-FP8"
+  },
+  {
+    "shape": "agent-shared-prefix",
+    "arm": "greedy",
+    "concurrency": 1,
+    "run": 0,
+    "wall_s": 13.7896,
+    "ok": 1,
+    "failed": 0,
+    "prompt_tokens": 8639,
+    "prompt_tokens_actual": 8639,
+    "target_prompt_tokens": 8704,
+    "target_tokens_approximate": false,
+    "prompt_words": 7343,
+    "total_output_tokens": 512,
+    "aggregate_output_tps": 37.13,
+    "tokens_per_minute": 2227.8,
+    "per_stream_tps": 37.13,
+    "ttft": {
+      "n": 1,
+      "mean": 3.280646769795567,
+      "p50": 3.280646769795567,
+      "p90": 3.280646769795567,
+      "p99": 3.280646769795567,
+      "min": 3.280646769795567,
+      "max": 3.280646769795567
+    },
+    "tpot": {
+      "n": 511,
+      "mean": 0.020564347466384653,
+      "p50": 0.020536091178655624,
+      "p90": 0.02075798623263836,
+      "p99": 0.02129312823526561,
+      "min": 0.018109111115336418,
+      "max": 0.021579298190772533
+    },
+    "latency": {
+      "n": 1,
+      "mean": 13.789135731756687,
+      "p50": 13.789135731756687,
+      "p90": 13.789135731756687,
+      "p99": 13.789135731756687,
+      "min": 13.789135731756687,
+      "max": 13.789135731756687
+    },
+    "errors": [],
+    "requests_detail": [
+      {
+        "ttft_s": 3.280646769795567,
+        "latency_s": 13.789135731756687,
+        "completion_tokens": 512,
+        "prompt_tokens": 8639,
+        "prompt_tokens_actual": 8639,
+        "prompt_words": 7343,
+        "ok": true
+      }
+    ],
+    "label": "run_bench",
+    "model": "Qwen/Qwen3.8-27B-FP8"
+  },
+  {
+    "shape": "agent-shared-prefix",
+    "arm": "greedy",
+    "concurrency": 1,
+    "run": 1,
+    "wall_s": 9.1547,
+    "ok": 1,
+    "failed": 0,
+    "prompt_tokens": 8639,
+    "prompt_tokens_actual": 8639,
+    "target_prompt_tokens": 8704,
+    "target_tokens_approximate": false,
+    "prompt_words": 7341,
+    "total_output_tokens": 430,
+    "aggregate_output_tps": 46.97,
+    "tokens_per_minute": 2818.2,
+    "per_stream_tps": 46.97,
+    "ttft": {
+      "n": 1,
+      "mean": 0.3340999991632998,
+      "p50": 0.3340999991632998,
+      "p90": 0.3340999991632998,
+      "p99": 0.3340999991632998,
+      "min": 0.3340999991632998,
+      "max": 0.3340999991632998
+    },
+    "tpot": {
+      "n": 428,
+      "mean": 0.020559044494989947,
+      "p50": 0.02054445561952889,
+      "p90": 0.020706923818215726,
+      "p99": 0.021048781732097267,
+      "min": 0.017815201077610254,
+      "max": 0.023163184989243746
+    },
+    "latency": {
+      "n": 1,
+      "mean": 9.154368725139648,
+      "p50": 9.154368725139648,
+      "p90": 9.154368725139648,
+      "p99": 9.154368725139648,
+      "min": 9.154368725139648,
+      "max": 9.154368725139648
+    },
+    "errors": [],
+    "requests_detail": [
+      {
+        "ttft_s": 0.3340999991632998,
+        "latency_s": 9.154368725139648,
+        "completion_tokens": 430,
+        "prompt_tokens": 8639,
+        "prompt_tokens_actual": 8639,
+        "prompt_words": 7341,
+        "ok": true
+      }
+    ],
+    "label": "run_bench",
+    "model": "Qwen/Qwen3.8-27B-FP8"
+  },
+  {
+    "shape": "agent-shared-prefix",
+    "arm": "greedy",
+    "concurrency": 4,
+    "run": 0,
+    "wall_s": 13.2247,
+    "ok": 4,
+    "failed": 0,
+    "prompt_tokens": 8639,
+    "prompt_tokens_actual": 8639,
+    "target_prompt_tokens": 8704,
+    "target_tokens_approximate": false,
+    "prompt_words": 7343,
+    "total_output_tokens": 1865,
+    "aggregate_output_tps": 141.02,
+    "tokens_per_minute": 8461.4,
+    "per_stream_tps": 35.26,
+    "ttft": {
+      "n": 4,
+      "mean": 1.0494457660242915,
+      "p50": 1.284892010036856,
+      "p90": 1.285838499199599,
+      "p99": 1.2860310952179135,
+      "min": 0.3419465492479503,
+      "max": 1.2860524947755039
+    },
+    "tpot": {
+      "n": 1860,
+      "mean": 0.023860812163411047,
+      "p50": 0.023399349534884095,
+      "p90": 0.023630401864647866,
+      "p99": 0.023941113627515734,
+      "min": 0.018004145938903093,
+      "max": 0.9264606409706175
+    },
+    "latency": {
+      "n": 4,
+      "mean": 12.150813504587859,
+      "p50": 13.200994858518243,
+      "p90": 13.223029151000082,
+      "p99": 13.223236167328432,
+      "min": 8.978005132172257,
+      "max": 13.223259169142693
+    },
+    "errors": [],
+    "requests_detail": [
+      {
+        "ttft_s": 1.2860524947755039,
+        "latency_s": 8.978005132172257,
+        "completion_tokens": 329,
+        "prompt_tokens": 8639,
+        "prompt_tokens_actual": 8639,
+        "prompt_words": 7343,
+        "ok": true
+      },
+      {
+        "ttft_s": 0.3419465492479503,
+        "latency_s": 13.179497275035828,
+        "completion_tokens": 512,
+        "prompt_tokens": 8639,
+        "prompt_tokens_actual": 8639,
+        "prompt_words": 7343,
+        "ok": true
+      },
+      {
+        "ttft_s": 1.2853391761891544,
+        "latency_s": 13.223259169142693,
+        "completion_tokens": 512,
+        "prompt_tokens": 8639,
+        "prompt_tokens_actual": 8639,
+        "prompt_words": 7343,
+        "ok": true
+      },
+      {
+        "ttft_s": 1.2844448438845575,
+        "latency_s": 13.222492442000657,
+        "completion_tokens": 512,
+        "prompt_tokens": 8639,
+        "prompt_tokens_actual": 8639,
+        "prompt_words": 7343,
+        "ok": true
+      }
+    ],
+    "label": "run_bench",
+    "model": "Qwen/Qwen3.8-27B-FP8"
+  },
+  {
+    "shape": "agent-shared-prefix",
+    "arm": "greedy",
+    "concurrency": 4,
+    "run": 1,
+    "wall_s": 13.0974,
+    "ok": 4,
+    "failed": 0,
+    "prompt_tokens": 8639,
+    "prompt_tokens_actual": 8639,
+    "target_prompt_tokens": 8704,
+    "target_tokens_approximate": false,
+    "prompt_words": 7341,
+    "total_output_tokens": 1765,
+    "aggregate_output_tps": 134.76,
+    "tokens_per_minute": 8085.6,
+    "per_stream_tps": 33.69,
+    "ttft": {
+      "n": 4,
+      "mean": 1.0495780733181164,
+      "p50": 1.2860514060594141,
+      "p90": 1.2865027719642967,
+      "p99": 1.2865761643694713,
+      "min": 0.3396251620724797,
+      "max": 1.2865843190811574
+    },
+    "tpot": {
+      "n": 1758,
+      "mean": 0.02381795144823207,
+      "p50": 0.023398317862302065,
+      "p90": 0.023630143096670508,
+      "p99": 0.024013871098868548,
+      "min": 0.01626139273867011,
+      "max": 0.9290764578618109
+    },
+    "latency": {
+      "n": 4,
+      "mean": 11.535321644041687,
+      "p50": 11.905983806587756,
+      "p90": 12.836886515282094,
+      "p99": 13.06967453722842,
+      "min": 9.233779089991003,
+      "max": 13.095539873000234
+    },
+    "errors": [],
+    "requests_detail": [
+      {
+        "ttft_s": 1.2865843190811574,
+        "latency_s": 9.233779089991003,
+        "completion_tokens": 340,
+        "prompt_tokens": 8639,
+        "prompt_tokens_actual": 8639,
+        "prompt_words": 7341,
+        "ok": true
+      },
+      {
+        "ttft_s": 1.2863124953582883,
+        "latency_s": 11.578605599235743,
+        "completion_tokens": 441,
+        "prompt_tokens": 8639,
+        "prompt_tokens_actual": 8639,
+        "prompt_words": 7342,
+        "ok": true
+      },
+      {
+        "ttft_s": 0.3396251620724797,
+        "latency_s": 12.233362013939768,
+        "completion_tokens": 472,
+        "prompt_tokens": 8639,
+        "prompt_tokens_actual": 8639,
+        "prompt_words": 7341,
+        "ok": true
+      },
+      {
+        "ttft_s": 1.28579031676054,
+        "latency_s": 13.095539873000234,
+        "completion_tokens": 512,
+        "prompt_tokens": 8639,
+        "prompt_tokens_actual": 8639,
+        "prompt_words": 7342,
+        "ok": true
+      }
+    ],
+    "label": "run_bench",
+    "model": "Qwen/Qwen3.8-27B-FP8"
+  }
+]

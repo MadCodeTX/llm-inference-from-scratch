@@ -1,0 +1,157 @@
+{
+  "captured_at_utc": "2026-10-18T03:37:22.994650+00:00",
+  "container_name": "vllm-Qwen3.8-27B-FP8",
+  "container_id": "92fc79b89622f44293417d7d97b943731367b2bcc8be6fe7b20db93e33104188",
+  "created": "2026-10-17T23:46:03.366462778Z",
+  "state_started_at": "2026-10-17T23:46:03.661681613Z",
+  "image": "vllm/vllm-openai:v0.30.0@sha256:8a69ffad015f138d7170c4ddc429e230a3bc1c1719f67e14324749df200a4b90",
+  "image_id": "sha256:8a69ffad015f138d7170c4ddc429e230a3bc1c1719f67e14324749df200a4b90",
+  "entrypoint": [
+    "/entrypoint.sh"
+  ],
+  "cmd_args": [
+    "--served-model-name",
+    "Qwen/Qwen3.8-27B-FP8",
+    "--enable-auto-tool-choice",
+    "--enable-prefix-caching",
+    "--enable-chunked-prefill",
+    "--disable-custom-all-reduce",
+    "--model",
+    "Qwen/Qwen3.8-27B-FP8",
+    "--tensor-parallel-size",
+    "2",
+    "--max-model-len",
+    "262144",
+    "--kv-cache-dtype",
+    "fp8",
+    "--quantization",
+    "fp8",
+    "--gpu-memory-utilization",
+    "0.93",
+    "--max-num-seqs",
+    "32",
+    "--max-num-batched-tokens",
+    "8192",
+    "--limit-mm-per-prompt",
+    "{\"image\": 4}",
+    "--reasoning-parser",
+    "qwen3",
+    "--tool-call-parser",
+    "qwen3_coder",
+    "--enable-prompt-tokens-details",
+    "--host",
+    "0.0.0.0",
+    "--port",
+    "8000"
+  ],
+  "full_command": "/entrypoint.sh --served-model-name Qwen/Qwen3.8-27B-FP8 --enable-auto-tool-choice --enable-prefix-caching --enable-chunked-prefill --disable-custom-all-reduce --model Qwen/Qwen3.8-27B-FP8 --tensor-parallel-size 2 --max-model-len 262144 --kv-cache-dtype fp8 --quantization fp8 --gpu-memory-utilization 0.93 --max-num-seqs 32 --max-num-batched-tokens 8192 --limit-mm-per-prompt {\"image\": 4} --reasoning-parser qwen3 --tool-call-parser qwen3_coder --enable-prompt-tokens-details --host 0.0.0.0 --port 8000",
+  "env": {
+    "OMP_NUM_THREADS": "4",
+    "VLLM_TEST_FORCE_FP8_MARLIN": "1",
+    "NVIDIA_VISIBLE_DEVICES": "all",
+    "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+    "PATH": "/usr/local/cuda/bin:/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "NVARCH": "x86_64",
+    "NVIDIA_REQUIRE_CUDA": "cuda>=13.0 brand=unknown,driver>=535,driver<536 brand=grid,driver>=535,driver<536 brand=tesla,driver>=535,driver<536 brand=nvidia,driver>=535,driver<536 brand=quadro,driver>=535,driver<536 brand=quadrortx,driver>=535,driver<536 brand=nvidiartx,driver>=535,driver<536 brand=vapps,driver>=535,driver<536 brand=vpc,driver>=535,driver<536 brand=vcs,driver>=535,driver<536 brand=vws,driver>=535,driver<536 brand=cloudgaming,driver>=535,driver<536 brand=unknown,driver>=550,driver<551 brand=grid,driver>=550,driver<551 brand=tesla,driver>=550,driver<551 brand=nvidia,driver>=550,driver<551 brand=quadro,driver>=550,driver<551 brand=quadrortx,driver>=550,driver<551 brand=nvidiartx,driver>=550,driver<551 brand=vapps,driver>=550,driver<551 brand=vpc,driver>=550,driver<551 brand=vcs,driver>=550,driver<551 brand=vws,driver>=550,driver<551 brand=cloudgaming,driver>=550,driver<551 brand=unknown,driver>=565,driver<566 brand=grid,driver>=565,driver<566 brand=tesla,driver>=565,driver<566 brand=nvidia,driver>=565,driver<566 brand=quadro,driver>=565,driver<566 brand=quadrortx,driver>=565,driver<566 brand=nvidiartx,driver>=565,driver<566 brand=vapps,driver>=565,driver<566 brand=vpc,driver>=565,driver<566 brand=vcs,driver>=565,driver<566 brand=vws,driver>=565,driver<566 brand=cloudgaming,driver>=565,driver<566 brand=unknown,driver>=570,driver<571 brand=grid,driver>=570,driver<571 brand=tesla,driver>=570,driver<571 brand=nvidia,driver>=570,driver<571 brand=quadro,driver>=570,driver<571 brand=quadrortx,driver>=570,driver<571 brand=nvidiartx,driver>=570,driver<571 brand=vapps,driver>=570,driver<571 brand=vpc,driver>=570,driver<571 brand=vcs,driver>=570,driver<571 brand=vws,driver>=570,driver<571 brand=cloudgaming,driver>=570,driver<571 brand=unknown,driver>=575,driver<576 brand=grid,driver>=575,driver<576 brand=tesla,driver>=575,driver<576 brand=nvidia,driver>=575,driver<576 brand=quadro,driver>=575,driver<576 brand=quadrortx,driver>=575,driver<576 brand=nvidiartx,driver>=575,driver<576 brand=vapps,driver>=575,driver<576 brand=vpc,driver>=575,driver<576 brand=vcs,driver>=575,driver<576 brand=vws,driver>=575,driver<576 brand=cloudgaming,driver>=575,driver<576",
+    "NV_CUDA_CUDART_VERSION": "13.0.96-1",
+    "CUDA_VERSION": "13.0.2",
+    "LD_LIBRARY_PATH": "/usr/local/nvidia/lib64:/usr/local/cuda/lib64:/usr/local/cuda/lib64:/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/cuda/lib64",
+    "NVIDIA_DRIVER_CAPABILITIES": "compute,utility",
+    "DEBIAN_FRONTEND": "noninteractive",
+    "CUDA_HOME": "/usr/local/cuda",
+    "UV_HTTP_TIMEOUT": "500",
+    "UV_INDEX_STRATEGY": "unsafe-best-match",
+    "UV_LINK_MODE": "copy",
+    "UV_PYTHON_INSTALL_DIR": "/opt/uv/python",
+    "UV_CACHE_DIR": "/opt/uv/cache",
+    "UV_OVERRIDE": "/etc/uv-overrides.txt",
+    "VLLM_ENABLE_CUDA_COMPATIBILITY": "0",
+    "TORCH_CUDA_ARCH_LIST": "7.5 8.0 8.6 8.9 9.0 10.0 12.0",
+    "VLLM_USAGE_SOURCE": "production-docker-image",
+    "VLLM_BUILD_COMMIT": "ced6857afa0ea7b2e3f0846a62e1394e90f15607",
+    "VLLM_BUILD_PIPELINE": "019d130e-464e-4ff7-b84b-492992c0c06b",
+    "VLLM_BUILD_URL": "https://buildkite.com/vllm/release-v2/builds/7022",
+    "VLLM_IMAGE_TAG": "vllm/vllm-openai:v0.30.0"
+  },
+  "ports": {
+    "8000/tcp": [
+      {
+        "HostIp": "127.0.0.1",
+        "HostPort": "8000"
+      },
+      {
+        "HostIp": "10.77.0.1",
+        "HostPort": "8000"
+      }
+    ]
+  },
+  "mounts": [
+    {
+      "Type": "bind",
+      "Source": "/home/nick/.cache/huggingface",
+      "Destination": "/root/.cache/huggingface",
+      "Mode": "rw",
+      "RW": true,
+      "Propagation": "rprivate"
+    },
+    {
+      "Type": "bind",
+      "Source": "/home/nick/llm/vllm/models/qwen3.8-27b-fp8/entrypoint.sh",
+      "Destination": "/entrypoint.sh",
+      "Mode": "ro",
+      "RW": false,
+      "Propagation": "rprivate"
+    }
+  ],
+  "device_requests": [
+    {
+      "Driver": "nvidia",
+      "Count": -1,
+      "DeviceIDs": null,
+      "Capabilities": [
+        [
+          "gpu"
+        ]
+      ],
+      "Options": null
+    }
+  ],
+  "runtime": "nvidia",
+  "ipc_mode": "host",
+  "restart_policy": {
+    "Name": "unless-stopped",
+    "MaximumRetryCount": 0
+  },
+  "shm_size": 67108864,
+  "v1_models_probe": {
+    "object": "list",
+    "data": [
+      {
+        "id": "Qwen/Qwen3.8-27B-FP8",
+        "object": "model",
+        "created": 1792294642,
+        "owned_by": "vllm",
+        "root": "Qwen/Qwen3.8-27B-FP8",
+        "parent": null,
+        "max_model_len": 262144,
+        "permission": [
+          {
+            "id": "modelperm-8394f8dcb6e344a1",
+            "object": "model_permission",
+            "created": 1792294642,
+            "allow_create_engine": false,
+            "allow_sampling": true,
+            "allow_logprobs": true,
+            "allow_search_indices": false,
+            "allow_view": true,
+            "allow_fine_tuning": false,
+            "organization": "*",
+            "group": null,
+            "is_blocking": false
+          }
+        ]
+      }
+    ]
+  },
+  "notes": "Captured live via docker inspect + curl /v1/models before any stop. No secrets: env contains no credentials; any key-like var would be redacted above."
+}

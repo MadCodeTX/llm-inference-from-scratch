@@ -206,18 +206,32 @@ def effective_concurrencies(suite: dict, limit: int | None) -> list[int]:
     return levels
 
 
+def selected_arms(suite: dict, arms: list[str] | None = None) -> list[str]:
+    """Arm names to run: all suite arms, or the ``--arms`` subset."""
+    available = list(suite.get("arms") or {"greedy": {}})
+    if not arms:
+        return available
+    wanted = [a.strip() for entry in arms for a in str(entry).split(",")
+              if a.strip()]
+    unknown = [a for a in wanted if a not in available]
+    if unknown:
+        raise ValueError(f"unknown arm(s) {unknown}; suite arms: {available}")
+    return wanted
+
+
 def build_plan(
     suite: dict, limit_concurrency: int | None = None,
     shapes: list[str] | None = None, tokenizer=None,
+    arms: list[str] | None = None,
 ) -> dict:
     """Dry-run plan: every batch and request count, without any network."""
-    arms = suite.get("arms") or {"greedy": {}}
+    arm_names = selected_arms(suite, arms)
     repeats = int(suite.get("repeats", 1))
     selected = [s for s in suite["shapes"] if not shapes or s["id"] in shapes]
     exact = tokenizer is not None
     batches = []
     for shape in selected:
-        for arm in arms:
+        for arm in arm_names:
             for conc in effective_concurrencies(suite, limit_concurrency):
                 for rep in range(repeats):
                     if exact:
@@ -246,7 +260,7 @@ def build_plan(
     return {
         "dry_run": True,
         "shapes": [s["id"] for s in selected],
-        "arms": list(arms),
+        "arms": arm_names,
         "concurrencies": effective_concurrencies(suite, limit_concurrency),
         "repeats": repeats,
         "batches": batches,
@@ -474,6 +488,9 @@ def main(argv=None) -> int:
     ap.add_argument("--suite", default=str(Path(__file__).with_name("suite.json")))
     ap.add_argument("--limit-concurrency", type=int, default=None)
     ap.add_argument("--shape", action="append", default=None)
+    ap.add_argument("--arms", action="append", default=None,
+                    help="arm name(s) to run (repeatable or comma-separated); "
+                         "default: all suite arms")
     ap.add_argument("--dry-run", action="store_true",
                     help="print planned requests without calling the server")
     ap.add_argument("--smoke", action="store_true",
@@ -496,7 +513,7 @@ def main(argv=None) -> int:
     suite = load_suite(args.suite)
     if args.dry_run:
         plan = build_plan(suite, args.limit_concurrency, args.shape,
-                          tokenizer=tokenizer)
+                          tokenizer=tokenizer, arms=args.arms)
         plan["base_url"] = args.base_url
         plan["model"] = args.model
         if args.tokenizer_dir:
@@ -508,7 +525,7 @@ def main(argv=None) -> int:
               if not args.shape or s["id"] in args.shape]
     rows = []
     for shape in shapes:
-        for arm in suite.get("arms") or {"greedy": {}}:
+        for arm in selected_arms(suite, args.arms):
             for conc in effective_concurrencies(suite, args.limit_concurrency):
                 for rep in range(int(suite.get("repeats", 1))):
                     row = run_batch(args.base_url, args.model, suite,
