@@ -53,6 +53,25 @@ One codebase climbs the whole ladder: only `ModelConfig` and the weights change.
 | 18 | [docs/18_modalities.md](docs/18_modalities.md) | — (read-only map) | Modalities: VLM, embeddings, ASR/TTS, image/video (read-only) |
 | 19 | [docs/19_real_weights_qwen.md](docs/19_real_weights_qwen.md) | `scripts/load_qwen_small.py`, `weights.py` | Real weights: Qwen2.5-0.5B proved id-exact vs HF reference |
 | 20 | [docs/20_gguf_formats.md](docs/20_gguf_formats.md) | `gguf.py` | GGUF formats: safetensors vs GGUF vs pickle; GGUF header by hand |
+| 21 | [docs/21_linear_attention.md](docs/21_linear_attention.md) | `linear_attention.py` | Linear attention: gated delta rule, fixed-size recurrent state |
+| 22 | [docs/22_hybrid_qwen38.md](docs/22_hybrid_qwen38.md) | `hybrid.py`, `linear_attention.py` | Hybrid Qwen3.8: gated full attention in a linear-attention stack |
+
+## Scaling program (beat vLLM on bigbox)
+
+The endgame is a from-scratch engine that beats the incumbent vLLM
+serving `Qwen/Qwen3.8-27B-FP8` on this box. What counts as a win —
+metrics, incumbent reference numbers, thresholds, quality gate, and
+the GPU-window protocol — is defined in
+[benchmarks/WIN.md](benchmarks/WIN.md). No win is claimed until a
+candidate is measured with `benchmarks/run_bench.py` on
+`benchmarks/suite.json` inside an approved GPU window; the vLLM + MTP
+arm is not yet measured.
+
+| Phase | Status |
+|-------|--------|
+| Phase 0: benchmark suite, WIN criteria, incumbent baseline import | done (harness + dry-run plan; aggregate numbers only, no prompt text) |
+| FP8 block-quant path: `F8_E4M3`/`F8_E5M2` parser + block dequant reference (CPU) | done (GPU `torch._scaled_mm` fast path is later work) |
+| Hybrid foundations: gated delta rule (ch 21) + gated full attention (ch 22, CPU) | done (tiny-dims CPU parity vs HF; no GPU serving yet) |
 
 Textbook map: [docs/TEXTBOOK_MAP.md](docs/TEXTBOOK_MAP.md).
 Glossary: [docs/GLOSSARY.md](docs/GLOSSARY.md). Full curriculum: [docs/ROADMAP.md](docs/ROADMAP.md).
@@ -98,5 +117,8 @@ Tests use tiny dims (`d_model<=64`, `n_layer<=2`) and run fast on CPU.
 | Chapters 15-18 | written (`docs/15_hardware.md`–`docs/18_modalities.md`); 15-17 map to existing code, 18 is a read-only map with no code by design |
 | Qwen weight loading | done (ch 19): real Qwen2.5-0.5B-Instruct checkpoint downloaded to git-ignored `.hf-cache/`, validated with zero missing/unexpected/shape errors, and proved against the HF reference on CPU fp32 (logits max-abs-diff 2.1e-05, greedy top-1 20/20, generated ids exactly equal). Config numbers always read from the real `config.json` at load time |
 | GGUF formats | done (ch 20): `gguf.py` parses GGUF v2/v3 headers by hand (magic/version, typed metadata incl. arrays, tensor infos, alignment/data-start arithmetic); tests synthesise tiny GGUF files with a test-side writer. Tensor-data dequantization is the explicit next build |
+| Scaling Phase 0 | done: `benchmarks/` suite + WIN criteria + incumbent baseline import (aggregate numbers only); `run_bench.py --dry-run` plans 48 batches / 336 requests with no network; microbench prints a plan only without `--i-understand-gpu-window` |
+| FP8 block-quant | done (CPU): `F8_E4M3`/`F8_E5M2` safetensors parsing in `weights.py`; block-FP8 quantize/dequantize/matmul reference in `quantization.py` (ch 10) |
+| Hybrid Qwen3.8 (ch 21–22) | done (CPU): gated delta rule in `linear_attention.py`; gated full attention + hybrid stack in `hybrid.py`; tiny-dims parity vs HF references |
 
-Verified: `.venv/bin/python -m pytest -q` → **140 passed** (tiny CPU dims, including ch 13–14, 19–20). Real-model rung independently rerun on CPU fp32: `scripts/load_qwen_small.py` on Qwen2.5-0.5B-Instruct gives validate `missing=[] unexpected=[] shape_mismatch=[]` (291 tensors, 494,032,768 params), first-forward logits max-abs-diff `2.098e-05`, per-step top-1 `20/20`, generated ids exactly equal `True`, text `'The capital of France is Paris. It is the largest city in Europe and the third largest city in the world. It is'` (TTFT `0.039s`, TPS `27.97`). Independently re-checked: greedy cache vs no-cache tokens identical (MHA/GQA/MQA + learned-pos variants), HF-rename roundtrip logits identical (`max_abs_diff 0.0`), `scripts/demo_generate.py` prints a sample and `scripts/benchmark.py` prints tokens/s plus p50/p90/p99 TTFT and TPS (ch 13). Fresh spot-checks for this update: prefix-cache reuse over a shared 4-token prefix matches full-prefill logits (`max_abs_diff` ~4e-08), speculative greedy output equals target-only greedy token-for-token, and `scripts/demo_generate.py` still runs. Honest gaps: the real-checkpoint proof (ch 19) is one short prompt on CPU fp32 — a CUDA torch build, longer contexts, and bf16 comparison are future work; chapter 12 remains a read-only dissection (FlashAttention, torch.compile) while speculative decoding is built separately in chapter 14 — the manual implementations remain the reference. On this tiny CPU model the no-cache path can time faster than the cached path (overhead dominates); the cache's win grows with sequence length and model size.
+Verified: `.venv/bin/python -m pytest -q` → **178 passed** (tiny CPU dims, including ch 13–14, 19–22, Phase-0 harness, FP8 block tests). Real-model rung independently rerun on CPU fp32: `scripts/load_qwen_small.py` on Qwen2.5-0.5B-Instruct gives validate `missing=[] unexpected=[] shape_mismatch=[]` (291 tensors, 494,032,768 params), first-forward logits max-abs-diff `2.098e-05`, per-step top-1 `20/20`, generated ids exactly equal `True`, text `'The capital of France is Paris. It is the largest city in Europe and the third largest city in the world. It is'` (TTFT `0.039s`, TPS `27.97`). Independently re-checked: greedy cache vs no-cache tokens identical (MHA/GQA/MQA + learned-pos variants), HF-rename roundtrip logits identical (`max_abs_diff 0.0`), `scripts/demo_generate.py` prints a sample and `scripts/benchmark.py` prints tokens/s plus p50/p90/p99 TTFT and TPS (ch 13). Fresh spot-checks for this update: prefix-cache reuse over a shared 4-token prefix matches full-prefill logits (`max_abs_diff` ~4e-08), speculative greedy output equals target-only greedy token-for-token, and `scripts/demo_generate.py` still runs. Honest gaps: the real-checkpoint proof (ch 19) is one short prompt on CPU fp32 — a CUDA torch build, longer contexts, and bf16 comparison are future work; chapter 12 remains a read-only dissection (FlashAttention, torch.compile) while speculative decoding is built separately in chapter 14 — the manual implementations remain the reference. On this tiny CPU model the no-cache path can time faster than the cached path (overhead dominates); the cache's win grows with sequence length and model size.

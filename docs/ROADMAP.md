@@ -118,6 +118,27 @@ The Tiny-to-Qwen ladder lives here. One codebase climbs it: only
   state what is not built yet (tensor dequantization, next build).
 - **Builds on:** 09, 10, 19
 
+### 21 — Linear attention: the gated delta rule — Built
+
+- **Book framing:** Repo extension beyond the book's survey; the
+  mechanism is read from the HF `Qwen3_5GatedDeltaNet` reference and
+  the real checkpoint's `text_config` (see docs/21).
+- **Goal:** Fixed-size recurrent state `S` with a gated, delta-rule
+  rank-1 write per token; causal depthwise conv, L2-normalised Q/K,
+  gated output norm; prefill/decode/snapshot equivalence on CPU.
+- **Builds on:** 04, 05, 10
+
+### 22 — Hybrid Qwen3.8: gated full attention — Built
+
+- **Book framing:** Repo extension beyond the book's survey; shapes
+  and the Q+gate split are read from the real checkpoint's shards
+  and the HF `Qwen3_5Attention` reference (see docs/22).
+- **Goal:** Dispatch 48 linear layers and 16 full layers behind one
+  mixed snapshot/restore; fused Q+gate projection, per-head Q/K
+  norms, partial RoPE, GQA, sigmoid output gate; `HybridConfig`
+  parses the real `text_config` (hidden 5120, 64 layers, vocab 248320).
+- **Builds on:** 04, 05, 09, 10, 21
+
 ### 09 — Safetensors + HF config + Qwen weight mapping — Built
 
 - **Book framing:** sec. 4.2.2 (model file formats), 4.2.4 (reference

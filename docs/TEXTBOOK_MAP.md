@@ -28,7 +28,7 @@ New readers: start at [00_overview.md](00_overview.md), keep
 [GLOSSARY.md](GLOSSARY.md) open, and use [ROADMAP.md](ROADMAP.md) for
 the grouped curriculum. This file is the cross-reference, not a chapter.
 
-## Chapter map: repo 00–18 to book sections
+## Chapter map: repo 00–22 to book sections
 
 Build status is stated plainly. **Built** means hand-written code plus
 tests exist today. **Read-only** means the chapter dissects production
@@ -58,10 +58,13 @@ the roadmap describe it so far — no chapter file or code exists yet.
 | [18 Modalities](18_modalities.md) | Ch 6 | Written, read-only | What changes when inputs or outputs stop being plain text? |
 | [19 Real weights](19_real_weights_qwen.md) | Sec. 2.2.1, 4.2.2, 4.2.4 | Built | Does the hand-built engine run a real Qwen checkpoint token-for-token identically to the HF reference? |
 | [20 GGUF formats](20_gguf_formats.md) | Sec. 4.2.2, 3.5 | Built | Why do on-device runtimes ship one GGUF file, and what is byte-for-byte inside it? |
+| [21 Linear attention](21_linear_attention.md) | Repo extension (no direct book section) | Built | How does a fixed-size recurrent state replace a growing KV cache, and what recall is paid for it? |
+| [22 Hybrid Qwen3.8](22_hybrid_qwen38.md) | Repo extension (no direct book section) | Built | How do gated full-attention layers sit inside a linear-attention stack, and what state does each kind carry? |
 
 Chapters 13–18 are written. Chapters 15–17 are prose chapters over
 existing code (no new code); chapter 18 is a read-only map with no
-code by design.
+code by design. Chapters 21–22 are repo extensions beyond the book's
+survey, built from the HF reference and the real checkpoint on disk.
 
 ## Where this repo deliberately goes deeper than the book
 
