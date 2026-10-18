@@ -126,11 +126,17 @@ def test_arms_configs_parse():
     assert a["model"] == "Qwen/Qwen3.8-27B-FP8"
     assert a["speculative_config"] is None
     assert b["version"] == 1 and b["arm"] == "B"
-    assert b["status"] == "UNMEASURED"
+    assert b["status"] in ("UNMEASURED", "FAILED_TO_START", "MEASURED")
     assert b["num_speculative_tokens_sweep"] == [1, 2, 3]
     assert [e["speculative_config"]["num_speculative_tokens"] for e in b["entries"]] == [1, 2, 3]
     assert all(e["speculative_config"]["method"] == "mtp" for e in b["entries"])
-    assert all(e["status"] == "UNMEASURED" for e in b["entries"])
+    assert all(
+        e["status"] in ("UNMEASURED", "FAILED_TO_START", "NOT_ATTEMPTED", "MEASURED")
+        for e in b["entries"]
+    )
+    if b["status"] == "FAILED_TO_START":
+        assert b["entries"][0]["status"] == "FAILED_TO_START"
+        assert "KV cache" in b["entries"][0]["failure"]
     assert (arms / "arm-a-incumbent.md").exists()
     assert (arms / "arm-b-mtp.md").exists()
 

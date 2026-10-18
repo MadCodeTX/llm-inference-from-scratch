@@ -2,8 +2,8 @@
   "version": 1,
   "arm": "B",
   "id": "arm-b-mtp",
-  "status": "UNMEASURED",
-  "description": "Arm B: incumbent vLLM (Arm A) plus MTP speculative decoding. Config record for the GPU window only; not executed, no numbers claimed. Each sweep entry is a separate run inside the window.",
+  "status": "FAILED_TO_START",
+  "description": "Arm B: incumbent vLLM (Arm A) plus MTP speculative decoding. Attempted 2026-10-18 in isolated container vllm-armb-qwen38-mtp (host 127.0.0.1:8003; 8001 occupied by unrelated http.server). Exact Arm A flags plus --speculative-config method=mtp. Engine exited before serving: KV cache 4.49 GiB needed > 4.4 GiB available at max_model_len 262144, gpu_memory_utilization 0.93. No throughput numbers exist; no win may be claimed.",
   "engine": "vllm",
   "model": "Qwen/Qwen3.8-27B-FP8",
   "served_model_name": "Qwen/Qwen3.8-27B-FP8",
@@ -12,24 +12,53 @@
   "entries": [
     {
       "id": "arm-b-mtp-k1",
-      "status": "UNMEASURED",
-      "speculative_config": {"method": "mtp", "num_speculative_tokens": 1},
-      "vllm_flag": "--speculative-config {\"method\": \"mtp\", \"num_speculative_tokens\": 1}"
+      "status": "FAILED_TO_START",
+      "speculative_config": {
+        "method": "mtp",
+        "num_speculative_tokens": 1
+      },
+      "vllm_flag": "--speculative-config {\"method\": \"mtp\", \"num_speculative_tokens\": 1}",
+      "failure": "KV cache 4.49 GiB needed > 4.4 GiB available at max_model_len=262144, gpu_memory_utilization=0.93 (exact Arm A flags). Engine exited exit=1 before /v1/models. No bench run."
     },
     {
       "id": "arm-b-mtp-k2",
-      "status": "UNMEASURED",
-      "speculative_config": {"method": "mtp", "num_speculative_tokens": 2},
-      "vllm_flag": "--speculative-config {\"method\": \"mtp\", \"num_speculative_tokens\": 2}"
+      "status": "NOT_ATTEMPTED",
+      "speculative_config": {
+        "method": "mtp",
+        "num_speculative_tokens": 2
+      },
+      "vllm_flag": "--speculative-config {\"method\": \"mtp\", \"num_speculative_tokens\": 2}",
+      "note": "Gated on K1 working; K1 failed to start, so K2/K3 not attempted."
     },
     {
       "id": "arm-b-mtp-k3",
-      "status": "UNMEASURED",
-      "speculative_config": {"method": "mtp", "num_speculative_tokens": 3},
-      "vllm_flag": "--speculative-config {\"method\": \"mtp\", \"num_speculative_tokens\": 3}"
+      "status": "NOT_ATTEMPTED",
+      "speculative_config": {
+        "method": "mtp",
+        "num_speculative_tokens": 3
+      },
+      "vllm_flag": "--speculative-config {\"method\": \"mtp\", \"num_speculative_tokens\": 3}",
+      "note": "Gated on K1 working; K1 failed to start, so K2/K3 not attempted."
     }
   ],
-  "num_speculative_tokens_sweep": [1, 2, 3],
+  "num_speculative_tokens_sweep": [
+    1,
+    2,
+    3
+  ],
   "bench_command_template": "python benchmarks/run_bench.py --base-url http://127.0.0.1:8000 --model Qwen/Qwen3.8-27B-FP8 --tokenizer-dir <real-snapshot> --output benchmarks/results-mtp-k<K>.json",
-  "provenance": ["benchmarks/arms/arm-a-incumbent.json", "benchmarks/WIN.md (Arm B: vLLM + MTP, not yet measured)"]
+  "provenance": [
+    "benchmarks/arms/arm-a-incumbent.json",
+    "benchmarks/WIN.md (Arm B: vLLM + MTP, not yet measured)"
+  ],
+  "attempt": {
+    "date": "2026-10-18",
+    "container_name": "vllm-armb-qwen38-mtp",
+    "image": "vllm/vllm-openai:v0.30.0",
+    "host_port_note": "task port 8001 occupied by unrelated python3 -m http.server (prompt-lab report, pid 1730489); used 127.0.0.1:8003 instead, container port 8000 unchanged",
+    "method_discovery": "vllm.config.speculative SpeculativeMethod includes qwen3_5_mtp and mtp; speculative.py maps qwen3_5/qwen3_5_text (mtp_num_hidden_layers=1) to qwen3_5_mtp/Qwen3_5MTP and deprecates qwen3_5_mtp -> mtp (lines 905-936, 1121-1125). Correct method string: mtp.",
+    "resolved": "Resolved architecture: Qwen3_5MTP; SpeculativeConfig(method='mtp', num_spec_tokens=1); Capturing model for speculator reached",
+    "failure": "ValueError: To serve at least one request with the model's max seq len (262144), (4.49 GiB KV cache is needed, which is larger than the available KV cache memory (4.4 GiB). Based on the available memory, the estimated maximum model length is 256608.",
+    "cleanup": "docker rm -f vllm-armb-qwen38-mtp only; GPUs 1 MiB each; ~/llm/run/current absent; original vllm-Qwen3.8-27B-FP8 still exited; litellm untouched"
+  }
 }
