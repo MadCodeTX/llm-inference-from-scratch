@@ -7,7 +7,7 @@ from inference_from_scratch.hybrid import HybridConfig, TinyHybridLM
 from inference_from_scratch.tensor_parallel import state_bytes as tp_state_bytes
 from inference_from_scratch.tp_distributed import DistributedHybridLM, _LocalContext
 from inference_from_scratch.tp_prefix_cache import (BlockHasher, TPBlockPrefixCache,
-    prefill_with_prefix_cache, state_bytes as cache_state_bytes, ROOT_HASH)
+    prefill_with_prefix_cache, state_bytes as cache_state_bytes, ROOT_HASH, entry_key)
 
 def _tiny_cfg():
     return HybridConfig(vocab_size=97, hidden_size=32, num_hidden_layers=4,
@@ -34,10 +34,10 @@ def test_two_prompts_shared_prefix_exact_and_reuse():
     shared = torch.randint(0,97,(1,32)); promptA = torch.cat([shared, torch.randint(0,97,(1,13))],1)
     promptB = torch.cat([shared, torch.randint(0,97,(1,13))],1)  # partial-block suffix (13)
     with torch.no_grad():
-        cache = TPBlockPrefixCache(block_size=16)
+        cache = TPBlockPrefixCache(block_size=16, snapshot_interval_tokens=16)
         sA = tp.static_state(batch_size=1, max_seq_len=64); lA, nA, _ = prefill_with_prefix_cache(tp, promptA, sA, cache, chunk_size=4)
         assert nA == 0
-        cacheF = TPBlockPrefixCache(block_size=16)
+        cacheF = TPBlockPrefixCache(block_size=16, snapshot_interval_tokens=16)
         sF = tp.static_state(batch_size=1, max_seq_len=64); lF, _, _ = prefill_with_prefix_cache(tp, promptB, sF, cacheF, chunk_size=4)
         sB = tp.static_state(batch_size=1, max_seq_len=64); lB, nB, dB = prefill_with_prefix_cache(tp, promptB, sB, cache, chunk_size=4)
         assert nB == 32 and dB["tokens_saved"] == 32
@@ -51,7 +51,7 @@ def test_two_prompts_shared_prefix_exact_and_reuse():
 def test_aliasing_and_eviction_and_stats():
     tp = _tp(); torch.manual_seed(5)
     with torch.no_grad():
-        cache = TPBlockPrefixCache(block_size=16, max_entries=2)
+        cache = TPBlockPrefixCache(block_size=16, max_entries=2, snapshot_interval_tokens=16)
         s = tp.static_state(batch_size=1, max_seq_len=64)
         ids = torch.randint(0,97,(1,48))
         _, _, _ = prefill_with_prefix_cache(tp, ids, s, cache, chunk_size=4)
@@ -66,7 +66,7 @@ def test_aliasing_and_eviction_and_stats():
         assert s.seq_len == snap_pos == 48 and torch.equal(s.linear_S[0], snap_S)
         # Byte cap eviction
         cap = cache_state_bytes(s, filled=48)
-        cache2 = TPBlockPrefixCache(block_size=16, max_bytes=cap)
+        cache2 = TPBlockPrefixCache(block_size=16, max_bytes=cap, snapshot_interval_tokens=16)
         s2 = tp.static_state(batch_size=1, max_seq_len=64)
         prefill_with_prefix_cache(tp, ids, s2, cache2, chunk_size=4)
         assert len(cache2) == 1 and cache2.total_bytes <= cap
@@ -93,6 +93,53 @@ def test_byte_accounting_vs_formula_real_config():
         assert cache_state_bytes(s, filled=32) - cache_state_bytes(s, filled=16) > 0
         assert cache_state_bytes(s, filled=32) - cache_state_bytes(s, filled=16) == sum(
             s.kv_k[i][:, :, :16].numel()*s.kv_k[i].element_size()*2 for i in range(4) if s.kv_k[i] is not None)
+
+def test_snapshot_interval_validation_and_keys():
+    with pytest.raises(ValueError): TPBlockPrefixCache(block_size=16, snapshot_interval_tokens=24)
+    with pytest.raises(ValueError): TPBlockPrefixCache(block_size=16, snapshot_interval_tokens=0)
+    c = TPBlockPrefixCache(block_size=16, snapshot_interval_tokens=256)
+    assert c.snapshot_interval_tokens == 256 and "@" in entry_key(b"\x00"*32, 256)
+
+def test_snapshot_interval_2304_count_and_shared2048_reuse():
+    cfg = _tiny_cfg(); cfg = type(cfg)(**{**cfg.__dict__, "max_position_embeddings": 8192}) if hasattr(cfg, "__dict__") else cfg
+    torch.manual_seed(7); dense = TinyHybridLM(cfg); dense.eval()
+    tp = DistributedHybridLM.from_dense(dense, _LocalContext(0,1,torch.device("cpu")), config=cfg); tp.eval()
+    torch.manual_seed(123)
+    shared = torch.randint(0,97,(1,2048)); promptA = torch.cat([shared, torch.randint(0,97,(1,256))],1)
+    promptB = torch.cat([shared, torch.randint(0,97,(1,256))],1)
+    with torch.no_grad():
+        cache = TPBlockPrefixCache(block_size=16, snapshot_interval_tokens=256)
+        sA = tp.static_state(batch_size=1, max_seq_len=2560); _, nA, dA = prefill_with_prefix_cache(tp, promptA, sA, cache, chunk_size=128)
+        assert nA == 0
+        # 9 interval boundaries (256..2304) + 1 final event (deduplicated
+        # at the same boundary) = 10 snapshot events, 9 distinct entries.
+        assert dA["blocks_stored"] == 10 and dA["snapshots"] == 10, dA
+        assert len(cache) == 9 and cache.stored_lengths() == [256*i for i in range(1,10)]
+        assert cache.stats()["snapshot_bytes_copied"] == cache.total_bytes
+        sB = tp.static_state(batch_size=1, max_seq_len=2560); lB, nB, _ = prefill_with_prefix_cache(tp, promptB, sB, cache, chunk_size=128)
+        assert nB == 2048  # shared 2048 reused exactly (final of A at 2304 not used)
+        cacheF = TPBlockPrefixCache(block_size=16, snapshot_interval_tokens=256)
+        sF = tp.static_state(batch_size=1, max_seq_len=2560); lF, _, _ = prefill_with_prefix_cache(tp, promptB, sF, cacheF, chunk_size=128)
+        assert torch.equal(lB, lF)
+
+def test_interval_partial_reuse_exact():
+    tp = _tp(); torch.manual_seed(77)
+    shared300 = torch.randint(0,97,(1,300))
+    promptA = torch.cat([shared300, torch.randint(0,97,(1,212))],1)  # 512
+    promptB = torch.cat([shared300, torch.randint(0,97,(1,100))],1)  # shares 300, len 400
+    with torch.no_grad():
+        cache = TPBlockPrefixCache(block_size=16, snapshot_interval_tokens=256)
+        sA = tp.static_state(batch_size=1, max_seq_len=640); prefill_with_prefix_cache(tp, promptA, sA, cache, chunk_size=16)
+        assert cache.stored_lengths() == [256, 512]
+        sB = tp.static_state(batch_size=1, max_seq_len=640); lB, nB, _ = prefill_with_prefix_cache(tp, promptB, sB, cache, chunk_size=16)
+        assert nB == 256  # longest stored <= shared 300; 44 shared tokens recomputed
+        cacheF = TPBlockPrefixCache(block_size=16, snapshot_interval_tokens=256)
+        sF = tp.static_state(batch_size=1, max_seq_len=640); lF, _, _ = prefill_with_prefix_cache(tp, promptB, sF, cacheF, chunk_size=16)
+        assert torch.equal(lB, lF)
+        # store_final=False: a 300-token prompt stores only the 256 boundary
+        c2 = TPBlockPrefixCache(block_size=16, snapshot_interval_tokens=256, store_final=False)
+        s2 = tp.static_state(batch_size=1, max_seq_len=640); prefill_with_prefix_cache(tp, promptA[:, :300], s2, c2, chunk_size=16)
+        assert c2.stored_lengths() == [256]
 
 @pytest.mark.skipif(not (ROOT/"scripts/tp2_prefix_cache_check.py").exists(), reason="missing")
 def test_tp2_prefix_cache_gloo():

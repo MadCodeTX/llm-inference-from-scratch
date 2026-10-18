@@ -29,11 +29,11 @@ def main() -> int:
     shared = torch.randint(0,97,(1,32)); sufA = torch.randint(0,97,(1,13)); sufB = torch.randint(0,97,(1,13))
     promptA = torch.cat([shared,sufA],dim=1).to(dev); promptB = torch.cat([shared,sufB],dim=1).to(dev)
     with torch.no_grad():
-        cache = TPBlockPrefixCache(block_size=16)
+        cache = TPBlockPrefixCache(block_size=16, snapshot_interval_tokens=16)
         sA = tp.static_state(batch_size=1, max_seq_len=64); logitsA, nA, dA = prefill_with_prefix_cache(tp, promptA, sA, cache, chunk_size=4)
         assert nA == 0, nA
         # fresh cold B
-        cache2 = TPBlockPrefixCache(block_size=16)
+        cache2 = TPBlockPrefixCache(block_size=16, snapshot_interval_tokens=16)
         sBf = tp.static_state(batch_size=1, max_seq_len=64); logitsBf, nBf, _ = prefill_with_prefix_cache(tp, promptB, sBf, cache2, chunk_size=4)
         # warm B
         sB = tp.static_state(batch_size=1, max_seq_len=64); logitsB, nB, dB = prefill_with_prefix_cache(tp, promptB, sB, cache, chunk_size=4)

@@ -22,13 +22,20 @@ DEFAULT_SNAPSHOT = "/home/nick/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B-
 
 def _run(model, idx, cache, dev):
     state = model.static_state(batch_size=1, max_seq_len=int(idx.shape[1])+8)
-    torch.cuda.synchronize(dev); t0=time.perf_counter()
+    torch.cuda.synchronize(dev); t0=time.perf_counter(); wall=time.time()
     logits, n_reused, delta = prefill_with_prefix_cache(model, idx, state, cache, chunk_size=128)
-    torch.cuda.synchronize(dev); return time.perf_counter()-t0, int(logits.float().argmax(-1).item()), n_reused
+    torch.cuda.synchronize(dev)
+    return {"s": time.perf_counter()-t0, "wall_start": wall, "argmax": int(logits.float().argmax(-1).item()),
+            "n_reused": int(n_reused), "delta": {k: v for k, v in delta.items()}, "cache_stats": cache.stats()}
+
+def _mk(storage, interval):
+    return TPBlockPrefixCache(block_size=16, storage=storage, snapshot_interval_tokens=interval)
 
 def main() -> int:
     ap = argparse.ArgumentParser(); ap.add_argument("--snapshot", default=DEFAULT_SNAPSHOT)
-    ap.add_argument("--out", default="benchmarks/baseline/ours_prefix_ttft.json")
+    ap.add_argument("--out", default="benchmarks/baseline/ours_prefix_ttft_v2.json")
+    ap.add_argument("--storage", default="both", choices=["cpu","gpu","both"])
+    ap.add_argument("--snapshot-interval", type=int, default=256)
     ap.add_argument("--shared", type=int, default=2048); ap.add_argument("--unique", type=int, default=256)
     a = ap.parse_args()
     ctx = DistributedTPContext.from_env(backend="nccl", device_type="cuda"); rank, dev = ctx.rank, ctx.device
@@ -43,25 +50,31 @@ def main() -> int:
     uniqA = build_token_ids(a.unique, tok); uniqB = [(t+12345) % int(config.vocab_size) for t in uniqA]
     promptA = torch.tensor([shared+uniqA], dtype=torch.long, device=dev)
     promptB = torch.tensor([shared+uniqB], dtype=torch.long, device=dev)
-    results = {}
+    storages = ["cpu","gpu"] if a.storage=="both" else [a.storage]
+    results = {"shape_label": f"scaled agent: {a.shared} shared + {a.unique} unique = {a.shared+a.unique} tokens",
+        "shared_tokens": a.shared, "unique_tokens": a.unique, "total_tokens": a.shared+a.unique,
+        "block_size": 16, "chunk_size": 128, "snapshot_interval_tokens": a.snapshot_interval, "reps": 3,
+        "context_only": "Arm A agent-shared-prefix TTFT 1.81s at 8704 tokens (different shape; no win claim)",
+        "prior_outlier_note": "v1 warm rep 1339.99s has no per-rep timestamps/GPU log; cannot attribute vs exclude external contention from available data",
+        "configs": {}}
     with torch.inference_mode():
-        _run(model, promptA[:, :128], TPBlockPrefixCache(block_size=16), dev)  # warmup
-        cold, warm = [], []
-        arg_cold = arg_warm = None; n_warm = 0
-        for _ in range(3):
-            s, arg_cold, _ = _run(model, promptB, TPBlockPrefixCache(block_size=16), dev); cold.append(s)
-        for _ in range(3):
-            cache = TPBlockPrefixCache(block_size=16)
-            _run(model, promptA, cache, dev)  # populate (untimed)
-            s, arg_warm, n_warm = _run(model, promptB, cache, dev); warm.append(s)
-        results = {"shape_label": f"scaled agent: {a.shared} shared + {a.unique} unique = {a.shared+a.unique} tokens",
-            "shared_tokens": a.shared, "unique_tokens": a.unique, "total_tokens": a.shared+a.unique,
-            "block_size": 16, "chunk_size": 128, "reps": 3,
-            "cold_ttft_s_median": statistics.median(cold), "cold_ttft_s": cold,
-            "warm_ttft_s_median": statistics.median(warm), "warm_ttft_s": warm,
-            "warm_n_reused": n_warm, "last_argmax_cold": arg_cold, "last_argmax_warm": arg_warm,
-            "speedup_median": statistics.median(cold)/statistics.median(warm) if statistics.median(warm) else None,
-            "context_only": "Arm A agent-shared-prefix TTFT 1.81s at 8704 tokens (different shape; no win claim)"}
+        _run(model, promptA[:, :128], _mk("cpu", a.snapshot_interval), dev)  # warmup
+        for storage in storages:
+            cold, warm = [], []
+            for _ in range(3):
+                cold.append(_run(model, promptB, _mk(storage, a.snapshot_interval), dev))
+            for _ in range(3):
+                cache = _mk(storage, a.snapshot_interval)
+                _run(model, promptA, cache, dev)  # populate (untimed)
+                warm.append(_run(model, promptB, cache, dev))
+            cs=[r["s"] for r in cold]; ws=[r["s"] for r in warm]
+            results["configs"][storage] = {
+                "storage": storage, "cold_ttft_s_median": statistics.median(cs), "cold_ttft_s": cs, "cold_reps": cold,
+                "warm_ttft_s_median": statistics.median(ws), "warm_ttft_s": ws, "warm_reps": warm,
+                "warm_n_reused": warm[-1]["n_reused"], "last_argmax_cold": cold[-1]["argmax"], "last_argmax_warm": warm[-1]["argmax"],
+                "speedup_median": statistics.median(cs)/statistics.median(ws) if statistics.median(ws) else None,
+                "reps_over_60s": [r for r in cold+warm if r["s"] > 60]}
+            if rank == 0: print(json.dumps({storage: results["configs"][storage]}, indent=2), flush=True)
         if rank == 0:
             print(json.dumps(results, indent=2), flush=True)
             out = ROOT/a.out; out.parent.mkdir(parents=True, exist_ok=True); out.write_text(json.dumps(results, indent=2)+"\n")
