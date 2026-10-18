@@ -1,5 +1,7 @@
 # 10 — Quantization: fewer bits per number
 
+> **Textbook framing** — Framing follows Kiely, *Inference Engineering* (2026), sec. 5.1. **Production question:** how few bits per weight can be stored before quality drops, and how much decode speed and memory does that buy on memory-bound hardware? See [TEXTBOOK_MAP.md](TEXTBOOK_MAP.md).
+
 ## The one-sentence idea
 
 Quantization stores weights (and sometimes the KV cache) in fewer bits — fp32→fp16→int8→int4 — because decode is memory-bound, so halving the bytes read per token roughly halves time per token, at a controlled accuracy cost.

@@ -1,5 +1,7 @@
 # 01 — Tokenizers: text becomes integers
 
+> **Textbook framing** — Framing follows Kiely, *Inference Engineering* (2026), sec. 2.2. **Production question:** how does raw text become model ids, and what does that choice cost in sequence length? **Gap note:** the book treats token mechanics lightly; this chapter goes deliberately deeper, building BPE by hand. See [TEXTBOOK_MAP.md](TEXTBOOK_MAP.md).
+
 ## The one-sentence idea
 
 A tokenizer is a lossless, reversible map between strings and integer ids in `[0, vocab_size)`, and the three rungs here — bytes, characters, learned BPE merges — trade sequence length against vocabulary openness.

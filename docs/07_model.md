@@ -1,5 +1,7 @@
 # 07 — The full model: wiring blocks into a language model
 
+> **Textbook framing** — Framing follows Kiely, *Inference Engineering* (2026), sec. 2.2.1. **Production question:** how do embeddings, blocks, and a head assemble into one decoder whose every dimension comes from the checkpoint's `config.json` rather than from code? See [TEXTBOOK_MAP.md](TEXTBOOK_MAP.md).
+
 ## The one-sentence idea
 
 A decoder-only language model is just embeddings, a stack of identical pre-norm blocks (attention + MLP, each wrapped in a residual add), a final norm, and a head that scores every vocabulary token as the next one.

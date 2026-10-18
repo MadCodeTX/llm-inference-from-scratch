@@ -1,5 +1,7 @@
 # 05 — The KV cache: never recompute yesterday's keys
 
+> **Textbook framing** — Framing follows Kiely, *Inference Engineering* (2026), sec. 2.5 and 5.3. **Production question:** why store past keys and values instead of recomputing them, and when does that memory become the binding constraint? **Online relevance:** cache bytes set how many concurrent online requests fit; offline jobs feel it as max batch size. See [TEXTBOOK_MAP.md](TEXTBOOK_MAP.md).
+
 ## The one-sentence idea
 
 Because each token's keys and values depend only on that token (and its position), decode can compute them once, store them, and reuse them at every later step — trading memory for an entire recomputation.

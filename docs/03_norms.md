@@ -1,5 +1,7 @@
 # 03 — Normalization: RMSNorm, LayerNorm, and the residual stream
 
+> **Textbook framing** — Framing follows Kiely, *Inference Engineering* (2026), sec. 2.2.2. **Production question:** how does a deep stack keep activation scale controlled so low-precision inference stays numerically safe? See [TEXTBOOK_MAP.md](TEXTBOOK_MAP.md).
+
 ## The one-sentence idea
 
 Normalization rescales each token's `[D]` residual-stream row to a controlled magnitude before a sublayer reads it, and the modern variant (RMSNorm) does it with one statistic and no mean subtraction instead of two.

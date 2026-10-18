@@ -1,5 +1,7 @@
 # 04 — Attention: scores, causal masks, and grouped queries
 
+> **Textbook framing** — Framing follows Kiely, *Inference Engineering* (2026), sec. 2.2.3 and 2.5. **Production question:** how do tokens exchange information without seeing the future, and how does head sharing shrink the cache that decode must stream? See [TEXTBOOK_MAP.md](TEXTBOOK_MAP.md).
+
 ## The one-sentence idea
 
 Attention lets each token build its output as a softmax-weighted average of earlier tokens' value vectors, where the weights come from scaled query·key dot products — and grouped-query attention (GQA) shares each key/value head among several query heads to shrink the KV cache.

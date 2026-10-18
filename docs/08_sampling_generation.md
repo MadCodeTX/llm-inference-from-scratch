@@ -1,5 +1,7 @@
 # 08 — Sampling and generation: from logits to a token stream
 
+> **Textbook framing** — Framing follows Kiely, *Inference Engineering* (2026), sec. 2.2 (autoregressive mechanics). **Production question:** how does a distribution over the vocabulary become a token stream, and which per-request knobs control it without touching the model? **Online relevance:** this loop sets decode TPS, the rate users watch stream in. See [TEXTBOOK_MAP.md](TEXTBOOK_MAP.md).
+
 ## The one-sentence idea
 
 Generation is a loop — take the last position's logits, turn them into one next token by a *sampling strategy* (greedy, temperature, top-k, top-p), append it, repeat — run once as a parallel prefill and then as single-token decode steps.

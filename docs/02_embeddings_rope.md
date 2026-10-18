@@ -1,5 +1,7 @@
 # 02 — Embeddings and RoPE: giving tokens identity and position
 
+> **Textbook framing** — Framing follows Kiely, *Inference Engineering* (2026), sec. 2.2.1–2.2.2. **Production question:** how do ids acquire meaning and position in a way that stays correct when keys are cached and reused at decode? See [TEXTBOOK_MAP.md](TEXTBOOK_MAP.md).
+
 ## The one-sentence idea
 
 Token embeddings turn ids into vectors, and RoPE (rotary position embedding) injects position by rotating each query/key vector by an angle proportional to its absolute position — so attention scores end up depending on relative distance.

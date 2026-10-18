@@ -1,5 +1,7 @@
 # 12 — Optimizations: read-only dissection of the fast paths
 
+> **Textbook framing** — Framing follows Kiely, *Inference Engineering* (2026), sec. 4.1 and the Ch 5 techniques overview. **Production question:** which fast path replaces which hand-built mechanism, which bottleneck (compute-bound or memory-bound) does it actually move, and how is it verified against the slow reference? See [TEXTBOOK_MAP.md](TEXTBOOK_MAP.md).
+
 ## The one-sentence idea
 
 Every production speedup — FlashAttention/SDPA, `torch.compile`, CUDA graphs, speculative decoding, continuous batching — replaces exactly one dissected component in this repo while preserving its semantics, and this chapter is a guided tour of those seams (no code changes: pointers only).

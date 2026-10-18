@@ -1,5 +1,7 @@
 # 00 — Overview: inference is two different workloads
 
+> **Textbook framing** — Framing follows Kiely, *Inference Engineering* (2026), Ch 0 and sec. 1.2, 1.4. **Production question:** between a request arriving and tokens streaming back, where does time go, and how should that latency be reported? **Online/offline:** online serving lives or dies by TTFT and decode TPS at p95/p99; offline batch work trades those percentiles for aggregate TPS. See [TEXTBOOK_MAP.md](TEXTBOOK_MAP.md).
+
 ## The one-sentence idea
 
 Inference is one parallel **prefill** pass over the prompt followed by many serial **decode** steps that each emit one token, and almost every later optimization exists because those two phases stress the hardware differently.
@@ -11,7 +13,8 @@ Training processes a known sequence in parallel and updates weights. Inference h
 Two quantities follow immediately:
 
 - **Time to first token (TTFT)** — how long prefill takes. Users feel this as startup delay.
-- **Time per output token (TPOT)** — how long each decode step takes. Users feel this as streaming speed.
+- **Time per output token (TPOT)** — how long each decode step takes, in seconds per token. Users feel this as streaming speed.
+- **Tokens per second (TPS)** — the rate form of the same quantities. Per request, decode TPS ≈ `1 / TPOT`; system TPS counts all tokens finished per second across the batch, which is the throughput batching raises. Always say which one you mean, and report TTFT and TPOT as percentiles (p50/p95/p99), not only means: a mean hides the slow tail users remember.
 
 ## The math/shapes
 

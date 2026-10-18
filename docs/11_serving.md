@@ -1,5 +1,7 @@
 # 11 — Serving: continuous batching and paged KV memory
 
+> **Textbook framing** — Framing follows Kiely, *Inference Engineering* (2026), sec. 4.3 and 7.2. **Production question:** how do many concurrent requests share one model so system TPS rises without wrecking per-request TTFT and TPS percentiles? **Online/offline:** online traffic needs percentile latency under churn; offline batch can saturate for aggregate TPS alone. See [TEXTBOOK_MAP.md](TEXTBOOK_MAP.md).
+
 ## The one-sentence idea
 
 A serving system runs one shared decode loop for many requests at once — admitting and retiring requests at *every step* (continuous batching) and allocating their KV caches in fixed-size, possibly scattered blocks (paged attention) — instead of running each request to completion in isolation.
@@ -20,8 +22,8 @@ The memory side needs the matching fix. If each request reserves a contiguous `m
 **Latency vs throughput metrics** (all defined over a request's life):
 
 - **TTFT** (time to first token): prefill time for the prompt. Compute-bound; grows with prompt length.
-- **TPOT** (time per output token): mean decode-step time after the first token.
-- **Throughput**: total tokens (or requests) completed per second across the system. Batching raises throughput while barely moving per-request TPOT — until compute saturates.
+- **TPOT** (time per output token): mean decode-step time after the first token, in seconds per token. Per-request decode **TPS** (tokens per second) is its reciprocal, `TPS ≈ 1 / TPOT`; report TPOT and TTFT as percentiles (p50/p95/p99), since means hide tail latency.
+- **Throughput (system TPS)**: total tokens (or requests) completed per second across the system. Batching raises system TPS while barely moving per-request TPOT — until compute saturates and the workload turns compute-bound.
 
 **Block math, concretely.** `block_size = 16` tokens, `num_blocks = 8` (128 token-slots). A request needing 40 tokens needs `ceil(40/16) = 3` blocks (48 slots, 8 wasted). Three such requests use 9 blocks — but we only have 8, so the third must wait even though `3*40 = 120 ≤ 128` raw slots would fit. That gap *is* fragmentation, now bounded and visible. When a request finishes, its blocks return to the free pool and can serve a new request **non-contiguously** — block ids `[0, 5, 2]` are fine, because the block table, not physical adjacency, defines order.
 

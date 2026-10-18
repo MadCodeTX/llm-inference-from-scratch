@@ -1,5 +1,7 @@
 # 09 — Weights: safetensors by hand, HF config, and the Qwen name mapping
 
+> **Textbook framing** — Framing follows Kiely, *Inference Engineering* (2026), sec. 4.2.2 and 4.2.4. **Production question:** how do checkpoint bytes and a `config.json` become a runnable model, and how are loading mistakes caught before generation? See [TEXTBOOK_MAP.md](TEXTBOOK_MAP.md).
+
 ## The one-sentence idea
 
 Turning a checkpoint on disk into a runnable model is three explicit translations — bytes→header, HF config→`ModelConfig`, HF tensor names→`DecoderLM` names — and each one is done by hand here so nothing about the format stays magic.

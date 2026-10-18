@@ -258,6 +258,101 @@ def kv_cache_bytes(
     )
 
 
+def quantize_model_weights_(model: torch.nn.Module) -> torch.nn.Module:
+    """Fake-quantize every ``nn.Linear`` weight of ``model`` in place.
+
+    Each 2D Linear weight is round-tripped through
+    :func:`quantize_int8_per_channel` / :func:`dequantize_int8` and the
+    dequantized (still floating-point) values are written back into the
+    same Parameter object, so tied weights stay tied and no module
+    structure changes. This is *fake* quantization: it reproduces the
+    numeric error of int8 storage without changing dtypes, storage
+    bytes, or kernels -- exactly what a quality measurement (below)
+    wants to isolate. Returns ``model`` for chaining.
+    """
+    with torch.no_grad():
+        for module in model.modules():
+            if isinstance(module, torch.nn.Linear):
+                w = module.weight.detach()
+                if w.dim() != 2:
+                    continue
+                q, scales = quantize_int8_per_channel(w)
+                deq = dequantize_int8(q, scales)
+                module.weight.copy_(deq.to(dtype=w.dtype))
+    return model
+
+
+def _model_logits(model: torch.nn.Module, idx: torch.Tensor) -> torch.Tensor:
+    out = model(idx, kv_caches=None, start_pos=0)
+    if isinstance(out, tuple):
+        return out[0]
+    return out
+
+
+def measure_quality_impact(
+    reference_model: torch.nn.Module,
+    candidate_model: torch.nn.Module,
+    idx: torch.Tensor,
+) -> dict[str, float]:
+    """Compare a candidate model's logits against a reference's.
+
+    Framing follows Kiely, *Inference Engineering* (2026), sec. 5.1.3:
+    a compression change is only as good as the output change it causes,
+    so weigh measurements on real forward outputs, not weight error
+    alone. Runs both models (cache-free, eval, no grad) on ``idx``
+    ``[B, T]`` and returns, over all positions:
+
+    - ``mean_kl``: mean ``KL(p_ref || p_cand)`` in nats, with ``p`` the
+      softmax distributions -- 0 for identical models, growing as the
+      candidate's distribution drifts from the reference's;
+    - ``top1_agreement``: fraction of positions where both models'
+      argmax tokens agree (the greedy-path agreement rate);
+    - ``logit_rmse``: root-mean-square difference of raw logits.
+
+    Weight-space error (:func:`quantization_error`) can look small
+    while logits drift a lot (or vice versa); these three numbers are
+    the output-space check a deployment decision should quote.
+    """
+    if not isinstance(idx, torch.Tensor) or idx.dim() != 2:
+        raise ValueError("idx must be a [B, T] tensor")
+    ref_training = reference_model.training
+    cand_training = candidate_model.training
+    reference_model.eval()
+    candidate_model.eval()
+    try:
+        with torch.no_grad():
+            ref_logits = _model_logits(reference_model, idx).to(torch.float32)
+            cand_logits = _model_logits(candidate_model, idx).to(torch.float32)
+    finally:
+        if ref_training:
+            reference_model.train()
+        if cand_training:
+            candidate_model.train()
+    if ref_logits.shape != cand_logits.shape:
+        raise ValueError(
+            f"logit shape mismatch: {tuple(ref_logits.shape)} vs "
+            f"{tuple(cand_logits.shape)}"
+        )
+    diff = ref_logits - cand_logits
+    logit_rmse = float(torch.sqrt(torch.mean(diff * diff)).item())
+    ref_logp = torch.log_softmax(ref_logits, dim=-1)
+    cand_logp = torch.log_softmax(cand_logits, dim=-1)
+    ref_p = torch.exp(ref_logp)
+    kl_per_pos = torch.sum(ref_p * (ref_logp - cand_logp), dim=-1)  # [B, T]
+    mean_kl = float(kl_per_pos.mean().item())
+    top1_agreement = float(
+        (torch.argmax(ref_logits, dim=-1) == torch.argmax(cand_logits, dim=-1))
+        .to(torch.float32)
+        .mean()
+        .item()
+    )
+    return {
+        "mean_kl": mean_kl,
+        "top1_agreement": top1_agreement,
+        "logit_rmse": logit_rmse,
+    }
+
+
 def worked_example() -> dict[str, int]:
     """The module docstring's 27B-scale EXAMPLE, computed live.
 

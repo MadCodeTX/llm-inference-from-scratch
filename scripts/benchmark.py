@@ -22,6 +22,7 @@ import torch
 from inference_from_scratch.config import ModelConfig
 from inference_from_scratch.generate import generate
 from inference_from_scratch.kv_cache import KVCache
+from inference_from_scratch.metrics import measure_generate, summarize
 from inference_from_scratch.model import DecoderLM
 
 
@@ -66,6 +67,22 @@ def main() -> None:
                 model, idx, max_new_tokens=32, temperature=0, use_cache=False))
         tps_c, tps_n = 32 / s_c, 32 / s_n
         print(f"{t:>10} {tps_c:>12.1f} {tps_n:>15.1f} {tps_c / tps_n:>7.1f}x")
+
+    # --- Percentiles (Ch 13 / sec. 1.4): TTFT and TPS distributions --
+    # Means hide the tail; report p50/p90 over repeated end-to-end runs.
+    print("\npercentiles (10 runs, prompt_len=32, 16 new tokens, greedy):")
+    idx = torch.randint(0, 64, (1, 32))
+    ttfts_ms, tps_vals = [], []
+    for _ in range(10):
+        r = measure_generate(model, idx, 16, temperature=0)
+        ttfts_ms.append(r["ttft_s"] * 1e3)
+        tps_vals.append(r["tps"])
+    ttft_sum, tps_sum = summarize(ttfts_ms), summarize(tps_vals)
+    print(f"{'metric':>10} {'p50':>10} {'p90':>10} {'p99':>10} {'mean':>10}")
+    print(f"{'TTFT ms':>10} {ttft_sum['p50']:>10.2f} {ttft_sum['p90']:>10.2f} "
+          f"{ttft_sum['p99']:>10.2f} {ttft_sum['mean']:>10.2f}")
+    print(f"{'TPS':>10} {tps_sum['p50']:>10.1f} {tps_sum['p90']:>10.1f} "
+          f"{tps_sum['p99']:>10.1f} {tps_sum['mean']:>10.1f}")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,7 @@
 # 06 — The MLP: where the parameters live
 
+> **Textbook framing** — Framing follows Kiely, *Inference Engineering* (2026), sec. 2.1.2 and 2.2.2, with a pointer to MoE at sec. 2.2.4. **Production question:** where do most parameters and prefill FLOPs sit, and what would change if only a few expert MLPs ran per token? See [TEXTBOOK_MAP.md](TEXTBOOK_MAP.md).
+
 ## The one-sentence idea
 
 Each token independently passes through a widening-then-narrowing MLP (`d_model → d_ff → d_model`), and the modern SwiGLU variant spends its parameter budget on a *gated* product of two projections instead of one plain projection.

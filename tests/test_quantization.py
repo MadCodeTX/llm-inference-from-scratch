@@ -18,6 +18,8 @@ from inference_from_scratch.quantization import (
     bytes_for_params,
     dequantize_int8,
     kv_cache_bytes,
+    measure_quality_impact,
+    quantize_model_weights_,
     quantization_error,
     quantize_int8_per_channel,
     worked_example,
@@ -148,6 +150,43 @@ def test_kv_cache_bytes_formula_tiny_config():
     # GQA lever: MHA (H_kv == H) costs exactly H/H_kv times more.
     mha = _tiny_config(n_kv_head=4)
     assert kv_cache_bytes(mha, 10, 1, 2) == 2 * kv_cache_bytes(cfg, 10, 1, 2)
+
+
+def test_measure_quality_impact_identical_models_zero():
+    import copy
+
+    from inference_from_scratch.model import DecoderLM
+
+    torch.manual_seed(20)
+    cfg = _tiny_config()
+    ref = DecoderLM(cfg).eval()
+    idx = torch.randint(0, cfg.vocab_size, (1, 8))
+    result = measure_quality_impact(ref, copy.deepcopy(ref), idx)
+    assert result["mean_kl"] == pytest.approx(0.0, abs=1e-7)
+    assert result["top1_agreement"] == pytest.approx(1.0)
+    assert result["logit_rmse"] == pytest.approx(0.0, abs=1e-7)
+
+
+def test_int8_quantized_copy_far_closer_than_rerandomized():
+    import copy
+
+    from inference_from_scratch.model import DecoderLM
+
+    torch.manual_seed(21)
+    cfg = _tiny_config()
+    ref = DecoderLM(cfg).eval()
+    idx = torch.randint(0, cfg.vocab_size, (2, 10))
+
+    quantized = quantize_model_weights_(copy.deepcopy(ref)).eval()
+    torch.manual_seed(1234)  # a completely re-randomized same-shape model
+    rerandomized = DecoderLM(cfg).eval()
+
+    q = measure_quality_impact(ref, quantized, idx)
+    r = measure_quality_impact(ref, rerandomized, idx)
+    assert q["mean_kl"] < r["mean_kl"]
+    assert q["mean_kl"] < 0.5 * r["mean_kl"]
+    assert q["logit_rmse"] < r["logit_rmse"]
+    assert q["top1_agreement"] >= r["top1_agreement"]
 
 
 def test_worked_example_matches_formulas_and_is_labeled_assumed():
