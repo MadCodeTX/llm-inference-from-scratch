@@ -2,8 +2,8 @@
   "version": 1,
   "arm": "B",
   "id": "arm-b-mtp",
-  "status": "FAILED_TO_START",
-  "description": "Arm B: incumbent vLLM (Arm A) plus MTP speculative decoding. Attempted 2026-10-18 in isolated container vllm-armb-qwen38-mtp (host 127.0.0.1:8003; 8001 occupied by unrelated http.server). Exact Arm A flags plus --speculative-config method=mtp. Engine exited before serving: KV cache 4.49 GiB needed > 4.4 GiB available at max_model_len 262144, gpu_memory_utilization 0.93. No throughput numbers exist; no win may be claimed.",
+  "status": "MEASURED-WITH-DEVIATION",
+  "description": "Arm B: incumbent vLLM (Arm A) plus MTP speculative decoding K=1. MEASURED-WITH-DEVIATION 2026-10-18: exactly ONE deviation from Arm A flags -- --max-model-len 256608 instead of 262144 (vLLM's own estimated max from the first failed attempt). Everything else identical to Arm A (benchmarks/baseline/arm_a_live_config.json) plus --speculative-config mtp K=1, isolated container vllm-armb-qwen38-mtp on 127.0.0.1:8003 (8001 occupied by unrelated http.server). Quality 3/3 text+ids exact vs Arm A. Greedy c1: short TTFT p50 0.76-0.78s, 4272-4291 tok/min; agent-shared-prefix TTFT p50 3.33s cold / 0.90s warm, 3144-3814 tok/min (benchmarks/baseline/arm_b_mtp_k1_256608.json). Short c4: 12113-12136 tok/min (benchmarks/baseline/arm_b_mtp_k1_256608_c4.json). Spec acceptance cumulative 3574/3617 draft tokens (98.8%); after c1 benches 1014/1057 (95.9%). CAVEAT: run_bench TPOT is per streamed chunk; under MTP chunks carry multiple tokens, so TPOT p50 ~24.7ms/chunk is NOT comparable to Arm A 20.3ms/token -- effective rate is wall-clock agg tps (~71 tok/s c1 short). No like-for-like TPOT win/loss claimed from chunk TPOT.",
   "engine": "vllm",
   "model": "Qwen/Qwen3.8-27B-FP8",
   "served_model_name": "Qwen/Qwen3.8-27B-FP8",
@@ -12,13 +12,14 @@
   "entries": [
     {
       "id": "arm-b-mtp-k1",
-      "status": "FAILED_TO_START",
+      "status": "MEASURED-WITH-DEVIATION",
       "speculative_config": {
         "method": "mtp",
         "num_speculative_tokens": 1
       },
       "vllm_flag": "--speculative-config {\"method\": \"mtp\", \"num_speculative_tokens\": 1}",
-      "failure": "KV cache 4.49 GiB needed > 4.4 GiB available at max_model_len=262144, gpu_memory_utilization=0.93 (exact Arm A flags). Engine exited exit=1 before /v1/models. No bench run."
+      "deviation": "--max-model-len 256608 (Arm A: 262144); vLLM-estimated max from first failure. ONLY deviation.",
+      "results": "benchmarks/baseline/arm_b_mtp_k1_256608.json (+_c4.json); quality benchmarks/baseline/arm_b_quality_probes.json 3/3 exact; metrics arm_b_metrics_before/after_c1/after.txt"
     },
     {
       "id": "arm-b-mtp-k2",
@@ -28,7 +29,7 @@
         "num_speculative_tokens": 2
       },
       "vllm_flag": "--speculative-config {\"method\": \"mtp\", \"num_speculative_tokens\": 2}",
-      "note": "Gated on K1 working; K1 failed to start, so K2/K3 not attempted."
+      "note": "Not attempted: task scoped to K=1 only."
     },
     {
       "id": "arm-b-mtp-k3",
@@ -38,7 +39,7 @@
         "num_speculative_tokens": 3
       },
       "vllm_flag": "--speculative-config {\"method\": \"mtp\", \"num_speculative_tokens\": 3}",
-      "note": "Gated on K1 working; K1 failed to start, so K2/K3 not attempted."
+      "note": "Not attempted: task scoped to K=1 only."
     }
   ],
   "num_speculative_tokens_sweep": [
@@ -60,5 +61,23 @@
     "resolved": "Resolved architecture: Qwen3_5MTP; SpeculativeConfig(method='mtp', num_spec_tokens=1); Capturing model for speculator reached",
     "failure": "ValueError: To serve at least one request with the model's max seq len (262144), (4.49 GiB KV cache is needed, which is larger than the available KV cache memory (4.4 GiB). Based on the available memory, the estimated maximum model length is 256608.",
     "cleanup": "docker rm -f vllm-armb-qwen38-mtp only; GPUs 1 MiB each; ~/llm/run/current absent; original vllm-Qwen3.8-27B-FP8 still exited; litellm untouched"
+  },
+  "retry": {
+    "date": "2026-10-18",
+    "container_name": "vllm-armb-qwen38-mtp",
+    "image": "vllm/vllm-openai:v0.30.0",
+    "host_port_note": "8001 occupied by unrelated python3 -m http.server (pid 1730489); used 127.0.0.1:8003, container 8000",
+    "deviation": "--max-model-len 256608 instead of 262144 (ONLY deviation; value is vLLM estimated maximum from first FAILED_TO_START)",
+    "health": "/v1/models 200 after ~13 polls (~3.2 min); max_model_len 256608 confirmed",
+    "quality": "quality_probe.py 3/3 (capital/water/counting) text and retokenized_local ids exact vs Arm A, finish=length",
+    "spec_metrics": {
+      "before": "all spec_decode counters 0.0 (arm_b_metrics_before.txt)",
+      "after_c1": "drafts 1057, accepted 1014 (95.9%)",
+      "after_all": "drafts 3617, accepted 3574 (98.8%)"
+    },
+    "bench_c1": "short TTFT p50 0.775/0.757s tok/min 4271.7/4290.6; agent-shared-prefix TTFT p50 3.328s cold/0.901s warm tok/min 3143.5/3814.1; failed=0",
+    "bench_c4_short": "TTFT p50 3.084/3.074s tok/min 12113.0/12136.3; failed=0",
+    "tpot_caveat": "TPOT p50 ~24.7ms is per streamed chunk under MTP (multi-token chunks); not comparable to Arm A per-token 20.3ms. Effective c1 short ~71 tok/s wall-clock.",
+    "cleanup": "docker rm -f vllm-armb-qwen38-mtp only; GPUs 1MiB each; ~/llm/run/current absent; watchdog idle; litellm untouched"
   }
 }

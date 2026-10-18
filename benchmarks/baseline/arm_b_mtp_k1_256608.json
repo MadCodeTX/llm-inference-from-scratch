@@ -1,0 +1,238 @@
+[
+  {
+    "shape": "short",
+    "arm": "greedy",
+    "concurrency": 1,
+    "run": 0,
+    "wall_s": 7.1915,
+    "ok": 1,
+    "failed": 0,
+    "prompt_tokens": 2033,
+    "prompt_tokens_actual": 2033,
+    "target_prompt_tokens": 2048,
+    "target_tokens_approximate": false,
+    "prompt_words": 1728,
+    "total_output_tokens": 512,
+    "aggregate_output_tps": 71.19,
+    "tokens_per_minute": 4271.7,
+    "per_stream_tps": 71.19,
+    "ttft": {
+      "n": 1,
+      "mean": 0.7751017156988382,
+      "p50": 0.7751017156988382,
+      "p90": 0.7751017156988382,
+      "p99": 0.7751017156988382,
+      "min": 0.7751017156988382,
+      "max": 0.7751017156988382
+    },
+    "tpot": {
+      "n": 256,
+      "mean": 0.025062782113309368,
+      "p50": 0.024669097503647208,
+      "p90": 0.025004652561619878,
+      "p99": 0.03354399944655582,
+      "min": 0.024270514957606792,
+      "max": 0.07389184180647135
+    },
+    "latency": {
+      "n": 1,
+      "mean": 7.191276215016842,
+      "p50": 7.191276215016842,
+      "p90": 7.191276215016842,
+      "p99": 7.191276215016842,
+      "min": 7.191276215016842,
+      "max": 7.191276215016842
+    },
+    "errors": [],
+    "requests_detail": [
+      {
+        "ttft_s": 0.7751017156988382,
+        "latency_s": 7.191276215016842,
+        "completion_tokens": 512,
+        "prompt_tokens": 2033,
+        "prompt_tokens_actual": 2033,
+        "prompt_words": 1728,
+        "ok": true
+      }
+    ],
+    "label": "run_bench",
+    "model": "Qwen/Qwen3.8-27B-FP8"
+  },
+  {
+    "shape": "short",
+    "arm": "greedy",
+    "concurrency": 1,
+    "run": 1,
+    "wall_s": 7.1598,
+    "ok": 1,
+    "failed": 0,
+    "prompt_tokens": 2032,
+    "prompt_tokens_actual": 2032,
+    "target_prompt_tokens": 2048,
+    "target_tokens_approximate": false,
+    "prompt_words": 1726,
+    "total_output_tokens": 512,
+    "aggregate_output_tps": 71.51,
+    "tokens_per_minute": 4290.6,
+    "per_stream_tps": 71.51,
+    "ttft": {
+      "n": 1,
+      "mean": 0.7570707751438022,
+      "p50": 0.7570707751438022,
+      "p90": 0.7570707751438022,
+      "p99": 0.7570707751438022,
+      "min": 0.7570707751438022,
+      "max": 0.7570707751438022
+    },
+    "tpot": {
+      "n": 256,
+      "mean": 0.02500874963334354,
+      "p50": 0.024681682465597987,
+      "p90": 0.024937357986345887,
+      "p99": 0.03529465245082962,
+      "min": 0.02418691571801901,
+      "max": 0.051768794655799866
+    },
+    "latency": {
+      "n": 1,
+      "mean": 7.159413970075548,
+      "p50": 7.159413970075548,
+      "p90": 7.159413970075548,
+      "p99": 7.159413970075548,
+      "min": 7.159413970075548,
+      "max": 7.159413970075548
+    },
+    "errors": [],
+    "requests_detail": [
+      {
+        "ttft_s": 0.7570707751438022,
+        "latency_s": 7.159413970075548,
+        "completion_tokens": 512,
+        "prompt_tokens": 2032,
+        "prompt_tokens_actual": 2032,
+        "prompt_words": 1726,
+        "ok": true
+      }
+    ],
+    "label": "run_bench",
+    "model": "Qwen/Qwen3.8-27B-FP8"
+  },
+  {
+    "shape": "agent-shared-prefix",
+    "arm": "greedy",
+    "concurrency": 1,
+    "run": 0,
+    "wall_s": 9.7724,
+    "ok": 1,
+    "failed": 0,
+    "prompt_tokens": 8639,
+    "prompt_tokens_actual": 8639,
+    "target_prompt_tokens": 8704,
+    "target_tokens_approximate": false,
+    "prompt_words": 7343,
+    "total_output_tokens": 512,
+    "aggregate_output_tps": 52.39,
+    "tokens_per_minute": 3143.5,
+    "per_stream_tps": 52.39,
+    "ttft": {
+      "n": 1,
+      "mean": 3.327594387345016,
+      "p50": 3.327594387345016,
+      "p90": 3.327594387345016,
+      "p99": 3.327594387345016,
+      "min": 3.327594387345016,
+      "max": 3.327594387345016
+    },
+    "tpot": {
+      "n": 257,
+      "mean": 0.025074545130974357,
+      "p50": 0.024857379961758852,
+      "p90": 0.025133557990193366,
+      "p99": 0.029791394285857663,
+      "min": 0.024417350068688393,
+      "max": 0.043543480802327394
+    },
+    "latency": {
+      "n": 1,
+      "mean": 9.771847061347216,
+      "p50": 9.771847061347216,
+      "p90": 9.771847061347216,
+      "p99": 9.771847061347216,
+      "min": 9.771847061347216,
+      "max": 9.771847061347216
+    },
+    "errors": [],
+    "requests_detail": [
+      {
+        "ttft_s": 3.327594387345016,
+        "latency_s": 9.771847061347216,
+        "completion_tokens": 512,
+        "prompt_tokens": 8639,
+        "prompt_tokens_actual": 8639,
+        "prompt_words": 7343,
+        "ok": true
+      }
+    ],
+    "label": "run_bench",
+    "model": "Qwen/Qwen3.8-27B-FP8"
+  },
+  {
+    "shape": "agent-shared-prefix",
+    "arm": "greedy",
+    "concurrency": 1,
+    "run": 1,
+    "wall_s": 6.9217,
+    "ok": 1,
+    "failed": 0,
+    "prompt_tokens": 8639,
+    "prompt_tokens_actual": 8639,
+    "target_prompt_tokens": 8704,
+    "target_tokens_approximate": false,
+    "prompt_words": 7341,
+    "total_output_tokens": 440,
+    "aggregate_output_tps": 63.57,
+    "tokens_per_minute": 3814.1,
+    "per_stream_tps": 63.57,
+    "ttft": {
+      "n": 1,
+      "mean": 0.9014050518162549,
+      "p50": 0.9014050518162549,
+      "p90": 0.9014050518162549,
+      "p99": 0.9014050518162549,
+      "min": 0.9014050518162549,
+      "max": 0.9014050518162549
+    },
+    "tpot": {
+      "n": 239,
+      "mean": 0.025082077336143,
+      "p50": 0.024876873940229416,
+      "p90": 0.02519458197057247,
+      "p99": 0.02888869801536205,
+      "min": 0.024627276696264744,
+      "max": 0.04331531096249819
+    },
+    "latency": {
+      "n": 1,
+      "mean": 6.921320749912411,
+      "p50": 6.921320749912411,
+      "p90": 6.921320749912411,
+      "p99": 6.921320749912411,
+      "min": 6.921320749912411,
+      "max": 6.921320749912411
+    },
+    "errors": [],
+    "requests_detail": [
+      {
+        "ttft_s": 0.9014050518162549,
+        "latency_s": 6.921320749912411,
+        "completion_tokens": 440,
+        "prompt_tokens": 8639,
+        "prompt_tokens_actual": 8639,
+        "prompt_words": 7341,
+        "ok": true
+      }
+    ],
+    "label": "run_bench",
+    "model": "Qwen/Qwen3.8-27B-FP8"
+  }
+]
