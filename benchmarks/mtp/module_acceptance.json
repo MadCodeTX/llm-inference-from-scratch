@@ -1,0 +1,53 @@
+{
+  "module": "MTPDraftModule",
+  "wiring": {
+    "fc_concat_order": "embedding_first",
+    "norm_pairing": "named",
+    "hidden_source": "post_final_norm",
+    "embedding_source": "shared_embed_tokens",
+    "position_rule": "hidden_pos",
+    "lm_head_input": "raw_block"
+  },
+  "wiring_resolved": false,
+  "acceptance": 0.8697674418604651,
+  "correct": 374,
+  "total": 430,
+  "per_prompt": {
+    "capital": {
+      "correct": 63,
+      "total": 67,
+      "acceptance": 0.9402985074626866
+    },
+    "water": {
+      "correct": 61,
+      "total": 68,
+      "acceptance": 0.8970588235294118
+    },
+    "counting": {
+      "correct": 68,
+      "total": 70,
+      "acceptance": 0.9714285714285714
+    },
+    "neutral_code": {
+      "correct": 67,
+      "total": 75,
+      "acceptance": 0.8933333333333333
+    },
+    "neutral_list": {
+      "correct": 63,
+      "total": 73,
+      "acceptance": 0.863013698630137
+    },
+    "neutral_prose": {
+      "correct": 52,
+      "total": 77,
+      "acceptance": 0.6753246753246753
+    }
+  },
+  "sweep_winner_acceptance": 0.872093023255814,
+  "delta_vs_sweep_winner": -0.0023255813953488857,
+  "capture": "/tmp/mtp_capture/trajectories.pt",
+  "snapshot": "/home/nick/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B-FP8/snapshots/017b9c7af6b5689d5dd426a76e0bc077eb5ca20a",
+  "device": "cuda:0",
+  "torch": "2.11.0+cu128"
+}

@@ -122,9 +122,6 @@ def iter_rank_shards(
     """
     if fp8_mode not in ("resident", "dequantize"):
         raise ValueError(f"fp8_mode must be 'resident' or 'dequantize', got {fp8_mode!r}")
-    if include_mtp:
-        raise ValueError("include_mtp=True is unsupported: DistributedHybridLM "
-                         "holds no MTP block in v1")
     if lm_head_mode not in ("replicated", "vocab"):
         raise ValueError(f"lm_head_mode must be 'replicated' or 'vocab', got {lm_head_mode!r}")
     root = _resolve_dir(snapshot_dir)
@@ -132,7 +129,7 @@ def iter_rank_shards(
     cfg = _resolve_config(snapshot_dir, config=config)
     expected = expected_language_tensors(cfg)
     by_name = man.by_name()
-    for target in _model_order_targets(cfg, include_mtp=False):
+    for target in _model_order_targets(cfg, include_mtp=include_mtp):
         if cfg.tie_word_embeddings and target == "lm_head.weight":
             continue
         ckpt = _target_to_checkpoint(target)
@@ -211,6 +208,37 @@ def _destinations(model: DistributedHybridLM, config: Any) -> dict[str, tuple[An
                 put(f"{p}.mlp.{proj}.weight_scale_inv", mod.local, "weight_scale_inv")
             else:
                 put(f"{p}.mlp.{proj}.weight", mod, "weight")
+    draft = getattr(model, "mtp_draft", None)
+    if draft is not None:
+        # MTP draft module: fc + norms replicated, block sharded like a
+        # normal full-attention block (same destination logic as above).
+        put("mtp.pre_fc_norm_embedding.weight", draft.pre_fc_norm_embedding, "weight")
+        put("mtp.pre_fc_norm_hidden.weight", draft.pre_fc_norm_hidden, "weight")
+        put("mtp.fc.weight", draft.fc, "weight")
+        put("mtp.norm.weight", draft.norm, "weight")
+        for j, block in enumerate(draft.layers):
+            p = f"mtp.layers.{j}"
+            put(f"{p}.input_layernorm.weight", block.input_layernorm, "weight")
+            put(f"{p}.post_attention_layernorm.weight", block.post_attention_layernorm, "weight")
+            attn = block.self_attn
+            for proj, dense_attr, fp8_attr in (
+                    ("q_proj", "q_weight", "q_fp8"), ("k_proj", "k_weight", "k_fp8"),
+                    ("v_proj", "v_weight", "v_fp8"), ("o_proj", "o_weight", "o_fp8")):
+                fp8_mod = getattr(attn, fp8_attr)
+                if fp8_mod is not None:
+                    put(f"{p}.self_attn.{proj}.weight", fp8_mod, "weight")
+                    put(f"{p}.self_attn.{proj}.weight_scale_inv", fp8_mod, "weight_scale_inv")
+                else:
+                    put(f"{p}.self_attn.{proj}.weight", attn, dense_attr)
+            put(f"{p}.self_attn.q_norm.weight", attn.q_norm, "weight")
+            put(f"{p}.self_attn.k_norm.weight", attn.k_norm, "weight")
+            for proj in ("gate_proj", "up_proj", "down_proj"):
+                mod = getattr(block.mlp, proj)
+                if isinstance(mod, (TPBlockFP8Column, TPBlockFP8Row)):
+                    put(f"{p}.mlp.{proj}.weight", mod.local, "weight")
+                    put(f"{p}.mlp.{proj}.weight_scale_inv", mod.local, "weight_scale_inv")
+                else:
+                    put(f"{p}.mlp.{proj}.weight", mod, "weight")
     return dest
 
 
@@ -258,7 +286,7 @@ def load_rank_state(
     man = snapshot_dir if isinstance(snapshot_dir, Manifest) else (manifest or build_manifest(root))
     cfg = _resolve_config(snapshot_dir, config=config)
     dev = torch.device(device) if device is not None else torch.device("cpu")
-    model = DistributedHybridLM.empty(cfg, rank, world, fp8_mode=fp8_mode, use_triton=use_triton, lm_head_mode=lm_head_mode)
+    model = DistributedHybridLM.empty(cfg, rank, world, fp8_mode=fp8_mode, use_triton=use_triton, lm_head_mode=lm_head_mode, include_mtp=include_mtp)
     dest = _destinations(model, cfg)
     by_name = man.by_name()
     # Every destination (scale destinations included) maps to exactly
@@ -296,6 +324,9 @@ def load_rank_state(
         "missing": missing, "not_loaded": not_loaded,
         "resident_bytes": model.local_parameter_bytes(),
         "device": str(dev), "lm_head_mode": str(lm_head_mode),
+        "include_mtp": bool(include_mtp),
+        "mtp_loaded": [t for t in loaded if t.startswith("mtp.")],
+        "mtp_loaded_count": sum(1 for t in loaded if t.startswith("mtp.")),
         "use_scale_cache": bool(use_scale_cache),
         "scale_cache_modules": int(scale_cache_modules),
     }
