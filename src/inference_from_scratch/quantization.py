@@ -387,3 +387,113 @@ def worked_example() -> dict[str, int]:
             assumed_config, seq_len=1, batch=1, bytes_per_elem=2
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# Block FP8 (E4M3, 128x128 blocks) -- the real Qwen3.8-27B-FP8 checkpoint format
+# ---------------------------------------------------------------------------
+
+_FP8_E4M3_MAX = 448.0
+
+
+def _validate_block(block: tuple[int, int]) -> tuple[int, int]:
+    if not isinstance(block, (tuple, list)) or len(block) != 2:
+        raise ValueError(f"block must be a (rows, cols) pair, got {block!r}")
+    br, bc = int(block[0]), int(block[1])
+    if br <= 0 or bc <= 0:
+        raise ValueError(f"block dims must be positive, got {block!r}")
+    return br, bc
+
+
+def _ceil_div(a: int, b: int) -> int:
+    return -(-a // b)
+
+
+def dequantize_block_fp8(
+    w_fp8: torch.Tensor,
+    scale_inv: torch.Tensor,
+    block: tuple[int, int] = (128, 128),
+    out_dtype: torch.dtype = torch.bfloat16,
+) -> torch.Tensor:
+    """Dequantize a block-FP8 weight: ``w.float() * scale_inv`` per block.
+
+    ``w_fp8`` is ``float8_e4m3fn`` ``[R, C]``; ``scale_inv`` is the
+    checkpoint's ``weight_scale_inv`` of shape
+    ``[ceil(R/br), ceil(C/bc)]`` for ``block=(br, bc)``. Despite the
+    name, the checkpoint convention (verified on a real tensor) is
+    that dequantization *multiplies* by ``scale_inv``. Non-divisible
+    edges are handled by padding to the block grid and cropping back.
+    """
+    br, bc = _validate_block(block)
+    if w_fp8.dim() != 2:
+        raise ValueError(f"w_fp8 must be 2D [R, C], got shape {tuple(w_fp8.shape)}")
+    if w_fp8.dtype != torch.float8_e4m3fn:
+        raise ValueError(f"w_fp8 must be float8_e4m3fn, got {w_fp8.dtype}")
+    if scale_inv.dim() != 2:
+        raise ValueError(f"scale_inv must be 2D, got shape {tuple(scale_inv.shape)}")
+    rows, cols = w_fp8.shape
+    gr, gc = _ceil_div(rows, br), _ceil_div(cols, bc)
+    if tuple(scale_inv.shape) != (gr, gc):
+        raise ValueError(
+            f"scale_inv shape {tuple(scale_inv.shape)} != expected {(gr, gc)} "
+            f"for weight {(rows, cols)} and block {(br, bc)}"
+        )
+    wf = w_fp8.to(torch.float32)
+    pad_r, pad_c = gr * br - rows, gc * bc - cols
+    if pad_r or pad_c:
+        wf = torch.nn.functional.pad(wf, (0, pad_c, 0, pad_r))
+    blocked = wf.reshape(gr, br, gc, bc)
+    deq = blocked * scale_inv.to(torch.float32)[:, None, :, None]
+    return deq.reshape(gr * br, gc * bc)[:rows, :cols].to(out_dtype)
+
+
+def quantize_block_fp8(
+    w: torch.Tensor, block: tuple[int, int] = (128, 128)
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Quantize ``w`` ``[R, C]`` to block FP8 E4M3 + ``scale_inv``.
+
+    Per block: ``scale_inv = amax(|block|) / 448`` and
+    ``q = clamp(w / scale_inv, -448, 448)`` cast to
+    ``float8_e4m3fn``, so :func:`dequantize_block_fp8` (which
+    multiplies by ``scale_inv``) approximately inverts this. Returns
+    ``(w_fp8 float8_e4m3fn [R, C], scale_inv float32 [ceil(R/br), ceil(C/bc)])``.
+    All-zero blocks get ``scale_inv = 1.0`` to avoid 0/0.
+    """
+    br, bc = _validate_block(block)
+    if w.dim() != 2:
+        raise ValueError(f"w must be 2D [R, C], got shape {tuple(w.shape)}")
+    rows, cols = w.shape
+    gr, gc = _ceil_div(rows, br), _ceil_div(cols, bc)
+    wf = w.detach().to(torch.float32)
+    pad_r, pad_c = gr * br - rows, gc * bc - cols
+    padded = torch.nn.functional.pad(wf, (0, pad_c, 0, pad_r)) if (pad_r or pad_c) else wf
+    blocked = padded.reshape(gr, br, gc, bc)
+    amax = blocked.abs().amax(dim=(1, 3))  # [gr, gc]
+    scale_inv = amax / _FP8_E4M3_MAX
+    scale_inv = torch.where(amax == 0, torch.ones_like(scale_inv), scale_inv)
+    q_blocked = torch.clamp(blocked / scale_inv[:, None, :, None], -_FP8_E4M3_MAX, _FP8_E4M3_MAX)
+    q = q_blocked.reshape(gr * br, gc * bc)[:rows, :cols]
+    return q.to(torch.float8_e4m3fn), scale_inv
+
+
+def fp8_block_matmul(
+    x_bf16: torch.Tensor, w_fp8: torch.Tensor, scale_inv: torch.Tensor,
+    block: tuple[int, int] = (128, 128),
+) -> torch.Tensor:
+    """Reference block-FP8 matmul: ``x @ dequantize_block_fp8(w).T``.
+
+    ``x_bf16`` is ``[..., in_features]``, ``w_fp8`` is
+    ``[out_features, in_features]``. This CPU reference materialises
+    the full dequantized weight. The GPU fast path to add in Phase 2
+    is ``torch._scaled_mm`` (scaled-mm) with block scales, which
+    fuses dequantization into the GEMM and never materialises it.
+    """
+    if w_fp8.dim() != 2:
+        raise ValueError(f"w_fp8 must be 2D, got shape {tuple(w_fp8.shape)}")
+    if x_bf16.dim() < 1 or x_bf16.shape[-1] != w_fp8.shape[1]:
+        raise ValueError(
+            f"x last dim {x_bf16.shape[-1] if x_bf16.dim() else 'scalar'} "
+            f"!= w in_features {w_fp8.shape[1]}"
+        )
+    w_deq = dequantize_block_fp8(w_fp8, scale_inv, block=block, out_dtype=x_bf16.dtype if x_bf16.is_floating_point() else torch.bfloat16)
+    return x_bf16 @ w_deq.T

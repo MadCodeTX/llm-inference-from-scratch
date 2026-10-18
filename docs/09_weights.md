@@ -61,6 +61,8 @@ The safe sequence for any real HF checkpoint directory `ckpt/` (do not skip step
 
 Skipping step 5 is how "it loaded" becomes "it generates garbage": `load_state_dict(strict=False)` plus a rename bug is indistinguishable from a working load until text comes out wrong.
 
+> **FP8 note:** Real FP8 checkpoints (e.g. Qwen3.8-27B-FP8) use safetensors dtypes `F8_E4M3`/`F8_E5M2` (1 byte/element). `weights.py` maps them to `torch.float8_e4m3fn`/`torch.float8_e5m2`, so `read_safetensors_header` validates their offset spans (`numel * 1` byte) and `LazySafetensorsFile.load` materialises them via a uint8 bit-reinterpretation (NumPy has no float8 dtype). Each FP8 weight is paired with a bf16 `…weight_scale_inv` block-scale tensor — see ch 10's block-FP8 section.
+
 ## Common pitfalls
 
 - **Guessing dimensions.** Any hard-coded layer/hidden count — for any model, however famous — rots the moment a checkpoint variant differs. The config file is the only source (step 1).

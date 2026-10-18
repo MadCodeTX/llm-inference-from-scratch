@@ -144,6 +144,8 @@ _DTYPE_TO_TORCH: dict[str, torch.dtype] = {
     "I8": torch.int8,
     "U8": torch.uint8,
     "BOOL": torch.bool,
+    "F8_E4M3": torch.float8_e4m3fn,
+    "F8_E5M2": torch.float8_e5m2,
 }
 
 # numpy little-endian views for every dtype numpy can read directly
@@ -289,6 +291,10 @@ def format_safetensors_table(header: Mapping[str, Any]) -> str:
 def _tensor_from_bytes(raw: bytes, dtype: str, shape: list[int]) -> torch.Tensor:
     """Materialise one tensor from its raw little-endian byte range."""
     torch_dtype = _DTYPE_TO_TORCH[dtype]
+    if dtype in ("F8_E4M3", "F8_E5M2"):
+        # No numpy float8: read raw bytes as uint8, then reinterpret bits.
+        bits = np.frombuffer(raw, dtype="u1").copy()
+        return torch.from_numpy(bits).view(torch_dtype).reshape(shape).clone()
     if dtype == "BF16":
         # No numpy bfloat16: read the bits as uint16, then reinterpret.
         bits = np.frombuffer(raw, dtype="<u2").copy()

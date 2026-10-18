@@ -52,6 +52,21 @@ Everything is in [quantization.py](../src/inference_from_scratch/quantization.py
 
 Tests: [test_quantization.py](../tests/test_quantization.py) checks the half-scale error bound, zero-tensor/zero-row exactness, scale shapes, bytes math including int4 packing, and KV-bytes values.
 
+## Block FP8 anatomy (real Qwen3.8-27B-FP8 checkpoint)
+
+The real FP8 checkpoint does not use per-channel int8. Each large Linear weight is stored as `float8_e4m3fn` (safetensors dtype `F8_E4M3`, 1 byte/param) plus a bf16 `weight_scale_inv` grid with one scale per 128×128 block: `scale_inv.shape == [ceil(R/128), ceil(C/128)]` for a weight `[R, C]`. Dequantization *multiplies* by `scale_inv` despite the name — verified on `layers.3.self_attn.k_proj.weight` `[1024, 5120]` with `weight_scale_inv` `[8, 40]`: every FP8 block saturates at absmax 448, the dequantized tensor is finite with absmax 0.210 and std 0.0159, and each block's dequantized absmax matches `scale_inv * 448` to 0.3% (multiplying is correct; dividing would give absmax ~3.4e6).
+
+| Real tensor (layer 0/3) | FP8 weight shape | `weight_scale_inv` shape |
+|---|---|---|
+| `linear_attn.in_proj_qkv.weight` | `[10240, 5120]` | `[80, 40]` |
+| `linear_attn.in_proj_z.weight` | `[6144, 5120]` | `[48, 40]` |
+| `linear_attn.out_proj.weight` | `[5120, 6144]` | `[40, 48]` |
+| `mlp.gate_proj.weight` / `up_proj.weight` | `[17408, 5120]` | `[136, 40]` |
+| `mlp.down_proj.weight` | `[5120, 17408]` | `[40, 136]` |
+| `self_attn.k_proj.weight` (layer 3) | `[1024, 5120]` | `[8, 40]` |
+
+Code: `dequantize_block_fp8(w_fp8, scale_inv, block=(128,128), out_dtype=bf16)` (reshape-multiply, edges padded then cropped), `quantize_block_fp8(w, block)` (per-block `amax/448` stored as `scale_inv`), and `fp8_block_matmul(x, w_fp8, scale_inv)` — a CPU reference (`x @ dequant.T`); the Phase-2 GPU fast path is `torch._scaled_mm` with block scales. Tests: [test_fp8_block.py](../tests/test_fp8_block.py). Small tensors (norms, `A_log`, `dt_bias`, conv1d) stay bf16 in the checkpoint; only the large projections are FP8.
+
 ## How the big systems do it
 
 **Qwen-family deployments** are commonly served in bf16, or weight-quantized (AWQ/GPTQ-style int4 with per-group scales and activation-aware calibration — refinements of the per-channel grid above, using small groups of columns per scale and a calibration set to protect salient weights). W4A16 ("4-bit weights, 16-bit activations") is the standard on-device recipe: dequantize weights to fp16 on the fly during the GEMV, pay ~1/4 the weight traffic, keep activations precise.
