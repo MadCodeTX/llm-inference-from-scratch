@@ -38,7 +38,10 @@ __all__ = [
     "DistributedHybridBlock",
     "DistributedHybridLM",
     "TPState",
+    "TPStaticState",
     "shard_weight_for_rank",
+    "vocab_shard_layout",
+    "LM_HEAD_MODES",
 ]
 
 
@@ -572,6 +575,84 @@ class DistributedFullAttention(nn.Module):
         out, _ = self.forward_with_state(x, kv_state=None, start_pos=start_pos)
         return out
 
+    def _static_rope_tables(self, max_seq_len: int, device: torch.device,
+                            dtype: torch.dtype):
+        """RoPE tables for static decode, built once per (len, dev, dtype)."""
+        cache = getattr(self, "_static_rope_cache", None)
+        if cache is None:
+            cache = self._static_rope_cache = {}
+        key = (int(max_seq_len), str(device), dtype)
+        if key not in cache:
+            from .hybrid import precompute_partial_rope_cache
+            cos, sin, _ = precompute_partial_rope_cache(
+                int(max_seq_len), self.head_dim, self.partial_rotary_factor,
+                theta=self.rope_theta, device=device, dtype=dtype)
+            cache[key] = (cos, sin)
+        return cache[key]
+
+    def step_static(self, x: torch.Tensor, k_buf: torch.Tensor,
+                    v_buf: torch.Tensor, position: torch.Tensor) -> torch.Tensor:
+        """One static decode token: ``x [B,1,D]`` -> ``[B,1,D]``.
+
+        Mirrors :meth:`forward_with_state` at ``T=1`` step-for-step, but
+        K/V are written in place into the preallocated local buffers
+        ``k_buf`` / ``v_buf`` (``[B, H_kv_local, max_seq, Dh]``) with
+        ``index_copy_`` at the 0-dim tensor ``position``, RoPE rows are
+        gathered with ``index_select``, and attention runs over the
+        full fixed-shape buffers with positions past ``position``
+        masked on-device. No ``.item()``, ``torch.cat`` or shape change
+        on the state. Exactly one all-reduce, as in the legacy step.
+        """
+        from .attention import repeat_kv
+        from .hybrid import _apply_rope_with_tables
+        if x.dim() == 2:
+            x = x.unsqueeze(1)
+        if x.dim() != 3 or x.shape[1] != 1:
+            raise ValueError(f"x must be [B, D] or [B, 1, D], got {tuple(x.shape)}")
+        if not isinstance(position, torch.Tensor) or position.dim() != 0:
+            raise ValueError("position must be a 0-dim tensor")
+        B = int(x.shape[0])
+        Dh = self.head_dim
+        hs, kvs = self.q_heads_local, self.kv_heads_local
+        qg = self._linear(x, self.q_weight, self.q_bias, self.q_fp8).view(B, 1, len(hs), 2 * Dh)
+        q = self.q_norm(qg[..., :Dh]).transpose(1, 2)
+        gate = qg[..., Dh:].reshape(B, 1, len(hs) * Dh)
+        k = self._linear(x, self.k_weight, self.k_bias, self.k_fp8).view(B, 1, len(kvs), Dh)
+        v = self._linear(x, self.v_weight, self.v_bias, self.v_fp8).view(B, 1, len(kvs), Dh)
+        k = self.k_norm(k).transpose(1, 2)
+        v = v.transpose(1, 2)
+        cos, sin = self._static_rope_tables(int(k_buf.shape[2]), x.device, x.dtype)
+        pos1 = position.reshape(1)
+        row_cos = cos.index_select(0, pos1)
+        row_sin = sin.index_select(0, pos1)
+        q = _apply_rope_with_tables(q, row_cos, row_sin, self.rotary_dim)
+        k = _apply_rope_with_tables(k, row_cos, row_sin, self.rotary_dim)
+        k_buf.index_copy_(2, pos1, k)
+        v_buf.index_copy_(2, pos1, v)
+        k_rep = repeat_kv(k_buf, self.n_rep)
+        v_rep = repeat_kv(v_buf, self.n_rep)
+        t_k = int(k_buf.shape[2])
+        if self.attn_implementation == "sdpa":
+            k_pos = torch.arange(t_k, device=q.device)
+            mask = torch.zeros(1, t_k, device=q.device, dtype=q.dtype)
+            mask = mask.masked_fill(k_pos > position, float("-inf"))
+            attn = F.scaled_dot_product_attention(
+                q, k_rep, v_rep, attn_mask=mask.view(1, 1, 1, t_k),
+                is_causal=False, scale=self.scaling)
+        else:
+            scores = torch.matmul(q, k_rep.transpose(-2, -1)) / (Dh ** 0.5)
+            k_pos = torch.arange(t_k, device=q.device)
+            scores = scores.masked_fill(
+                (k_pos > position).view(1, 1, 1, t_k), float("-inf"))
+            attn = torch.matmul(torch.softmax(scores, dim=-1), v_rep)
+        merged = attn.transpose(1, 2).contiguous().view(B, 1, -1)
+        if self.gate_activation == "sigmoid":
+            merged = merged * torch.sigmoid(gate)
+        elif self.gate_activation == "silu":
+            merged = merged * F.silu(gate)
+        partial = self._linear(merged, self.o_weight, None, self.o_fp8)
+        return self.ctx.all_reduce_sum(partial)
+
 
 class DistributedGatedDeltaNet(nn.Module):
     """Distributed gated-delta decode step: this rank's value heads only.
@@ -743,6 +824,77 @@ class DistributedGatedDeltaNet(nn.Module):
                            max(self.conv_kernel - 1, 0), device=dev, dtype=dtype)
         return (S, conv)
 
+    def step_inplace_static(self, x_t: torch.Tensor, S: torch.Tensor,
+                            conv_buf: torch.Tensor) -> torch.Tensor:
+        """In-place twin of :meth:`step`: mutate ``S`` / ``conv_buf``.
+
+        Same maths and reduction order as :meth:`step`, but the conv
+        ring is shifted with ``copy_`` and the gated-delta update is
+        ``S.mul_`` then ``S.add_`` on the caller's preallocated tensors
+        (the dense ``GatedDeltaNet.step_inplace`` pattern, lifted to
+        this rank's head slices). No ``torch.cat``, no new state
+        tensor. Returns the all-reduced output, rank preserved.
+        """
+        from .linear_attention import _l2norm
+        squeeze = False
+        if x_t.dim() == 2:
+            x2 = x_t
+        elif x_t.dim() == 3 and x_t.shape[1] == 1:
+            x2, squeeze = x_t[:, 0, :], True
+        else:
+            raise ValueError(f"x_t must be [B, D] or [B, 1, D], got {tuple(x_t.shape)}")
+        B = int(x2.shape[0])
+        Dk, Dv = self.key_dim, self.value_dim
+        if tuple(S.shape) != (B, self.vh_per, Dk, Dv):
+            raise ValueError(f"S must be {(B, self.vh_per, Dk, Dv)}, got {tuple(S.shape)}")
+        mixed = self._linear(x2, self.in_proj_qkv_w, self.in_proj_qkv_fp8)
+        z = self._linear(x2, self.in_proj_z_w, self.in_proj_z_fp8).reshape(B, self.vh_per, Dv)
+        beta = torch.sigmoid(F.linear(x2, self.in_proj_b_w))
+        a = F.linear(x2, self.in_proj_a_w)
+        g = -self.A_log_r.float().exp() * F.softplus(a.float() + self.dt_bias_r.float())
+        w = self.conv_weight[:, 0, :]
+        if self.conv_kernel == 1:
+            mixed_act = F.silu(mixed * w[:, 0].to(dtype=mixed.dtype).unsqueeze(0))
+        else:
+            if tuple(conv_buf.shape) != (B, int(mixed.shape[-1]), self.conv_kernel - 1):
+                raise ValueError(
+                    f"conv_buf must be {(B, int(mixed.shape[-1]), self.conv_kernel - 1)}, "
+                    f"got {tuple(conv_buf.shape)}")
+            window = torch.empty(B, int(mixed.shape[-1]), self.conv_kernel,
+                                 device=mixed.device, dtype=mixed.dtype)
+            window[:, :, :-1].copy_(conv_buf.to(dtype=mixed.dtype))
+            window[:, :, -1].copy_(mixed)
+            mixed_act = F.silu(
+                (window * w.to(dtype=mixed.dtype).unsqueeze(0)).sum(dim=-1))
+            for i in range(conv_buf.shape[-1] - 1):
+                conv_buf[:, :, i].copy_(conv_buf[:, :, i + 1])
+            if conv_buf.shape[-1] > 0:
+                conv_buf[:, :, -1].copy_(mixed.to(dtype=conv_buf.dtype))
+        kh_per = self.vh_per // self.n_rep
+        q_sz, v_sz = kh_per * Dk, self.vh_per * Dv
+        q_raw, k_raw, v = torch.split(mixed_act, [q_sz, q_sz, v_sz], dim=-1)
+        q = q_raw.reshape(B, kh_per, Dk)
+        k = k_raw.reshape(B, kh_per, Dk)
+        v = v.reshape(B, self.vh_per, Dv).float()
+        if self.n_rep > 1:
+            q = q.repeat_interleave(self.n_rep, dim=1)
+            k = k.repeat_interleave(self.n_rep, dim=1)
+        q = _l2norm(q) * (Dk ** -0.5)
+        k = _l2norm(k)
+        S.mul_(torch.exp(g.float())[:, :, None, None].to(dtype=S.dtype))
+        kv_mem = (S.float() * k.unsqueeze(-1)).sum(dim=-2)
+        delta = (v - kv_mem) * beta.float().unsqueeze(-1)
+        S.add_((k.unsqueeze(-1) * delta.unsqueeze(-2)).to(dtype=S.dtype))
+        core = (S.float() * q.unsqueeze(-1)).sum(dim=-2)
+        core = self.norm(core.reshape(B * self.vh_per, Dv), z.reshape(B * self.vh_per, Dv))
+        core = core.reshape(B, v_sz)
+        partial = (self.out_proj_fp8(core) if self.out_proj_fp8 is not None
+                   else F.linear(core.to(self.out_proj_w.dtype), self.out_proj_w))
+        out = self.ctx.all_reduce_sum(partial).to(x_t.dtype)
+        if squeeze:
+            out = out.unsqueeze(1)
+        return out
+
     def forward_prefill_v1(
         self, x: torch.Tensor,
         state: tuple[torch.Tensor, torch.Tensor] | None = None,
@@ -780,6 +932,148 @@ class DistributedGatedDeltaNet(nn.Module):
 #   its mixer costs T all-reduces (one per token) + 1 MLP all-reduce.
 #   Norms, embeddings, residual adds and lm_head are replicated: 0.
 # ---------------------------------------------------------------------------
+
+
+class TPStaticState:
+    """Preallocated per-rank state for static (graph-ready) TP decode.
+
+    Allocated once from ``(config, batch_size, max_seq_len, device,
+    dtype, ctx)`` and reused for every decode step:
+
+    * full layers: local KV buffers ``kv_k`` / ``kv_v`` (parallel
+      lists, ``None`` at linear layers), each
+      ``[B, H_kv_local, max_seq_len, Dh]`` -- this rank's KV-head
+      slice, slice/``index_copy_``-written in place, never
+      concatenated;
+    * linear layers: fixed ``S`` (``[B, Hv_local, Dk, Dv]``, fp32 as
+      in :meth:`DistributedGatedDeltaNet.zero_state`) and conv ring
+      (``[B, C_local, K-1]``, ``C_local`` = this rank's segmented
+      qkv rows) in ``linear_S`` / ``linear_conv_buffers``.
+
+    ``position`` is a 0-dim ``torch.long`` tensor on ``device``,
+    advanced in place (``add_``) inside
+    :meth:`DistributedHybridLM.decode_token_static`; the Python
+    ``seq_len`` property reads it (a host sync, for use outside any
+    captured graph only). ``reset()`` zeroes every buffer in place,
+    so ``data_ptr()`` is stable across steps and across reset.
+    """
+
+    def __init__(self, config: Any, batch_size: int = 1,
+                 max_seq_len: int | None = None,
+                 device: torch.device | str | None = None,
+                 dtype: torch.dtype | None = None,
+                 ctx: Any = None, *, batch: int | None = None):
+        if batch is not None:
+            batch_size = batch
+        if int(batch_size) <= 0:
+            raise ValueError(f"batch_size must be positive, got {batch_size}")
+        if max_seq_len is None:
+            max_seq_len = int(config.max_position_embeddings)
+        if int(max_seq_len) <= 0:
+            raise ValueError(f"max_seq_len must be positive, got {max_seq_len}")
+        world = int(ctx.world_size) if ctx is not None else 1
+        rank = int(ctx.rank) if ctx is not None else 0
+        if device is None:
+            device = ctx.device if ctx is not None else torch.device("cpu")
+        self.config = config
+        self.batch_size = int(batch_size)
+        self.batch = self.batch_size
+        self.max_seq_len = int(max_seq_len)
+        self.device = torch.device(device)
+        self.dtype = dtype if dtype is not None else torch.float32
+        self.ctx = ctx
+        self.layer_types: list[str] = list(config.layer_types)
+        B, Dev, Dtype = self.batch_size, self.device, self.dtype
+        Hkv, Dh = int(config.num_key_value_heads), int(config.head_dim)
+        if Hkv % world != 0:
+            raise ValueError(f"num_key_value_heads {Hkv} not divisible by world {world}")
+        hkv_local = Hkv // world
+        self.hkv_local = hkv_local
+        Hv = int(config.linear_num_value_heads)
+        if Hv % world != 0:
+            raise ValueError(f"linear_num_value_heads {Hv} not divisible by world {world}")
+        vh_per = Hv // world
+        self.vh_per = vh_per
+        qkv_shape = shard_spec_for(
+            "linear_attn.in_proj_qkv.weight",
+            (2 * int(config.linear_num_key_heads) * int(config.linear_key_head_dim)
+             + Hv * int(config.linear_value_head_dim), int(config.hidden_size)),
+            config).shard_shape(rank, world)
+        conv_dim_local = int(qkv_shape[0])
+        self.conv_dim_local = conv_dim_local
+        self.kv_k: list[torch.Tensor | None] = []
+        self.kv_v: list[torch.Tensor | None] = []
+        self.linear_S: list[torch.Tensor | None] = []
+        self.linear_conv_buffers: list[torch.Tensor | None] = []
+        for t in self.layer_types:
+            if t == "full_attention":
+                self.kv_k.append(torch.zeros(B, hkv_local, self.max_seq_len, Dh,
+                                             device=Dev, dtype=Dtype))
+                self.kv_v.append(torch.zeros(B, hkv_local, self.max_seq_len, Dh,
+                                             device=Dev, dtype=Dtype))
+                self.linear_S.append(None)
+                self.linear_conv_buffers.append(None)
+            else:
+                self.kv_k.append(None)
+                self.kv_v.append(None)
+                self.linear_S.append(torch.zeros(
+                    B, vh_per, int(config.linear_key_head_dim),
+                    int(config.linear_value_head_dim), device=Dev, dtype=torch.float32))
+                self.linear_conv_buffers.append(torch.zeros(
+                    B, conv_dim_local, max(int(config.linear_conv_kernel_dim) - 1, 0),
+                    device=Dev, dtype=Dtype))
+        self.position = torch.zeros((), dtype=torch.long, device=Dev)
+        self.position_tensor = self.position
+
+    @property
+    def seq_len(self) -> int:
+        """Positions processed (host sync; read only outside a graph)."""
+        return int(self.position.item())
+
+    @seq_len.setter
+    def seq_len(self, value: int) -> None:
+        self.position.fill_(int(value))
+
+    def __len__(self) -> int:
+        return len(self.layer_types)
+
+    def reset(self) -> None:
+        """Zero all buffers in place; every ``data_ptr`` is preserved."""
+        for t in self.kv_k:
+            if t is not None:
+                t.zero_()
+        for t in self.kv_v:
+            if t is not None:
+                t.zero_()
+        for t in self.linear_S:
+            if t is not None:
+                t.zero_()
+        for t in self.linear_conv_buffers:
+            if t is not None:
+                t.zero_()
+        self.position.zero_()
+
+    def data_ptrs(self) -> dict[str, list[int]]:
+        ptrs: dict[str, list[int]] = {"kv_k": [], "kv_v": [], "linear_S": [],
+                                      "linear_conv": [], "position": [self.position.data_ptr()]}
+        for t in self.kv_k:
+            if t is not None:
+                ptrs["kv_k"].append(t.data_ptr())
+        for t in self.kv_v:
+            if t is not None:
+                ptrs["kv_v"].append(t.data_ptr())
+        for t in self.linear_S:
+            if t is not None:
+                ptrs["linear_S"].append(t.data_ptr())
+        for t in self.linear_conv_buffers:
+            if t is not None:
+                ptrs["linear_conv"].append(t.data_ptr())
+        return ptrs
+
+    def __repr__(self) -> str:
+        return (f"TPStaticState(batch={self.batch_size}, "
+                f"max_seq_len={self.max_seq_len}, seq_len={self.seq_len}, "
+                f"layers={len(self.layer_types)})")
 
 
 class TPState:
@@ -926,6 +1220,53 @@ class DistributedHybridBlock(nn.Module):
         return self.forward_prefill(x, layer_state=layer_state, start_pos=start_pos,
                                     position_ids=position_ids)
 
+    def step_static(self, x: torch.Tensor, state: "TPStaticState") -> torch.Tensor:
+        """Static decode: hidden ``x [B,1,D]`` over preallocated state.
+
+        Same norms/residuals/MLP as :meth:`step`; the mixer writes
+        into ``state`` in place at ``state.position`` (not advanced
+        here -- the LM advances it once after all blocks).
+        """
+        h = self.input_layernorm(x)
+        if self.layer_type == "full_attention":
+            assert self.self_attn is not None
+            k_buf, v_buf = state.kv_k[self.layer_idx], state.kv_v[self.layer_idx]
+            assert k_buf is not None and v_buf is not None
+            mixed = self.self_attn.step_static(h, k_buf, v_buf, state.position)
+        else:
+            assert self.linear_attn is not None
+            S, conv = state.linear_S[self.layer_idx], state.linear_conv_buffers[self.layer_idx]
+            assert S is not None and conv is not None
+            mixed = self.linear_attn.step_inplace_static(h, S, conv)
+        x = x + mixed
+        x = x + self.mlp(self.post_attention_layernorm(x))
+        return x
+
+
+
+LM_HEAD_MODES = ("replicated", "vocab")
+
+
+def vocab_shard_layout(vocab_size: int, world: int) -> tuple[int, int]:
+    """(padded_vocab, shard_rows) for vocab-parallel lm_head.
+
+    Vocab is padded up to a multiple of ``world`` so every rank holds
+    exactly ``shard_rows`` rows (last rank zero-pads past ``vocab_size``;
+    padded logits are trimmed / masked to -inf for argmax). Real config
+    248320 % 2 == 0, so no padding there.
+    """
+    v, w = int(vocab_size), int(world)
+    if v <= 0 or w <= 0:
+        raise ValueError(f"vocab/world must be positive, got {v}/{w}")
+    shard = -(-v // w)
+    return shard * w, shard
+
+
+def _vocab_range(vocab_size: int, rank: int, world: int) -> tuple[int, int, int]:
+    padded, shard = vocab_shard_layout(vocab_size, world)
+    start = int(rank) * shard
+    return start, min(start + shard, int(vocab_size)), shard
+
 
 class DistributedHybridLM(nn.Module):
     """Distributed hybrid LM mirroring ``TinyHybridLM``'s API.
@@ -1031,6 +1372,89 @@ class DistributedHybridLM(nn.Module):
     def dense_parameter_bytes(model: Any) -> int:
         return int(sum(p.numel() * p.element_size() for p in model.parameters()))
 
+
+    def _init_vocab_layout(self) -> None:
+        cfg = self.config
+        world = int(getattr(self.ctx, "world_size", 1))
+        rank = int(getattr(self.ctx, "rank", 0))
+        padded, shard = vocab_shard_layout(int(cfg.vocab_size), world)
+        start, end, _ = _vocab_range(int(cfg.vocab_size), rank, world)
+        self.vocab_padded = padded
+        self.vocab_shard_size = shard
+        self.vocab_start = start
+        self.vocab_end = end
+
+    def _all_gather(self, tensor: torch.Tensor) -> list[torch.Tensor]:
+        ctx = self.ctx
+        if int(getattr(ctx, "world_size", 1)) == 1:
+            return [tensor]
+        if hasattr(ctx, "all_gather"):
+            return ctx.all_gather(tensor)  # type: ignore[no-any-return]
+        out = [torch.empty_like(tensor) for _ in range(int(ctx.world_size))]
+        dist.all_gather(out, tensor)
+        return out
+
+    def _lm_head_logits(self, hidden: torch.Tensor) -> torch.Tensor:
+        """Full logits from normed hidden ``[..., H]``.
+
+        Replicated: local ``lm_head`` (no collective). Vocab: local
+        shard matmul ``[..., shard]`` then ONE all_gather over the
+        vocab dim and trim of padding. Collective bytes per call:
+        each rank sends ``numel(hidden[..., :1]) * shard * elem_size``
+        and receives ``world`` x that (e.g. decode B=1: 124160 BF16
+        values sent, 248320 gathered pre-trim at the real config).
+        """
+        if getattr(self, "lm_head_mode", "replicated") != "vocab":
+            return self.lm_head(hidden)
+        local = F.linear(hidden, self.lm_head.weight)
+        if int(self.ctx.world_size) == 1:
+            return local[..., : int(self.config.vocab_size)]
+        gathered = self._all_gather(local.contiguous())
+        full = torch.cat(gathered, dim=-1)
+        return full[..., : int(self.config.vocab_size)]
+
+    def greedy_next_token(self, hidden_last: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Argmax token from normed last-token hidden ``[B, H]``.
+
+        Vocab mode fast path: local shard logits, local max, then ONE
+        small all_gather of ``[B, 2]`` FP32 ``(value, global_index)``
+        pairs (8*B bytes/rank vs B*vocab for full logits). Ties go to
+        the smallest global index (matches dense ``argmax``). Padded
+        rows are masked to -inf. Replicated mode: plain local argmax
+        (no collective). Returns ``(tokens [B] int64, top_values [B])``.
+        """
+        if hidden_last.dim() == 3:
+            hidden_last = hidden_last[:, -1, :]
+        if hidden_last.dim() != 2:
+            raise ValueError(f"hidden_last must be [B, H] or [B, T, H], got {tuple(hidden_last.shape)}")
+        if getattr(self, "lm_head_mode", "replicated") != "vocab":
+            logits = self.lm_head(hidden_last)
+            vals, idx = logits.float().max(dim=-1)
+            return idx.to(torch.long), vals
+        local = F.linear(hidden_last, self.lm_head.weight).float()
+        valid = int(self.vocab_end - self.vocab_start)
+        if valid < local.shape[-1]:
+            local = local.clone()
+            local[:, valid:] = float("-inf")
+        vals, local_idx = local.max(dim=-1)
+        global_idx = (local_idx + int(self.vocab_start)).to(torch.float32)
+        pairs = torch.stack([vals, global_idx], dim=-1)  # [B, 2]
+        if int(self.ctx.world_size) == 1:
+            return global_idx.to(torch.long), vals
+        gathered = self._all_gather(pairs.contiguous())
+        best_val = gathered[0][:, 0].clone()
+        best_idx = gathered[0][:, 1].clone()
+        for g in gathered[1:]:
+            better = (g[:, 0] > best_val) | ((g[:, 0] == best_val) & (g[:, 1] < best_idx))
+            best_val = torch.where(better, g[:, 0], best_val)
+            best_idx = torch.where(better, g[:, 1], best_idx)
+        return best_idx.to(torch.long), best_val
+
+    def set_scale_cache(self, enabled: bool) -> int:
+        """Toggle FP32 scale cache on every resident FP8 linear."""
+        from .fp8_linear import apply_scale_cache
+        return apply_scale_cache(self, bool(enabled))
+
     def initial_state(self) -> TPState:
         return TPState.empty(list(self.config.layer_types), seq_len=0)
 
@@ -1078,12 +1502,190 @@ class DistributedHybridLM(nn.Module):
             tag, payload = state.entry(i)
             x, new_payload = block.step(x, layer_state=payload, start_pos=start_pos)
             new_entries.append((tag, new_payload))
-        logits = self.lm_head(self.norm(x))
-        return logits, TPState(entries=new_entries, seq_len=start_pos + 1,
-                               layer_types=list(self.config.layer_types))
+        new_state = TPState(entries=new_entries, seq_len=start_pos + 1,
+                            layer_types=list(self.config.layer_types))
+        logits = self._lm_head_logits(self.norm(x))
+        return logits, new_state
 
     # TinyHybridLM spelling for the decode step.
     decode_step = step
+
+    def prefill_greedy(self, idx: torch.Tensor, position_ids: torch.Tensor | None = None,
+                       state: TPState | None = None,
+                       ) -> tuple[torch.Tensor, torch.Tensor, TPState]:
+        """Prefill + greedy next token without materialising full logits.
+
+        Returns ``(tokens [B], top_values [B], state)``. In vocab mode
+        this uses :meth:`greedy_next_token` (one small all_gather);
+        the hidden run is identical to :meth:`prefill`.
+        """
+        logits_state: TPState
+        # Reuse prefill's block run by capturing normed hidden: run
+        # prefill normally in replicated mode; in vocab mode avoid
+        # the full-vocab gather by re-running via hidden helper.
+        if getattr(self, "lm_head_mode", "replicated") != "vocab":
+            logits, new_state = self.prefill(idx, position_ids=position_ids, state=state)
+            vals, tok = logits[:, -1].float().max(dim=-1)
+            return tok.to(torch.long), vals, new_state
+        hidden, new_state = self._hidden_prefill(idx, position_ids=position_ids, state=state)
+        tok, vals = self.greedy_next_token(hidden[:, -1, :])
+        return tok, vals, new_state
+
+    def step_greedy(self, token: torch.Tensor, state: TPState,
+                    ) -> tuple[torch.Tensor, torch.Tensor, TPState]:
+        """Decode step + greedy token without full logits (see prefill_greedy)."""
+        if getattr(self, "lm_head_mode", "replicated") != "vocab":
+            logits, new_state = self.step(token, state)
+            vals, tok = logits[:, -1].float().max(dim=-1)
+            return tok.to(torch.long), vals, new_state
+        hidden, new_state = self._hidden_step(token, state)
+        tok, vals = self.greedy_next_token(hidden)
+        return tok, vals, new_state
+
+    def _hidden_prefill(self, idx: torch.Tensor, position_ids=None, state=None):
+        if idx.dim() == 1:
+            idx = idx.unsqueeze(0)
+        B, T = idx.shape
+        if state is None:
+            state = self.initial_state()
+        start_pos = int(state.seq_len)
+        x = self.embed_tokens(idx.to(self.ctx.device))
+        new_entries: list[tuple[str, Any]] = []
+        for i, block in enumerate(self.layers):
+            tag, payload = state.entry(i)
+            x, new_payload = block.forward_prefill(
+                x, layer_state=payload, start_pos=start_pos, position_ids=position_ids)
+            new_entries.append((tag, new_payload))
+        new_state = TPState(entries=new_entries, seq_len=start_pos + T,
+                            layer_types=list(self.config.layer_types))
+        return self.norm(x), new_state
+
+    def _hidden_step(self, token: torch.Tensor, state: TPState):
+        if token.dim() == 1:
+            token = token.unsqueeze(1)
+        if token.dim() != 2 or token.shape[1] != 1:
+            raise ValueError(f"token must be [B] or [B, 1], got {tuple(token.shape)}")
+        start_pos = int(state.seq_len)
+        x = self.embed_tokens(token.to(self.ctx.device))
+        new_entries: list[tuple[str, Any]] = []
+        for i, block in enumerate(self.layers):
+            tag, payload = state.entry(i)
+            x, new_payload = block.step(x, layer_state=payload, start_pos=start_pos)
+            new_entries.append((tag, new_payload))
+        new_state = TPState(entries=new_entries, seq_len=start_pos + 1,
+                            layer_types=list(self.config.layer_types))
+        return self.norm(x)[:, 0, :], new_state
+
+    def static_state(self, batch_size: int = 1, max_seq_len: int | None = None,
+                     device: torch.device | str | None = None,
+                     dtype: torch.dtype | None = None) -> TPStaticState:
+        """Allocate a :class:`TPStaticState` for this rank's shards."""
+        if device is None:
+            device = self.ctx.device
+        if dtype is None:
+            param = next(self.parameters(), None)
+            dtype = param.dtype if param is not None else torch.float32
+        return TPStaticState(
+            self.config, batch_size=batch_size,
+            max_seq_len=(max_seq_len if max_seq_len is not None
+                         else int(self.config.max_position_embeddings)),
+            device=device, dtype=dtype, ctx=self.ctx)
+
+    initial_static_state = static_state
+
+    def decode_token_static(self, token_ids: torch.Tensor, state: TPStaticState,
+                            out: torch.Tensor | None = None) -> torch.Tensor:
+        """Decode one token in place over a :class:`TPStaticState`.
+
+        ``token_ids`` is ``[B]`` or ``[B, 1]``; returns logits
+        ``[B, vocab_size]`` -- written into the preallocated ``out``
+        buffer (and returned) when given, else a fresh tensor. State
+        is mutated in place and ``state.position`` is advanced by one
+        (``add_``) after all blocks run. Overflow past ``max_seq_len``
+        raises ``ValueError`` *before* any mutation (checked via one
+        ``.item()`` read outside capture; during CUDA-graph capture
+        the check is skipped and the caller must guarantee the bound).
+
+        Allocation audit (hot path): no ``torch.cat``, list append,
+        ``.item()`` (outside capture) or state clone touches state.
+        Remaining per-step allocations are activations only --
+        projection/attention/MLP intermediates, the ``repeat_kv``
+        expansion and attention mask/scores, and the fresh logits
+        when ``out`` is not provided -- plus the collectives' own
+        buffers inside ``torch.distributed``.
+        """
+        from .hybrid import _is_capturing
+        if not isinstance(state, TPStaticState):
+            raise ValueError(
+                f"decode_token_static requires a TPStaticState, got {type(state).__name__}")
+        if token_ids.dim() == 2 and token_ids.shape[1] == 1:
+            toks = token_ids[:, 0]
+        elif token_ids.dim() == 1:
+            toks = token_ids
+        else:
+            raise ValueError(f"token_ids must be [B] or [B, 1], got {tuple(token_ids.shape)}")
+        if int(toks.shape[0]) != state.batch_size:
+            raise ValueError(
+                f"token batch {int(toks.shape[0])} does not match state batch_size={state.batch_size}")
+        if len(state) != len(self.layers):
+            raise ValueError(f"state has {len(state)} layers, model has {len(self.layers)}")
+        if out is not None and tuple(out.shape) != (state.batch_size, int(self.config.vocab_size)):
+            raise ValueError(
+                f"out must be {(state.batch_size, int(self.config.vocab_size))}, got {tuple(out.shape)}")
+        capturing = _is_capturing(state.position)
+        if not capturing:
+            pos = int(state.position.item())
+            if pos >= state.max_seq_len:
+                raise ValueError(
+                    f"TPStaticState overflow: position {pos} would exceed "
+                    f"max_seq_len={state.max_seq_len} (state already holds "
+                    f"{pos} tokens); allocate a larger TPStaticState "
+                    "or reset() it before decoding more tokens")
+        x = self.embed_tokens(toks.to(self.ctx.device)).unsqueeze(1)
+        for block in self.layers:
+            x = block.step_static(x, state)
+        logits = self._lm_head_logits(self.norm(x))[:, 0, :]
+        state.position.add_(1)
+        if out is not None:
+            out.copy_(logits)
+            return out
+        return logits
+
+    def prefill_static(self, idx: torch.Tensor, state: TPStaticState,
+                       ) -> torch.Tensor:
+        """Prefill into static state (v1: token-by-token decode loop).
+
+        ``idx [B, T]`` -> stacked logits ``[B, T, V]``. Chunkwise TP
+        prefill remains future work; this loop reuses
+        :meth:`decode_token_static` exactly (one mixer all-reduce per
+        token per linear layer, as in the legacy v1 prefill). Raises
+        before any mutation when the prompt would overflow the state.
+        """
+        if idx.dim() == 1:
+            idx = idx.unsqueeze(0)
+        if idx.dim() != 2:
+            raise ValueError(f"idx must be [B, T], got {tuple(idx.shape)}")
+        if not isinstance(state, TPStaticState):
+            raise ValueError(
+                f"prefill_static requires a TPStaticState, got {type(state).__name__}")
+        if int(idx.shape[0]) != state.batch_size:
+            raise ValueError(
+                f"idx batch {int(idx.shape[0])} does not match state batch_size={state.batch_size}")
+        from .hybrid import _is_capturing
+        if not _is_capturing(state.position):
+            pos = int(state.position.item())
+            if pos + int(idx.shape[1]) > state.max_seq_len:
+                raise ValueError(
+                    f"TPStaticState overflow: prefill of {int(idx.shape[1])} tokens at "
+                    f"position {pos} would exceed max_seq_len={state.max_seq_len}; "
+                    "allocate a larger TPStaticState or reset() it first")
+        outs: list[torch.Tensor] = []
+        for t in range(int(idx.shape[1])):
+            outs.append(self.decode_token_static(idx[:, t], state))
+        if not outs:
+            return torch.empty(int(idx.shape[0]), 0, int(self.config.vocab_size),
+                               device=self.ctx.device)
+        return torch.stack(outs, dim=1)
 
     def forward(self, idx: torch.Tensor, state: TPState | None = None,
                 position_ids: torch.Tensor | None = None,

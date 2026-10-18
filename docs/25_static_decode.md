@@ -117,6 +117,28 @@ The graph-safe form therefore keeps position as the state's 0-dim tensor end-to-
 
 Python equality/overflow checks still run once (reading `.item()`) for tensor-position calls *outside* capture, preserving the existing `ValueError` contract; inside capture they are skipped, which is why the smoke script asserts `tokens <= max_seq_len` before capturing. CPU tests pin the equivalence: tensor-position logits equal int-position logits over 7 tokens (`atol 1e-5`, KV buffers included) in [test_static_decode.py](../tests/test_static_decode.py). Known limit: the graph form uses the model's fixed RoPE buffers (`self.cos`/`self.sin`), so captured positions must stay within the precomputed table length.
 
+## TP CUDA graphs: one captured TP2 decode step (measured)
+
+[scripts/tp2_graph_check.py](../scripts/tp2_graph_check.py) captures one `DistributedHybridLM.decode_token_static` step per rank into a `torch.cuda.CUDAGraph` under 2-process NCCL (always run it wrapped in `timeout 180`, so a capture deadlock cannot hang forever). [run_qwen38_tp2.py](../scripts/run_qwen38_tp2.py) `--decode-mode {eager,graph}` (default `eager`) applies the same capture to the real 27B TP2 runner.
+
+**What is captured** (once per rank, after a `dist.barrier`): exactly one decode step over the real `TPStaticState` — embedding, all 64 blocks (including their 128 NCCL all-reduces per token, plus the vocab-parallel lm_head all-gather in `--lm-head vocab` mode), final norm and lm_head — reading the static input token tensor and writing the preallocated static logits buffer (`out=`). Position advances *inside* the graph: `state.position` is a 0-dim tensor incremented by `add_` in the captured step, so replay *n* reads position *n* (RoPE `index_select`, KV `index_copy_`, on-device attention mask; no `.item()` during capture). The caller asserts the bound before capture (`graph_decode_plan`: `max_seq_len = prompt_len + max_new_tokens`, `prompt + replays <= max_seq_len`), because Python overflow checks cannot run inside a graph.
+
+**What stays outside**: prefill (`prefill_static`, variable prompt length), warmup (3 eager static steps on a side stream over a scratch state, then barrier, then capture — capture after warmup), greedy choice (`argmax` on the static logits, then `copy_` of that token into the static input for the next replay), finite-logit checks, host transfer of the finished ids, and any EOS/stopping decision (graph mode generates a fixed token count). Sampling is not captured. Each probe captures its own graph (its state addresses differ) and the graph is deleted with a sync before the next probe and before process-group teardown — a live captured NCCL graph makes `destroy_process_group` hang (measured: first tiny run printed PASS then hung until the outer `timeout` killed torchrun; deleting the graph first exits cleanly).
+
+**Bisect evidence**: a minimal 1-collective probe (`--mode collective`, one captured `all_reduce`) passes, so NCCL collectives are capturable in this build (torch 2.11.0+cu128) with the warmup-on-side-stream + barrier recipe above; no process-group option change was needed.
+
+Measured on this machine (2× RTX 4090):
+
+```text
+tiny TP2 (scripts/tp2_graph_check.py): capture OK, tokens_equal=True (16/16),
+  logits max_abs_diff=0.0, position=16; eager=1700 us/token graph=352 us/token (4.82x)
+real 27B TP2 graph (benchmarks/baseline/ours_tp2_graph.json): 3 probes x 32 tokens,
+  ids exact 32/32 x3 vs ours_tp2_v2.json, TPOT 28.9 ms (34.6 tok/s) vs eager 42.8 ms
+  (23.4 tok/s), capture ~0.05 s/probe, peak ~15.2 GiB/rank
+```
+
+The tiny-model speedup isolates launch overhead; the real-model gain (42.8 → 28.9 ms/token) is the ~13 ms host-launch gap from the TP2 profile being removed, leaving GPU kernel time (roofline floor 19.17 ms) as the dominant remainder. `--decode-mode` stays default `eager` in the runner parser; graph is selected explicitly per run.
+
 ## Bridge applicability: what remains graph-hostile in the 27B pipeline path
 
 The tiny-hybrid result does **not** transfer to the two-GPU bridge ([run_qwen38_gpu.py](../scripts/run_qwen38_gpu.py) + `DeviceMappedHybridRunner`) today. The bridge does not use `decode_token_static`/`StaticHybridState` at all; it runs the legacy `forward_with_state` path per token. Remaining blockers, by file:
