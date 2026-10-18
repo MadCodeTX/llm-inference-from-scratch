@@ -62,7 +62,7 @@ the roadmap describe it so far — no chapter file or code exists yet.
 | [22 Hybrid Qwen3.8](22_hybrid_qwen38.md) | Repo extension (no direct book section) | Built | How do gated full-attention layers sit inside a linear-attention stack, and what state does each kind carry? |
 | [23 Tensor parallelism](23_tensor_parallel.md) | Sec. 5.4 (with sec. 2.2, 2.4–2.5, 4.2, 5.2 context) | Built (CPU simulation) | How is every hybrid tensor family cut across two ranks without splitting a unit the maths treats as indivisible, and what does the all-reduce cost? |
 | [24 Native MTP head](24_mtp.md) | Sec. 5.2 (with sec. 2.2, 2.4–2.5, 4.2, 5.4 context) | Built (CPU foundations) | How does one checkpoint-derived extra layer draft ahead of the target, and how is acceptance counted without inventing numbers? |
-| [25 Static decode](25_static_decode.md) | Sec. 4.1, 4.5 | Built (CPU) | What must be true of a decode step's shapes, addresses, and control flow before a CUDA graph can capture it, and what stays dynamic even then? |
+| [25 Static decode](25_static_decode.md) | Sec. 4.1, 4.5 | Built (CPU + CUDA smoke) | What must be true of a decode step's shapes, addresses, and control flow before a CUDA graph can capture it, and what stays dynamic even then? |
 
 Chapters 13–18 are written. Chapters 15–17 are prose chapters over
 existing code (no new code); chapter 18 is a read-only map with no
@@ -70,9 +70,15 @@ code by design. Chapters 21–22 are repo extensions beyond the book's
 survey, built from the HF reference and the real checkpoint on disk.
 Chapters 23–24 extend that line with Kiely sec. 5.4 (tensor
 parallelism) and sec. 5.2 (speculation) respectively, each proved on
-CPU only; GPU execution remains gated on an approved window.
-Chapter 25 adds static decode (sec. 4.1, 4.5) on CPU; no CUDA graph
-has been captured yet.
+CPU first. GPU execution has since been measured inside approved
+windows: the tiny hybrid smoke passes on CUDA, the 2-rank NCCL
+all-reduce cost is measured, and a pipeline-by-layers bridge ran
+the full 27B model across both GPUs (32/32 exact on all 3 probes);
+true TP collectives inside the forward remain future work.
+Chapter 25 adds static decode (sec. 4.1, 4.5), now also
+smoke-tested on CUDA (static vs legacy `max_abs` 0.0); no CUDA
+graph has been captured yet. Arm B (vLLM + MTP) remains
+**UNMEASURED**.
 
 ## Where this repo deliberately goes deeper than the book
 

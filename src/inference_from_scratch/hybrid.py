@@ -114,6 +114,8 @@ __all__ = [
     "HybridLM",
     "apply_partial_rope",
     "generate_hybrid",
+    "pipeline_device_plan",
+    "DeviceMappedHybridRunner",
     "partial_rope_dim",
     "precompute_mrope_cos_sin",
     "precompute_partial_rope_cache",
@@ -2226,3 +2228,144 @@ def list_hybrid_tensor_map(
 
 
 hybrid_tensor_map = list_hybrid_tensor_map
+
+
+# ---------------------------------------------------------------------------
+# Pipeline-by-layers device mapping (two-GPU bridge; see scripts/run_qwen38_gpu.py).
+# ---------------------------------------------------------------------------
+
+
+def pipeline_device_plan(
+    num_layers: int,
+    split: int,
+    device0: str | torch.device = "cuda:0",
+    device1: str | torch.device = "cuda:1",
+) -> dict[str, Any]:
+    """Layer->device assignment for the pipeline-by-layers bridge.
+
+    Layers ``0 .. split-1`` (with the embedding) live on ``device0``;
+    layers ``split .. num_layers-1`` plus the final norm and ``lm_head``
+    live on ``device1``. ``split=0`` puts every layer on ``device1``
+    (embedding still enters on ``device0``); ``split=num_layers`` puts
+    every layer on ``device0`` and only norm/head on ``device1``.
+    """
+    if int(num_layers) <= 0:
+        raise ValueError(f"num_layers must be positive, got {num_layers}")
+    if not (0 <= int(split) <= int(num_layers)):
+        raise ValueError(f"split must be in [0, {num_layers}], got {split}")
+    d0, d1 = str(device0), str(device1)
+    return {
+        "device0": d0, "device1": d1, "split": int(split),
+        "num_layers": int(num_layers), "embed": d0,
+        "layers": [d0 if i < int(split) else d1 for i in range(int(num_layers))],
+        "norm": d1, "lm_head": d1,
+    }
+
+
+class DeviceMappedHybridRunner:
+    """Forward loop for a :class:`TinyHybridLM` split across two devices.
+
+    The model's modules must already reside on the devices named by
+    :func:`pipeline_device_plan` (embedding + early layers on
+    ``device0``, late layers + norm + head on ``device1``); this runner
+    only moves the hidden state across the boundary inside the loop.
+    ``TinyHybridLM.forward`` is untouched, so single-device tests keep
+    their semantics. ``rms_hook(layer_idx, hidden)``, when given, is
+    called after every block (per-layer hidden-RMS bisect aid).
+    """
+
+    def __init__(self, model: TinyHybridLM, split: int,
+                 device0: str | torch.device = "cuda:0",
+                 device1: str | torch.device = "cuda:1",
+                 rms_hook: Any = None):
+        self.model = model
+        self.plan = pipeline_device_plan(
+            len(model.layers), split, device0, device1)
+        self.device0 = torch.device(self.plan["device0"])
+        self.device1 = torch.device(self.plan["device1"])
+        self.split = int(split)
+        self.rms_hook = rms_hook
+        self._rope_cache: dict[torch.device, tuple[torch.Tensor, torch.Tensor]] = {}
+
+    def _tables(self, device: torch.device, end: int):
+        cached = self._rope_cache.get(device)
+        if cached is None or cached[0].shape[0] < end:
+            cos, sin, _ = precompute_partial_rope_cache(
+                max(int(end), 128), self.model.config.head_dim,
+                self.model.config.partial_rotary_factor,
+                theta=self.model.config.rope_theta,
+                device=device, dtype=torch.float32)
+            self._rope_cache[device] = (cos, sin)
+            return cos, sin
+        return cached
+
+    def run(self, idx: torch.Tensor, state: HybridState | None = None,
+            start_pos: int | None = None,
+            prefill_method: str = "sequential", chunk_size: int = 64,
+            ) -> tuple[torch.Tensor, HybridState]:
+        """``idx [B, T]`` -> ``(logits [B, T, V] on device1, new_state)``."""
+        model = self.model
+        if idx.dim() == 1:
+            idx = idx.unsqueeze(0)
+        idx = idx.to(self.device0)
+        B, T = idx.shape
+        if state is None:
+            state = model.initial_state(B, device=self.device0)
+        if len(state) != len(model.layers):
+            raise ValueError(
+                f"state has {len(state)} layers, model has {len(model.layers)}")
+        if start_pos is None:
+            start_pos = int(state.seq_len)
+        x = model.embed_tokens(idx)
+        new_entries: list[tuple[str, Any]] = []
+        for i, block in enumerate(model.layers):
+            dev = torch.device(self.plan["layers"][i])
+            if x.device != dev:
+                x = x.to(dev)
+            cos, sin = self._tables(dev, start_pos + T)
+            tag, payload = state.entry(i)
+            if block.layer_type == "full_attention":
+                x, kv_pair = block.forward_with_state(
+                    x, payload, cos=cos, sin=sin, start_pos=start_pos,
+                    layer_idx=i)
+                cache = KVCache(1)
+                cache.keys[0], cache.values[0] = kv_pair
+                new_entries.append(("kv", cache))
+            else:
+                block_payload = payload
+                if isinstance(block_payload, KVCache) and block_payload.keys[0] is None:
+                    block_payload = None
+                x, linear_payload = block.forward_with_state(
+                    x, block_payload, cos=cos, sin=sin, start_pos=start_pos,
+                    layer_idx=i, prefill_method=prefill_method,
+                    chunk_size=chunk_size)
+                new_entries.append(("linear", linear_payload))
+            if self.rms_hook is not None:
+                self.rms_hook(i, x)
+        if x.device != self.device1:
+            x = x.to(self.device1)
+        logits = model.lm_head(model.norm(x))
+        return logits, HybridState(
+            entries=new_entries, seq_len=start_pos + T,
+            layer_types=model.config.layer_types)
+
+    @torch.no_grad()
+    def generate_greedy(self, idx: torch.Tensor, max_new_tokens: int,
+                        eos_id: int | None = None) -> list[int]:
+        """Greedy-generate ``max_new_tokens`` ids for a single row ``[1, T]``."""
+        if idx.dim() == 1:
+            idx = idx.unsqueeze(0)
+        if idx.shape[0] != 1:
+            raise ValueError("generate_greedy supports a single row [1, T]")
+        logits, state = self.run(idx)
+        out: list[int] = []
+        nxt = int(logits[0, -1].argmax().item())
+        out.append(nxt)
+        for _ in range(int(max_new_tokens) - 1):
+            if eos_id is not None and nxt == int(eos_id):
+                break
+            step = torch.tensor([[nxt]], dtype=torch.long, device=self.device1)
+            logits, state = self.run(step, state=state)
+            nxt = int(logits[0, -1].argmax().item())
+            out.append(nxt)
+        return out[: int(max_new_tokens)]

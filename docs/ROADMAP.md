@@ -185,7 +185,9 @@ The Tiny-to-Qwen ladder lives here. One codebase climbs it: only
   (`StaticHybridState`, shared static KV cache, in-place gated-delta
   step) so a `T=1` step never reallocates state; prove static logits
   equal the legacy path and `data_ptr` is stable across steps/reset.
-  Sampling, EOS, and CUDA-graph capture itself stay dynamic/GPU work.
+  The static path has since been smoke-tested on CUDA
+  (`scripts/gpu_smoke_hybrid.py`: static vs legacy `max_abs` 0.0);
+  CUDA-graph capture itself is still not built.
 - **Builds on:** 05, 21, 22
 
 ### 12 — Optimizations — Read-only
@@ -226,8 +228,10 @@ The Tiny-to-Qwen ladder lives here. One codebase climbs it: only
   per-head `[q|gate]` pairs and segmented gated-delta QKV kept whole —
   with exact shard/merge roundtrips and dense-equivalent matmuls on
   CPU; price the 128 all-reduces per forward and the per-rank bytes.
-  No distributed runtime or GPU work; real collectives await an
-  approved GPU window.
+  The 2-rank NCCL all-reduce cost was since measured on GPU
+  (6.81 GB/s bus, 8.67 us fitted latency; `benchmarks/roofline/`), and
+  a pipeline-by-layers bridge ran the full model across both GPUs —
+  but true TP collectives inside the forward remain future work.
 - **Builds on:** 21, 22
 
 ### 24 — Native MTP head: foundations — Built (CPU)
@@ -241,6 +245,8 @@ The Tiny-to-Qwen ladder lives here. One codebase climbs it: only
   acceptance accounting with no fabricated numbers; record the
   shape-silent joins as inferred and design Phase 3 rollback
   (truncate KV, snapshot recurrent state) before wiring generation.
+  Arm B (vLLM + MTP) remains **UNMEASURED**; no acceptance or win
+  numbers are claimed.
 - **Builds on:** 14, 22
 
 ### 11 — Serving: batching / PagedAttention — Built

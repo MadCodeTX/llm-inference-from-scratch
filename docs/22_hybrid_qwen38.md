@@ -193,6 +193,20 @@ Whole-block output RMS is 1.173 (layer 0) / 1.284 (layer 3) in bf16, output norm
 
 The durable test is [test_real_layer_parity.py](../tests/test_real_layer_parity.py), env-gated (`RUN_REAL_LAYER_PARITY=1`, three subprocess runs of the script: both layers in bf16 plus the layer-0 fp32 control, asserting whole-block `rel_rms < 0.02` in bf16 and `< 1e-5` in fp32). It skips by default, and a skip is not counted as green evidence — the script runs above are the evidence. Measured gated run: `3 passed in 14.26s`.
 
+## Full-model pipeline run across both GPUs: measured
+
+[run_qwen38_gpu.py](../scripts/run_qwen38_gpu.py) runs the FULL real text model end-to-end (pipeline-by-layers bridge; true TP collectives are the next phase). It builds `HybridLM` from the real `HybridConfig` on meta, converts the 400 checkpoint FP8 linears to resident `BlockFP8Linear`, places embed + layers 0–31 on cuda:0 and layers 32–63 + final norm + `lm_head` on cuda:1 (`--split` CLI arg; `pipeline_device_plan` + `DeviceMappedHybridRunner` in [hybrid.py](../src/inference_from_scratch/hybrid.py)), streams tensors via `hybrid_checkpoint.load_into_model(fp8_mode="resident")` (never a full CPU state dict; `loaded_count=1251`, validation ok), and greedy-generates 32 tokens for the three [arm_a_quality_probes.json](../benchmarks/baseline/arm_a_quality_probes.json) prompts. Raw record: [ours_pipeline_first_run.json](../benchmarks/baseline/ours_pipeline_first_run.json).
+
+Measured (2× RTX 4090, torch 2.11.0+cu128 in `.venv-gpu`, BF16 activations, resident-FP8 reference-dequant forward, single stream):
+
+| Prompt | Ours vs vLLM ids | First divergence | Prefill (s) | Decode (tok/s) |
+|---|---|---|---|---|
+| capital | 32/32 exact | none | 0.93 | 1.83 |
+| water | 32/32 exact | none | 0.71 | 1.83 |
+| counting | 32/32 exact | none | 0.78 | 1.83 |
+
+Load time 25.6 s (streamed resident load). Peak memory 15,887,028,736 B (cuda:0) / 15,934,093,824 B (cuda:1). Generated text is identical to the recorded vLLM text on all three probes. Decode is slow by design: every `BlockFP8Linear` dequantises its full weight matrix per forward, so each token costs a full 27B dequant+matmul pass — 1.83 tok/s is the unoptimized-bridge number, not a target. A `--log-rms` flag records per-layer hidden RMS on the first prefill for divergence bisect (not needed here: logits were finite and exact throughout).
+
 ## Summary in 30 seconds
 
 Parse the real `text_config` into `HybridConfig`; dispatch each block by `layer_types`; run linear layers as gated-delta recurrences (ch 21) and full layers as gated attention — fused per-head Q+gate split, per-head zero-centred Q/K norms, 64-of-256 partial RoPE, GQA over a reused KVCache, sigmoid output gate — behind one mixed snapshot/restore, with checkpoint names mapped from shard headers and the MTP/vision towers specified but deliberately not executed.
