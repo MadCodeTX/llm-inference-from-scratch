@@ -19,9 +19,11 @@ between methods. This is an ours-vs-ours prefill comparison ONLY: it
 is not a TTFT win/loss vs vLLM (no server, no queueing, no sampling).
 
 FP8 dispatch note (measured, see docs/26_prefill.md): resident FP8
-uses the Triton kernel only while flattened rows ``B*M <=
-TRITON_MAX_M (128)``; chunk 256 (B=1) therefore takes the reference
-dequant path, chunk 128 stays on Triton.
+uses Triton while flattened rows ``B*M <= TRITON_MAX_M (1024)`` with
+per-bucket tile configs (M>=64: BLOCK_M=64/BLOCK_N=32/warps=8);
+above the cap the reference dequant path runs. The v2 sweep
+(``--chunks 128,512,1024 --lengths 2048,8192``) writes
+``benchmarks/baseline/ours_tp2_prefill_v2.json``.
 """
 from __future__ import annotations
 
@@ -51,9 +53,10 @@ DEFAULT_SNAPSHOT = (
 
 
 def _time_prefill(model, idx, chunk_size, dev):
-    """(seconds, last_argmax) for one fresh-state prefill."""
+    """(seconds, last_argmax, peak_gib) for one fresh-state prefill."""
     state = model.static_state(batch_size=1, max_seq_len=int(idx.shape[1]) + 8)
     torch.cuda.synchronize(dev)
+    torch.cuda.reset_peak_memory_stats(dev)
     t0 = time.perf_counter()
     if chunk_size is None:
         logits = model.prefill_static(idx, state)
@@ -62,7 +65,8 @@ def _time_prefill(model, idx, chunk_size, dev):
         last = model.prefill_chunkwise_static(idx, state, chunk_size=int(chunk_size))
     torch.cuda.synchronize(dev)
     secs = time.perf_counter() - t0
-    return secs, int(last.float().argmax(dim=-1).item())
+    peak = torch.cuda.max_memory_allocated(dev) / 1024**3
+    return secs, int(last.float().argmax(dim=-1).item()), peak
 
 
 def main() -> int:
@@ -71,6 +75,10 @@ def main() -> int:
     ap.add_argument("--out", default="benchmarks/baseline/ours_tp2_prefill_bench.json")
     ap.add_argument("--fp8-path", choices=["triton", "reference"], default="triton")
     ap.add_argument("--lengths", default="512,2048")
+    ap.add_argument("--chunks", default="128,256",
+                    help="comma list of chunkwise chunk sizes (v2: 128,512,1024)")
+    ap.add_argument("--no-static", action="store_true",
+                    help="skip the token-loop prefill_static rows")
     args = ap.parse_args()
 
     ctx = DistributedTPContext.from_env(backend="nccl", device_type="cuda")
@@ -106,28 +114,34 @@ def main() -> int:
         # Warmup (untimed): one 128-token chunkwise prefill warms Triton.
         warm = torch.tensor([build_token_ids(128, tok)], dtype=torch.long, device=dev)
         _time_prefill(model, warm, 128, dev)
+        chunk_list = [int(v) for v in args.chunks.split(",") if v.strip()]
         for n in lengths:
             ids = build_token_ids(n, tok)
             idx = torch.tensor([ids], dtype=torch.long, device=dev)
             argmax_by_method: dict[str, int] = {}
-            for label, chunk in (("prefill_static", None),
-                                 ("chunkwise128", 128), ("chunkwise256", 256)):
+            methods = ([] if args.no_static else [("prefill_static", None)])
+            methods += [(f"chunkwise{c}", c) for c in chunk_list]
+            for label, chunk in methods:
                 if chunk is None and n > 512:
                     rows.append({"prompt_tokens": n, "method": label, "chunk_size": None,
                                  "status": "capped_at_512_not_run", "seconds": None,
                                  "tok_per_s": None, "last_argmax": None})
                     print(f"[rank {rank}] len={n} {label}: capped_at_512_not_run", flush=True)
                     continue
-                secs, amax = _time_prefill(model, idx, chunk, dev)
+                secs, amax, peak = _time_prefill(model, idx, chunk, dev)
                 argmax_by_method[label] = amax
+                from inference_from_scratch.fp8_linear import fp8_dispatch
                 dispatch = ("n/a-dense-or-token-loop" if chunk is None else
-                            ("triton" if 1 * int(chunk) <= TRITON_MAX_M else "reference-M>128"))
+                            fp8_dispatch(1 * int(chunk)))
+                base = argmax_by_method.get("chunkwise128")
                 rows.append({"prompt_tokens": n, "method": label, "chunk_size": chunk,
                              "status": "measured", "seconds": secs,
                              "tok_per_s": n / secs if secs > 0 else None,
-                             "last_argmax": amax, "fp8_dispatch_B1": dispatch})
+                             "last_argmax": amax, "fp8_dispatch_B1": dispatch,
+                             "peak_mem_gib_rank": peak,
+                             "argmax_equal_vs_chunk128": (None if base is None or label == "chunkwise128" else bool(amax == base))})
                 print(f"[rank {rank}] len={n} {label}: {secs:.4f}s "
-                      f"{n / secs:.1f} tok/s argmax={amax} fp8={dispatch}", flush=True)
+                      f"{n / secs:.1f} tok/s argmax={amax} fp8={dispatch} peak={peak:.2f}GiB", flush=True)
             vals = list(argmax_by_method.values())
             equal = len(set(vals)) == 1 if vals else None
             rows.append({"prompt_tokens": n, "method": "argmax_equality",
@@ -145,9 +159,9 @@ def main() -> int:
                "world": ctx.world_size, "fp8_path": args.fp8_path,
                "lm_head_mode": "vocab", "triton_max_m": int(TRITON_MAX_M),
                "note": ("ours-vs-ours prefill only; NOT a TTFT comparison vs vLLM. "
-                        "prefill_static capped at 512 (labelled, not run at 2048). "
-                        "B=1: chunk128 rows<=TRITON_MAX_M -> Triton FP8; "
-                        "chunk256 -> reference dequant FP8."),
+                        "prefill_static capped at 512 (labelled, not run above). "
+                        "B=1 FP8 dispatch via fp8_dispatch(chunk): Triton for "
+                        "chunk<=TRITON_MAX_M with per-bucket tile configs."),
                "torch": torch.__version__,
                "gpus": [torch.cuda.get_device_name(i) for i in range(ctx.world_size)],
                "load_s_rank0": load_s, "rows": rows}

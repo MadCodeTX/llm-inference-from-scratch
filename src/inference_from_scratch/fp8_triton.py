@@ -58,6 +58,8 @@ __all__ = [
     "validate_config",
     "CONFIG_MODES",
     "TUNED_CONFIGS",
+    "PREFILL_TUNED",
+    "PREFILL_MIN_M",
     "fp8_triton_linear",
 ]
 
@@ -65,7 +67,11 @@ CONFIG_MODES = ("old", "new")
 
 
 def m_bucket(m: int) -> int:
-    """M bucket for config lookup: 1 / 8 / 16 / 32 / 128 (upper bounds)."""
+    """M bucket for config lookup (upper bounds).
+
+    Decode buckets 1/8/16/32 are unchanged; prefill adds 64/128/512
+    and caps at 1024 (the largest benched chunk).
+    """
     m = int(m)
     if m <= 1:
         return 1
@@ -75,7 +81,13 @@ def m_bucket(m: int) -> int:
         return 16
     if m <= 32:
         return 32
-    return 128
+    if m <= 64:
+        return 64
+    if m <= 128:
+        return 128
+    if m <= 512:
+        return 512
+    return 1024
 
 
 def _legacy_config(m: int, n: int, k: int) -> dict:
@@ -96,6 +108,17 @@ def _legacy_config(m: int, n: int, k: int) -> dict:
 # buckets fall back to the legacy heuristic.
 _M1_TUNED = {"BLOCK_M": 16, "BLOCK_N": 32, "BLOCK_K": 128,
              "num_warps": 4, "num_stages": 3}
+# Prefill family (M >= 64), from benchmarks/fp8_prefill_sweep.py
+# (RTX 4090, M=64/128/512, TP2 shard + full shapes): BLOCK_M=64/
+# BLOCK_N=32/num_warps=8 won or tied on every measured shape.
+# BLOCK_M=128 never won (BLOCK_M=128/BLOCK_N=128 exceeds shared
+# memory) and dequant+cuBLAS lost to Triton by 3-12x at every M,
+# so no cuBLAS dispatch is wired. Weight re-read math: a chunk of
+# M rows with BLOCK_M=16 re-reads each weight tile M/16 times;
+# BLOCK_M=64 cuts that 4x, and beyond 64 occupancy losses dominate.
+PREFILL_TUNED = {"BLOCK_M": 64, "BLOCK_N": 32, "BLOCK_K": 128,
+                 "num_warps": 8, "num_stages": 3}
+PREFILL_MIN_M = 64
 TUNED_CONFIGS: dict[tuple[int, int, int], dict] = {
     (1, 5120, 17408): dict(_M1_TUNED),
     (1, 17408, 5120): dict(_M1_TUNED),
@@ -163,6 +186,10 @@ def choose_config(m: int, n: int, k: int, mode: str | None = None) -> dict:
     if mode not in CONFIG_MODES:
         raise ValueError(f"unknown fp8 tile config mode {mode!r}, expected {CONFIG_MODES}")
     if mode == "new":
+        if m >= PREFILL_MIN_M:
+            # Prefill buckets (64/128/512/1024): one measured family
+            # config for every (N, K); see PREFILL_TUNED note.
+            return validate_config(PREFILL_TUNED)
         tuned = TUNED_CONFIGS.get((m_bucket(m), n, k))
         if tuned is not None:
             return validate_config(tuned)

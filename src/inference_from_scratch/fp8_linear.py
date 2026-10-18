@@ -56,13 +56,23 @@ __all__ = [
     "scaled_mm_block_supported",
     "shard_fp8_pair",
     "TRITON_MAX_M",
+    "fp8_dispatch",
 ]
 
-# From benchmarks/fp8_linear_bench.py (RTX 4090, 2026-10-17): the
-# Triton kernel beat the dequant reference at every measured shape
-# and M in 1..128 (6.0x-27.0x). Above 128 rows is unmeasured, so the
-# reference (cuBLAS on a materialised BF16 weight) is kept there.
-TRITON_MAX_M = 128
+# M-based dispatch (measured, RTX 4090): Triton for flattened
+# rows 1..1024, reference (dequant + cuBLAS) above. Decode M=1 was
+# measured in benchmarks/fp8_linear_bench.py (6.0x-27.0x); prefill
+# M=64/128/512 in benchmarks/fp8_prefill_sweep.py, where Triton
+# (BLOCK_M=64/BLOCK_N=32) beat dequant+cuBLAS by 3-12x at every
+# shape, so no cuBLAS crossover is wired below the cap. M=1024 is
+# validated end-to-end by the prefill v2 bench (chunk 1024); above
+# the cap the reference path is kept (unmeasured Triton range).
+TRITON_MAX_M = 1024
+
+
+def fp8_dispatch(flat_m: int) -> str:
+    """'triton' or 'reference' for a flattened row count (CPU-pure)."""
+    return "triton" if 1 <= int(flat_m) <= TRITON_MAX_M else "reference"
 
 
 def _triton_available() -> bool:
@@ -384,7 +394,7 @@ class BlockFP8Linear(nn.Module):
         if self.block != (128, 128) or x.dim() < 1:
             return None
         flat_m = x.numel() // x.shape[-1] if x.dim() >= 1 else 0
-        if not (1 <= flat_m <= TRITON_MAX_M):
+        if fp8_dispatch(flat_m) != "triton":
             return None
         if not _triton_available():
             self._triton_fallback_reason = "triton unavailable"

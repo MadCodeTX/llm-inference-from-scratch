@@ -92,15 +92,60 @@ lm_head, filler prompts; raw rows in
 Last-token argmax is equal across every measured method at both
 lengths. Chunkwise-128 prefill is ~57× the token loop at 512 tokens.
 
-**FP8 M>128 implication (measured):** resident FP8 dispatches to the
-Triton kernel only while flattened rows `B*M <= TRITON_MAX_M = 128`
-(`fp8_linear.py`); above that it falls back to the reference path,
-which materialises a dequantised BF16 weight per call. At B=1,
-chunk 256 therefore runs every FP8 projection on the reference path
-and is ~2.1× *slower* than chunk 128 despite half the chunks
-(633 vs 1306 tok/s at 2048). Default `chunk_size=128` is both the
-API default and the measured winner; larger chunks only pay off if
-the Triton M cap is raised and re-measured.
+**FP8 M>128 implication (measured, superseded below):** resident FP8
+originally dispatched to Triton only while `B*M <= TRITON_MAX_M = 128`;
+chunk 256 fell back to the reference dequant path and measured
+~2.1× *slower* than chunk 128 (633 vs 1306 tok/s at 2048). The v2
+work below raised the cap with measured per-bucket tile configs.
+
+## Prefill v2: profile, tile sweep, larger chunks (2026-10-18)
+
+**Profile** (`scripts/profile_prefill_tp2.py`, prompt 2048 chunk 128,
+TP2, leaf CUDA kernels only — wrapper ops nest the same device time;
+raw top-40 in `benchmarks/profile/tp2_prefill_profile.json`): FP8
+Triton GEMM 46.8% of CUDA time, NCCL collectives 29.2%, other
+GEMM/elementwise 19.6%, gated-delta chunk core (incl. triangular
+solve) 3.4%, norms 0.6%, full-attn-named kernels 0.3% (most attention
+math lands in generic bmm/softmax kernels inside "other"). Profiler
+wall (590 tok/s) is inflated vs the unprofiled 1306-1413 tok/s; only
+the shares are indicative. Conclusion: FP8 GEMM is the largest single
+bucket, but collectives + launch-bound elementwise work together
+rival it — larger external chunks amortise all three.
+
+**Tile sweep** (`benchmarks/fp8_prefill_sweep.py`, M=64/128/512, TP2
+shard + full shapes, `benchmarks/profile/fp8_prefill_sweep.json`):
+BLOCK_M=64/BLOCK_N=32/num_warps=8 won or tied everywhere (rel diff
+vs dequant reference ≤ 7.8e-3 per config). BLOCK_M=128 never won and
+BLOCK_M=128/BLOCK_N=128 exceeds shared memory (OutOfResources).
+Dequant+cuBLAS lost to Triton by 3-12× at every M including 512, so
+no cuBLAS dispatch is wired. Why: with BLOCK_M=16 a chunk of M rows
+re-reads each weight tile `M/16` times per N-tile pass (e.g. 8× at
+M=128); BLOCK_M=64 cuts weight re-reads 4×, and beyond 64 the
+occupancy/shared-memory cost outweighs the remaining re-read saving.
+Wired as `PREFILL_TUNED` for M≥64 buckets (64/128/512/1024) in
+`fp8_triton.choose_config`; decode M=1 tuned config untouched.
+`BlockFP8Linear` dispatch is M-based via `fp8_dispatch`: Triton for
+flattened rows 1..1024 (`TRITON_MAX_M=1024`), reference above.
+
+**End-to-end** (`scripts/prefill_bench_tp2.py --chunks 128,512,1024
+--lengths 2048,8192`, `benchmarks/baseline/ours_tp2_prefill_v2.json`):
+
+| Prompt | Chunk | tok/s | vs chunk128 | Peak GiB/rank | Argmax = chunk128 |
+|---|---|---|---|---|---|
+| 2048 | 128 | 1412.8 | 1.00× | 15.24 | — (baseline) |
+| 2048 | 512 | 1731.6 | 1.23× | 15.41 | yes (2336) |
+| 2048 | 1024 | 1596.0 | 1.13× | 15.76 | yes (2336) |
+| 8192 | 128 | 1351.0 | 1.00× | 15.58 | — (baseline) |
+| 8192 | 512 | 1631.3 | 1.21× | 15.75 | yes (310) |
+| 8192 | 1024 | 1518.1 | 1.12× | 15.99 | yes (310) |
+
+Chunk 512 is the measured best external chunk (+21-23%); chunk 128
+itself improved 1306 → 1413 tok/s at 2048 from the BLOCK_N=32 tile
+retune alone. The API default stays `chunk_size=128` (callers choose
+512 explicitly) — changing the default is a separate decision.
+Remaining gap to Arm A's ~2.9-3.4k tok/s prompt rate: collectives
+(29%) and non-FP8 elementwise work dominate after the GEMM fix;
+batched prefill (docs/28) amortises them across sequences.
 
 This is an ours-vs-ours prefill comparison only. It is **not** a TTFT
 win vs vLLM: no server, queueing, scheduling, or sampling is involved,

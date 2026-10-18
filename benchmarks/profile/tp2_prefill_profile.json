@@ -1,0 +1,270 @@
+{
+  "script": "scripts/profile_prefill_tp2.py",
+  "prompt_tokens": 2048,
+  "chunk_size": 128,
+  "world": 2,
+  "wall_s": 3.4519130466505885,
+  "tok_per_s": 593.2942030469702,
+  "last_argmax": 2336,
+  "total_cuda_us_rank0": 1530553.1780000324,
+  "category_cuda_us": {
+    "other_gpu_elementwise_matmul": 299806.4780000271,
+    "norms": 9766.163000000095,
+    "triton_fp8": 716801.600000004,
+    "gated_delta_chunk_core": 52008.9279999961,
+    "collectives": 447024.1420000045,
+    "full_attn": 5145.867000000494
+  },
+  "category_share_of_cuda": {
+    "other_gpu_elementwise_matmul": 0.1958811247524134,
+    "norms": 0.006380806064354785,
+    "triton_fp8": 0.46832845163645065,
+    "gated_delta_chunk_core": 0.033980477612647185,
+    "collectives": 0.29206704374958675,
+    "full_attn": 0.003362096184547196
+  },
+  "host_plus_gap_s_est": 1.921359868650556,
+  "note": "Categories bucketed from kernel names (see _cat); 'other_gpu_elementwise_matmul' holds remaining GEMM/elementwise (dense BF16 linears, gated-delta chunk core ops, MLP activations) that kernel names do not separate. Raw top kernels included.",
+  "top_kernels": [
+    {
+      "kernel": "_fp8_dequant_gemm_kernel",
+      "category": "triton_fp8",
+      "cuda_us": 716801.600000004,
+      "count": 6400
+    },
+    {
+      "kernel": "ncclDevKernel_AllReduce_Sum_bf16_RING_LL(ncclDevKernelArgsStorage<4096ul>)",
+      "category": "collectives",
+      "cuda_us": 446942.79800000443,
+      "count": 2048
+    },
+    {
+      "kernel": "void batch_trsm_left_kernel<float, 64, 4, 3, false, true, true>(cublasTrsmBatchParams2<float>, float, float const*, int)",
+      "category": "gated_delta_chunk_core",
+      "cuda_us": 45425.07799999551,
+      "count": 3072
+    },
+    {
+      "kernel": "ampere_sgemm_128x128_tn",
+      "category": "other_gpu_elementwise_matmul",
+      "cuda_us": 43424.93800000417,
+      "count": 3840
+    },
+    {
+      "kernel": "void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1}, std::array<char*, 2ul>, 4, TrivialOffsetCalculator<1, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithCast<1>, at::native::memory::StoreWithCast<1> >(int, at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1}, std::array<char*, 2ul>, TrivialOffsetCalculator<1, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithCast<1>, at::native::memory::StoreWithCast<1>)",
+      "category": "other_gpu_elementwise_matmul",
+      "cuda_us": 40022.45299999493,
+      "count": 18210
+    },
+    {
+      "kernel": "void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1}>(at::TensorIteratorBase&, at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1} const&)::{lambda(int)#1}>(int, at::native::gpu_kernel_impl_nocast<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1}>(at::TensorIteratorBase&, at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1} const&)::{lambda(int)#1})",
+      "category": "other_gpu_elementwise_matmul",
+      "cuda_us": 21786.920999999118,
+      "count": 6912
+    },
+    {
+      "kernel": "void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native::BinaryFunctor<float, float, float, at::native::binary_internal::MulFunctor<float> > >(at::TensorIteratorBase&, at::native::BinaryFunctor<float, float, float, at::native::binary_internal::MulFunctor<float> > const&)::{lambda(int)#1}>(int, at::native::gpu_kernel_impl_nocast<at::native::BinaryFunctor<float, float, float, at::native::binary_internal::MulFunctor<float> > >(at::TensorIteratorBase&, at::native::BinaryFunctor<float, float, float, at::native::binary_internal::MulFunctor<float> > const&)::{lambda(int)#1})",
+      "category": "other_gpu_elementwise_matmul",
+      "cuda_us": 18512.359999998313,
+      "count": 8464
+    },
+    {
+      "kernel": "void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#12}::operator()() const::{lambda(c10::BFloat16)#1}>(at::TensorIteratorBase&, at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#12}::operator()() const::{lambda(c10::BFloat16)#1} const&)::{lambda(int)#1}>(int, at::native::gpu_kernel_impl_nocast<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#12}::operator()() const::{lambda(c10::BFloat16)#1}>(at::TensorIteratorBase&, at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#12}::operator()() const::{lambda(c10::BFloat16)#1} const&)::{lambda(int)#1})",
+      "category": "other_gpu_elementwise_matmul",
+      "cuda_us": 16313.610999998917,
+      "count": 3328
+    },
+    {
+      "kernel": "ampere_sgemm_128x128_tt",
+      "category": "other_gpu_elementwise_matmul",
+      "cuda_us": 9921.846000000874,
+      "count": 768
+    },
+    {
+      "kernel": "ampere_sgemm_128x128_nn",
+      "category": "other_gpu_elementwise_matmul",
+      "cuda_us": 9913.694999998626,
+      "count": 768
+    },
+    {
+      "kernel": "void at::native::(anonymous namespace)::vectorized_layer_norm_kernel<float, float, true>(int, float, float const*, float const*, float const*, float*, float*, float*)",
+      "category": "norms",
+      "cuda_us": 9766.163000000095,
+      "count": 2561
+    },
+    {
+      "kernel": "ampere_sgemm_128x128_nt",
+      "category": "other_gpu_elementwise_matmul",
+      "cuda_us": 9484.211000003932,
+      "count": 768
+    },
+    {
+      "kernel": "void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<float> >(at::TensorIteratorBase&, at::native::CUDAFunctor_add<float> const&)::{lambda(int)#1}>(int, at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<float> >(at::TensorIteratorBase&, at::native::CUDAFunctor_add<float> const&)::{lambda(int)#1})",
+      "category": "other_gpu_elementwise_matmul",
+      "cuda_us": 6962.239000004765,
+      "count": 3072
+    },
+    {
+      "kernel": "Memcpy DtoD (Device -> Device)",
+      "category": "other_gpu_elementwise_matmul",
+      "cuda_us": 6778.411000004162,
+      "count": 3330
+    },
+    {
+      "kernel": "void at::native::vectorized_elementwise_kernel<4, at::native::BinaryFunctor<float, float, float, at::native::binary_internal::MulFunctor<float> >, std::array<char*, 3ul> >(int, at::native::BinaryFunctor<float, float, float, at::native::binary_internal::MulFunctor<float> >, std::array<char*, 3ul>)",
+      "category": "other_gpu_elementwise_matmul",
+      "cuda_us": 6616.770000003782,
+      "count": 3840
+    },
+    {
+      "kernel": "void at::native::(anonymous namespace)::conv_depthwise2d_forward_kernel_generic<c10::BFloat16, int>(torch::headeronly::detail::GenericPackedTensorAccessor<torch::headeronly::detail::TensorAccessor<c10::ArrayRef<long>, c10::BFloat16 const, 3ul, torch::headeronly::DefaultPtrTraits, int>, at::detail::IndexBoundsCheck<4ul, int>, c10::BFloat16 const, 4ul, torch::headeronly::DefaultPtrTraits, int>, torch::headeronly::detail::GenericPackedTensorAccessor<torch::headeronly::detail::TensorAccessor<c10::ArrayRef<long>, c10::BFloat16, 3ul, torch::headeronly::DefaultPtrTraits, int>, at::detail::IndexBoundsCheck<4ul, int>, c10::BFloat16, 4ul, torch::headeronly::DefaultPtrTraits, int>, torch::headeronly::detail::GenericPackedTensorAccessor<torch::headeronly::detail::TensorAccessor<c10::ArrayRef<long>, c10::BFloat16 const, 3ul, torch::headeronly::DefaultPtrTraits, int>, at::detail::IndexBoundsCheck<4ul, int>, c10::BFloat16 const, 4ul, torch::headeronly::DefaultPtrTraits, int>, torch::headeronly::detail::GenericPackedTensorAccessor<torch::headeronly::detail::TensorAccessor<c10::ArrayRef<long>, c10::BFloat16 const, 0ul, torch::headeronly::DefaultPtrTraits, int>, at::detail::IndexBoundsCheck<1ul, int>, c10::BFloat16 const, 1ul, torch::headeronly::DefaultPtrTraits, int>, bool, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int)",
+      "category": "gated_delta_chunk_core",
+      "cuda_us": 6583.850000000586,
+      "count": 768
+    },
+    {
+      "kernel": "void at::native::vectorized_elementwise_kernel<4, at::native::CUDAFunctor_add<c10::BFloat16>, std::array<char*, 3ul> >(int, at::native::CUDAFunctor_add<c10::BFloat16>, std::array<char*, 3ul>)",
+      "category": "other_gpu_elementwise_matmul",
+      "cuda_us": 5724.788999998891,
+      "count": 2048
+    },
+    {
+      "kernel": "void at::native::vectorized_elementwise_kernel<4, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::bfloat16_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(float)#1}, std::array<char*, 2ul>)",
+      "category": "other_gpu_elementwise_matmul",
+      "cuda_us": 5154.308999998936,
+      "count": 3361
+    },
+    {
+      "kernel": "void at::native::(anonymous namespace)::cunn_SoftMaxForwardReg<c10::BFloat16, float, c10::BFloat16, at::native::(anonymous namespace)::SoftMaxForwardEpilogue, long, 3>(c10::BFloat16*, c10::BFloat16 const*, long)",
+      "category": "full_attn",
+      "cuda_us": 5145.867000000494,
+      "count": 256
+    },
+    {
+      "kernel": "void at::native::vectorized_elementwise_kernel<4, at::native::CUDAFunctorOnSelf_add<float>, std::array<char*, 2ul> >(int, at::native::CUDAFunctorOnSelf_add<float>, std::array<char*, 2ul>)",
+      "category": "other_gpu_elementwise_matmul",
+      "cuda_us": 4845.174000008537,
+      "count": 4865
+    },
+    {
+      "kernel": "void cutlass::Kernel2<cutlass_80_wmma_tensorop_bf16_s161616gemm_bf16_32x32_64x1_tn_align8>(cutlass_80_wmma_tensorop_bf16_s161616gemm_bf16_32x32_64x1_tn_align8::Params)",
+      "category": "other_gpu_elementwise_matmul",
+      "cuda_us": 4783.021999999688,
+      "count": 1536
+    },
+    {
+      "kernel": "void at::native::vectorized_elementwise_kernel<4, at::native::exp_kernel_cuda(at::TensorIteratorBase&)::{lambda()#2}::operator()() const::{lambda()#2}::operator()() const::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::exp_kernel_cuda(at::TensorIteratorBase&)::{lambda()#2}::operator()() const::{lambda()#2}::operator()() const::{lambda(float)#1}, std::array<char*, 2ul>)",
+      "category": "other_gpu_elementwise_matmul",
+      "cuda_us": 4479.645999998578,
+      "count": 3840
+    },
+    {
+      "kernel": "cuLaunchKernelEx",
+      "category": "other_gpu_elementwise_matmul",
+      "cuda_us": 4417.727000001312,
+      "count": 8449
+    },
+    {
+      "kernel": "void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespace)::OpaqueType<2u>, unsigned int, 3, 64, 64>(at::native::(anonymous namespace)::OpaqueType<2u>*, at::native::(anonymous namespace)::CatArrInputTensorMetadata<at::native::(anonymous namespace)::OpaqueType<2u>, unsigned int, 64, 64>, at::native::(anonymous namespace)::TensorSizeStride<unsigned int, 4u>, int, unsigned int)",
+      "category": "other_gpu_elementwise_matmul",
+      "cuda_us": 4344.2890000000125,
+      "count": 768
+    },
+    {
+      "kernel": "void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_64x64_32x6_tn_align8>(cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_64x64_32x6_tn_align8::Params)",
+      "category": "other_gpu_elementwise_matmul",
+      "cuda_us": 4257.575000001108,
+      "count": 256
+    },
+    {
+      "kernel": "ampere_bf16_s16816gemm_bf16_64x64_ldg8_f2f_stages_64x5_nn",
+      "category": "other_gpu_elementwise_matmul",
+      "cuda_us": 4168.686000001286,
+      "count": 256
+    },
+    {
+      "kernel": "void at::native::vectorized_elementwise_kernel<4, at::native::CUDAFunctor_add<float>, std::array<char*, 3ul> >(int, at::native::CUDAFunctor_add<float>, std::array<char*, 3ul>)",
+      "category": "other_gpu_elementwise_matmul",
+      "cuda_us": 3919.8989999981773,
+      "count": 1536
+    },
+    {
+      "kernel": "void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::func_wrapper_t<float, at::native::sum_functor<float, float, float>::operator()(at::TensorIterator&)::{lambda(float, float)#1}>, unsigned int, float, 4, 4> >(at::native::ReduceOp<float, at::native::func_wrapper_t<float, at::native::sum_functor<float, float, float>::operator()(at::TensorIterator&)::{lambda(float, float)#1}>, unsigned int, float, 4, 4>)",
+      "category": "other_gpu_elementwise_matmul",
+      "cuda_us": 3913.9979999988022,
+      "count": 1536
+    },
+    {
+      "kernel": "void at::native::vectorized_elementwise_kernel<4, at::native::(anonymous namespace)::silu_kernel(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#6}::operator()() const::{lambda(c10::BFloat16)#1}, std::array<char*, 2ul> >(int, at::native::(anonymous namespace)::silu_kernel(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#6}::operator()() const::{lambda(c10::BFloat16)#1}, std::array<char*, 2ul>)",
+      "category": "other_gpu_elementwise_matmul",
+      "cuda_us": 3733.45199999546,
+      "count": 1792
+    },
+    {
+      "kernel": "cudaLaunchKernel",
+      "category": "other_gpu_elementwise_matmul",
+      "cuda_us": 3608.384000003066,
+      "count": 103447
+    },
+    {
+      "kernel": "void offsetPointerArray_kernel<float>(float**, float const**, int, int, int, float**, float const**, int, int, int, float**, float const**, int, int, int, int, int)",
+      "category": "other_gpu_elementwise_matmul",
+      "cuda_us": 3236.074999995881,
+      "count": 3072
+    },
+    {
+      "kernel": "void (anonymous namespace)::elementwise_kernel_with_index<int, at::native::arange_cuda_out(c10::Scalar const&, c10::Scalar const&, c10::Scalar const&, at::Tensor&)::{lambda()#1}::operator()() const::{lambda()#4}::operator()() const::{lambda(long)#1}>(int, at::native::arange_cuda_out(c10::Scalar const&, c10::Scalar const&, c10::Scalar const&, at::Tensor&)::{lambda()#1}::operator()() const::{lambda()#4}::operator()() const::{lambda(long)#1}, function_traits<at::native::arange_cuda_out(c10::Scalar const&, c10::Scalar const&, c10::Scalar const&, at::Tensor&)::{lambda()#1}::operator()() const::{lambda()#4}::operator()() const::{lambda(long)#1}>::result_type*)",
+      "category": "other_gpu_elementwise_matmul",
+      "cuda_us": 3112.023000005541,
+      "count": 3616
+    },
+    {
+      "kernel": "Command Buffer Full",
+      "category": "other_gpu_elementwise_matmul",
+      "cuda_us": 2985.3410000035947,
+      "count": 1723
+    },
+    {
+      "kernel": "void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespace)::OpaqueType<2u>, unsigned int, 4, 64, 64>(at::native::(anonymous namespace)::OpaqueType<2u>*, at::native::(anonymous namespace)::CatArrInputTensorMetadata<at::native::(anonymous namespace)::OpaqueType<2u>, unsigned int, 64, 64>, at::native::(anonymous namespace)::TensorSizeStride<unsigned int, 4u>, int, unsigned int)",
+      "category": "other_gpu_elementwise_matmul",
+      "cuda_us": 2918.9239999995843,
+      "count": 1024
+    },
+    {
+      "kernel": "void cublasLt::splitKreduce_kernel<32, 16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false>(cublasLt::cublasSplitKParams<float>, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+      "category": "other_gpu_elementwise_matmul",
+      "cuda_us": 2726.1439999986305,
+      "count": 1536
+    },
+    {
+      "kernel": "void at::native::vectorized_elementwise_kernel<4, at::native::BinaryFunctor<c10::BFloat16, c10::BFloat16, c10::BFloat16, at::native::binary_internal::MulFunctor<float> >, std::array<char*, 3ul> >(int, at::native::BinaryFunctor<c10::BFloat16, c10::BFloat16, c10::BFloat16, at::native::binary_internal::MulFunctor<float> >, std::array<char*, 3ul>)",
+      "category": "other_gpu_elementwise_matmul",
+      "cuda_us": 2676.4819999997744,
+      "count": 1280
+    },
+    {
+      "kernel": "cudaEventQuery",
+      "category": "other_gpu_elementwise_matmul",
+      "cuda_us": 2564.665999999619,
+      "count": 6393
+    },
+    {
+      "kernel": "void at::native::vectorized_elementwise_kernel<4, at::native::rsqrt_kernel_cuda(at::TensorIteratorBase&)::{lambda()#2}::operator()() const::{lambda()#2}::operator()() const::{lambda(float)#1}, std::array<char*, 2ul> >(int, at::native::rsqrt_kernel_cuda(at::TensorIteratorBase&)::{lambda()#2}::operator()() const::{lambda()#2}::operator()() const::{lambda(float)#1}, std::array<char*, 2ul>)",
+      "category": "other_gpu_elementwise_matmul",
+      "cuda_us": 2359.2430000026184,
+      "count": 2304
+    },
+    {
+      "kernel": "cudaThreadExchangeStreamCaptureMode",
+      "category": "other_gpu_elementwise_matmul",
+      "cuda_us": 2136.071999998705,
+      "count": 4590
+    },
+    {
+      "kernel": "void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<float, float, float, float>, unsigned int, float, 4, 4> >(at::native::ReduceOp<float, at::native::MeanOps<float, float, float, float>, unsigned int, float, 4, 4>)",
+      "category": "other_gpu_elementwise_matmul",
+      "cuda_us": 2063.6880000002766,
+      "count": 768
+    }
+  ]
+}

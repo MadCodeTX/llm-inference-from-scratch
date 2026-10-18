@@ -1,0 +1,3138 @@
+{
+  "torch": "2.11.0+cu128",
+  "gpu": "NVIDIA GeForce RTX 4090",
+  "rows": [
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 64,
+      "path": "dequant_cublas",
+      "config": null,
+      "ms": 0.47124481201171875,
+      "weight_gb_s": 47.28378845143847,
+      "max_abs_diff": 0.0,
+      "rel_diff": 0.0
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": null,
+      "weight_gb_s": null,
+      "max_abs_diff": null,
+      "rel_diff": null,
+      "is_legacy": false,
+      "error": "OutOfResources: out of resource: shared memory, Required: 131080, Hardware limit: 101376. Reducing block sizes or `num_stages` may help."
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": null,
+      "weight_gb_s": null,
+      "max_abs_diff": null,
+      "rel_diff": null,
+      "is_legacy": false,
+      "error": "OutOfResources: out of resource: shared memory, Required: 131080, Hardware limit: 101376. Reducing block sizes or `num_stages` may help."
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.0579584002494812,
+      "weight_gb_s": 384.4522951649179,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.00546448087431694,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.053097599744796754,
+      "weight_gb_s": 419.6468410454566,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.00546448087431694,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.08869280219078064,
+      "weight_gb_s": 251.2294058774949,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.00546448087431694,
+      "is_legacy": true
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.09523199796676636,
+      "weight_gb_s": 233.97849961917169,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.00546448087431694,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.2238976001739502,
+      "weight_gb_s": 99.51978039375373,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.00546448087431694,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.1763327956199646,
+      "weight_gb_s": 126.36469535719866,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.00546448087431694,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.09255679845809936,
+      "weight_gb_s": 240.74125694923657,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.00546448087431694,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.09564160108566284,
+      "weight_gb_s": 232.97644275154465,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.00546448087431694,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.16839679479598998,
+      "weight_gb_s": 132.3198581480994,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.00546448087431694,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.14672319889068602,
+      "weight_gb_s": 151.8658274115265,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.00546448087431694,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.08872960209846496,
+      "weight_gb_s": 251.12521044862757,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.00546448087431694,
+      "is_legacy": true
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 128,
+      "path": "dequant_cublas",
+      "config": null,
+      "ms": 0.4924320220947266,
+      "weight_gb_s": 45.24937250265516,
+      "max_abs_diff": 0.0,
+      "rel_diff": 0.0
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": null,
+      "weight_gb_s": null,
+      "max_abs_diff": null,
+      "rel_diff": null,
+      "is_legacy": false,
+      "error": "OutOfResources: out of resource: shared memory, Required: 131080, Hardware limit: 101376. Reducing block sizes or `num_stages` may help."
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": null,
+      "weight_gb_s": null,
+      "max_abs_diff": null,
+      "rel_diff": null,
+      "is_legacy": false,
+      "error": "OutOfResources: out of resource: shared memory, Required: 131080, Hardware limit: 101376. Reducing block sizes or `num_stages` may help."
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.08934080004692077,
+      "weight_gb_s": 249.40721359443415,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.005050505050505051,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.08179839849472045,
+      "weight_gb_s": 272.4043552202085,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.005050505050505051,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.08656319975852966,
+      "weight_gb_s": 257.4100779795213,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.005050505050505051,
+      "is_legacy": true
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.09244959950447082,
+      "weight_gb_s": 241.0204059231478,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.005050505050505051,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.21541759967803956,
+      "weight_gb_s": 103.43741659596411,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.005050505050505051,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.169924795627594,
+      "weight_gb_s": 131.13000911787825,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.005050505050505051,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.08924000263214112,
+      "weight_gb_s": 249.6889213669153,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.005050505050505051,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.09256960153579712,
+      "weight_gb_s": 240.70796060824946,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.005050505050505051,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.16230080127716065,
+      "weight_gb_s": 137.28977198300257,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.005050505050505051,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.14249119758605958,
+      "weight_gb_s": 156.3762560599038,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.005050505050505051,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.08616960048675537,
+      "weight_gb_s": 258.5858571251572,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.005050505050505051,
+      "is_legacy": true
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 512,
+      "path": "dequant_cublas",
+      "config": null,
+      "ms": 0.5841792106628418,
+      "weight_gb_s": 38.14281575463349,
+      "max_abs_diff": 0.0,
+      "rel_diff": 0.0
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": null,
+      "weight_gb_s": null,
+      "max_abs_diff": null,
+      "rel_diff": null,
+      "is_legacy": false,
+      "error": "OutOfResources: out of resource: shared memory, Required: 131080, Hardware limit: 101376. Reducing block sizes or `num_stages` may help."
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": null,
+      "weight_gb_s": null,
+      "max_abs_diff": null,
+      "rel_diff": null,
+      "is_legacy": false,
+      "error": "OutOfResources: out of resource: shared memory, Required: 131080, Hardware limit: 101376. Reducing block sizes or `num_stages` may help."
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.20986878871917725,
+      "weight_gb_s": 106.17224283795521,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.004366812227074236,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.20478401184082032,
+      "weight_gb_s": 108.80849437269595,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.004366812227074236,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.25012478828430174,
+      "weight_gb_s": 89.08449319574486,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.004366812227074236,
+      "is_legacy": true
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.26746881008148193,
+      "weight_gb_s": 83.30780696714476,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.004366812227074236,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.4187136173248291,
+      "weight_gb_s": 53.21594301699989,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.004366812227074236,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.3369472026824951,
+      "weight_gb_s": 66.12976698606555,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.004366812227074236,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.261627197265625,
+      "weight_gb_s": 85.16790392161437,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.004366812227074236,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.26985599994659426,
+      "weight_gb_s": 82.57085261921083,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.004366812227074236,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.3083264112472534,
+      "weight_gb_s": 72.2683467493526,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.004366812227074236,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.28016641139984133,
+      "weight_gb_s": 79.5321605065632,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.004366812227074236,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_down_2560x8704",
+      "N": 2560,
+      "K": 8704,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.24989280700683594,
+      "weight_gb_s": 89.16719239297855,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.004366812227074236,
+      "is_legacy": true
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 64,
+      "path": "dequant_cublas",
+      "config": null,
+      "ms": 1.0097567558288574,
+      "weight_gb_s": 44.13387654279105,
+      "max_abs_diff": 0.0,
+      "rel_diff": 0.0
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": null,
+      "weight_gb_s": null,
+      "max_abs_diff": null,
+      "rel_diff": null,
+      "is_legacy": false,
+      "error": "OutOfResources: out of resource: shared memory, Required: 131080, Hardware limit: 101376. Reducing block sizes or `num_stages` may help."
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": null,
+      "weight_gb_s": null,
+      "max_abs_diff": null,
+      "rel_diff": null,
+      "is_legacy": false,
+      "error": "OutOfResources: out of resource: shared memory, Required: 131080, Hardware limit: 101376. Reducing block sizes or `num_stages` may help."
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.08432639837265014,
+      "weight_gb_s": 528.4760271992566,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.007407407407407408,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.08079360127449035,
+      "weight_gb_s": 551.5842752026294,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.007407407407407408,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.10658880472183227,
+      "weight_gb_s": 418.0971924425004,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.007407407407407408,
+      "is_legacy": true
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.11340800523757935,
+      "weight_gb_s": 392.9570924613435,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.007407407407407408,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.1302016019821167,
+      "weight_gb_s": 342.2729008059438,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.007407407407407408,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.10285120010375977,
+      "weight_gb_s": 433.29081192092895,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.007407407407407408,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.15539200305938722,
+      "weight_gb_s": 286.787473760593,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.007407407407407408,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.16117759943008422,
+      "weight_gb_s": 276.49301241349747,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.007407407407407408,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.1850767970085144,
+      "weight_gb_s": 240.7891249487629,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.007407407407407408,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.16696319580078126,
+      "weight_gb_s": 266.9119969000466,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.007407407407407408,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.10685440301895141,
+      "weight_gb_s": 417.05796617567705,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.007407407407407408,
+      "is_legacy": true
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 128,
+      "path": "dequant_cublas",
+      "config": null,
+      "ms": 1.0193408012390137,
+      "weight_gb_s": 43.71892103782333,
+      "max_abs_diff": 0.0,
+      "rel_diff": 0.0
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": null,
+      "weight_gb_s": null,
+      "max_abs_diff": null,
+      "rel_diff": null,
+      "is_legacy": false,
+      "error": "OutOfResources: out of resource: shared memory, Required: 131080, Hardware limit: 101376. Reducing block sizes or `num_stages` may help."
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": null,
+      "weight_gb_s": null,
+      "max_abs_diff": null,
+      "rel_diff": null,
+      "is_legacy": false,
+      "error": "OutOfResources: out of resource: shared memory, Required: 131080, Hardware limit: 101376. Reducing block sizes or `num_stages` may help."
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.1319967985153198,
+      "weight_gb_s": 337.6178854430909,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006802721088435374,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.12711520195007325,
+      "weight_gb_s": 350.583402428165,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006802721088435374,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.1523856043815613,
+      "weight_gb_s": 292.44547200412796,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006802721088435374,
+      "is_legacy": true
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.16250879764556886,
+      "weight_gb_s": 274.22810731265747,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006802721088435374,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.24732639789581298,
+      "weight_gb_s": 180.1848908128801,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006802721088435374,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.20126080513000488,
+      "weight_gb_s": 221.4265215286875,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006802721088435374,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.15719519853591918,
+      "weight_gb_s": 283.49771758338403,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006802721088435374,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.16283520460128784,
+      "weight_gb_s": 273.67841069207924,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006802721088435374,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.18513920307159423,
+      "weight_gb_s": 240.70796060824946,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006802721088435374,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.16858240365982055,
+      "weight_gb_s": 264.34834853776243,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006802721088435374,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.1525760054588318,
+      "weight_gb_s": 292.0805264627565,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006802721088435374,
+      "is_legacy": true
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 512,
+      "path": "dequant_cublas",
+      "config": null,
+      "ms": 1.1972607612609862,
+      "weight_gb_s": 37.22203336311092,
+      "max_abs_diff": 0.0,
+      "rel_diff": 0.0
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": null,
+      "weight_gb_s": null,
+      "max_abs_diff": null,
+      "rel_diff": null,
+      "is_legacy": false,
+      "error": "OutOfResources: out of resource: shared memory, Required: 131080, Hardware limit: 101376. Reducing block sizes or `num_stages` may help."
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": null,
+      "weight_gb_s": null,
+      "max_abs_diff": null,
+      "rel_diff": null,
+      "is_legacy": false,
+      "error": "OutOfResources: out of resource: shared memory, Required: 131080, Hardware limit: 101376. Reducing block sizes or `num_stages` may help."
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.404417610168457,
+      "weight_gb_s": 110.19421231789835,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006535947712418301,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.39127039909362793,
+      "weight_gb_s": 113.89688589587395,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006535947712418301,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.4413440227508545,
+      "weight_gb_s": 100.97447275310068,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006535947712418301,
+      "is_legacy": true
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.5012991905212403,
+      "weight_gb_s": 88.89796920211022,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006535947712418301,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.6453343868255615,
+      "weight_gb_s": 69.05641619256544,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006535947712418301,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.5119440078735351,
+      "weight_gb_s": 87.04951970257011,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006535947712418301,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.4671487808227539,
+      "weight_gb_s": 95.39675972505364,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006535947712418301,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.4764111995697021,
+      "weight_gb_s": 93.54204947375491,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006535947712418301,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.4584959983825684,
+      "weight_gb_s": 97.19709693696272,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006535947712418301,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.4133808135986328,
+      "weight_gb_s": 107.80490659943726,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006535947712418301,
+      "is_legacy": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.44067840576171874,
+      "weight_gb_s": 101.12698833737878,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006535947712418301,
+      "is_legacy": true
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 64,
+      "path": "dequant_cublas",
+      "config": null,
+      "ms": 2.054604721069336,
+      "weight_gb_s": 43.380100846654386,
+      "max_abs_diff": 0.0,
+      "rel_diff": 0.0
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": null,
+      "weight_gb_s": null,
+      "max_abs_diff": null,
+      "rel_diff": null,
+      "is_legacy": false,
+      "error": "OutOfResources: out of resource: shared memory, Required: 131080, Hardware limit: 101376. Reducing block sizes or `num_stages` may help."
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": null,
+      "weight_gb_s": null,
+      "max_abs_diff": null,
+      "rel_diff": null,
+      "is_legacy": false,
+      "error": "OutOfResources: out of resource: shared memory, Required: 131080, Hardware limit: 101376. Reducing block sizes or `num_stages` may help."
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.17249280214309692,
+      "weight_gb_s": 516.7111838444147,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.00392156862745098,
+      "is_legacy": false
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.1621999979019165,
+      "weight_gb_s": 549.500377021564,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.00392156862745098,
+      "is_legacy": false
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.1695904016494751,
+      "weight_gb_s": 525.5542715455081,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.00392156862745098,
+      "is_legacy": true
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.1812991976737976,
+      "weight_gb_s": 491.6125451385902,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.00392156862745098,
+      "is_legacy": false
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.44319519996643064,
+      "weight_gb_s": 201.10542714982242,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.00392156862745098,
+      "is_legacy": false
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.3361167907714844,
+      "weight_gb_s": 265.17259014470386,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.00392156862745098,
+      "is_legacy": false
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.34305601119995116,
+      "weight_gb_s": 259.80876909354294,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.00392156862745098,
+      "is_legacy": false
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.3554303884506226,
+      "weight_gb_s": 250.76347688932077,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.00392156862745098,
+      "is_legacy": false
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.3179487943649292,
+      "weight_gb_s": 280.32488746505913,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.00392156862745098,
+      "is_legacy": false
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.27934720516204836,
+      "weight_gb_s": 319.0615776817835,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.00392156862745098,
+      "is_legacy": false
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.16947200298309326,
+      "weight_gb_s": 525.921440893642,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.00392156862745098,
+      "is_legacy": true
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 128,
+      "path": "dequant_cublas",
+      "config": null,
+      "ms": 2.079487991333008,
+      "weight_gb_s": 42.861012120039184,
+      "max_abs_diff": 0.0,
+      "rel_diff": 0.0
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": null,
+      "weight_gb_s": null,
+      "max_abs_diff": null,
+      "rel_diff": null,
+      "is_legacy": false,
+      "error": "OutOfResources: out of resource: shared memory, Required: 131080, Hardware limit: 101376. Reducing block sizes or `num_stages` may help."
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": null,
+      "weight_gb_s": null,
+      "max_abs_diff": null,
+      "rel_diff": null,
+      "is_legacy": false,
+      "error": "OutOfResources: out of resource: shared memory, Required: 131080, Hardware limit: 101376. Reducing block sizes or `num_stages` may help."
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.270635199546814,
+      "weight_gb_s": 329.3324746716203,
+      "max_abs_diff": 0.25,
+      "rel_diff": 0.0078125,
+      "is_legacy": false
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.26106560230255127,
+      "weight_gb_s": 341.4044562512209,
+      "max_abs_diff": 0.25,
+      "rel_diff": 0.0078125,
+      "is_legacy": false
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.3411472082138062,
+      "weight_gb_s": 261.26246340008294,
+      "max_abs_diff": 0.25,
+      "rel_diff": 0.0078125,
+      "is_legacy": true
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.3671504020690918,
+      "weight_gb_s": 242.75871549563868,
+      "max_abs_diff": 0.25,
+      "rel_diff": 0.0078125,
+      "is_legacy": false
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.4345344066619873,
+      "weight_gb_s": 205.11370016628172,
+      "max_abs_diff": 0.25,
+      "rel_diff": 0.0078125,
+      "is_legacy": false
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.33704960346221924,
+      "weight_gb_s": 264.43870304090325,
+      "max_abs_diff": 0.25,
+      "rel_diff": 0.0078125,
+      "is_legacy": false
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.3468287944793701,
+      "weight_gb_s": 256.98258454518697,
+      "max_abs_diff": 0.25,
+      "rel_diff": 0.0078125,
+      "is_legacy": false
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.3588495969772339,
+      "weight_gb_s": 248.37413989252582,
+      "max_abs_diff": 0.25,
+      "rel_diff": 0.0078125,
+      "is_legacy": false
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.3161007881164551,
+      "weight_gb_s": 281.9637386261874,
+      "max_abs_diff": 0.25,
+      "rel_diff": 0.0078125,
+      "is_legacy": false
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.28175039291381837,
+      "weight_gb_s": 316.3401444741293,
+      "max_abs_diff": 0.25,
+      "rel_diff": 0.0078125,
+      "is_legacy": false
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.3419023990631104,
+      "weight_gb_s": 260.6853892930656,
+      "max_abs_diff": 0.25,
+      "rel_diff": 0.0078125,
+      "is_legacy": true
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 512,
+      "path": "dequant_cublas",
+      "config": null,
+      "ms": 2.3837696075439454,
+      "weight_gb_s": 37.38992212919087,
+      "max_abs_diff": 0.0,
+      "rel_diff": 0.0
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": null,
+      "weight_gb_s": null,
+      "max_abs_diff": null,
+      "rel_diff": null,
+      "is_legacy": false,
+      "error": "OutOfResources: out of resource: shared memory, Required: 131080, Hardware limit: 101376. Reducing block sizes or `num_stages` may help."
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": null,
+      "weight_gb_s": null,
+      "max_abs_diff": null,
+      "rel_diff": null,
+      "is_legacy": false,
+      "error": "OutOfResources: out of resource: shared memory, Required: 131080, Hardware limit: 101376. Reducing block sizes or `num_stages` may help."
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.8095232009887695,
+      "weight_gb_s": 110.10056276476811,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.0033333333333333335,
+      "is_legacy": false
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.8037376403808594,
+      "weight_gb_s": 110.89310183079807,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.0033333333333333335,
+      "is_legacy": false
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.8955904006958008,
+      "weight_gb_s": 99.51978039375373,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.0033333333333333335,
+      "is_legacy": true
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.9667584419250488,
+      "weight_gb_s": 92.1936195587005,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.0033333333333333335,
+      "is_legacy": false
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 1.3238271713256835,
+      "weight_gb_s": 67.32673413157553,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.0033333333333333335,
+      "is_legacy": false
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 1.003059196472168,
+      "weight_gb_s": 88.85712858570363,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.0033333333333333335,
+      "is_legacy": false
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.8517087936401367,
+      "weight_gb_s": 104.64722293058617,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.0033333333333333335,
+      "is_legacy": false
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.8839632034301758,
+      "weight_gb_s": 100.82881239189534,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.0033333333333333335,
+      "is_legacy": false
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.9347040176391601,
+      "weight_gb_s": 95.35527644902879,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.0033333333333333335,
+      "is_legacy": false
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.8333312034606933,
+      "weight_gb_s": 106.95502536069867,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.0033333333333333335,
+      "is_legacy": false
+    },
+    {
+      "label": "full_down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.8258048057556152,
+      "weight_gb_s": 107.92981510739283,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.0033333333333333335,
+      "is_legacy": true
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 64,
+      "path": "dequant_cublas",
+      "config": null,
+      "ms": 2.0569599151611326,
+      "weight_gb_s": 43.33043115865389,
+      "max_abs_diff": 0.0,
+      "rel_diff": 0.0
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": null,
+      "weight_gb_s": null,
+      "max_abs_diff": null,
+      "rel_diff": null,
+      "is_legacy": false,
+      "error": "OutOfResources: out of resource: shared memory, Required: 131080, Hardware limit: 101376. Reducing block sizes or `num_stages` may help."
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": null,
+      "weight_gb_s": null,
+      "max_abs_diff": null,
+      "rel_diff": null,
+      "is_legacy": false,
+      "error": "OutOfResources: out of resource: shared memory, Required: 131080, Hardware limit: 101376. Reducing block sizes or `num_stages` may help."
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.15316959619522094,
+      "weight_gb_s": 581.8972055420286,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.007352941176470588,
+      "is_legacy": false
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.1472543954849243,
+      "weight_gb_s": 605.271983267385,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.007352941176470588,
+      "is_legacy": false
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.15615999698638916,
+      "weight_gb_s": 570.754109375197,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.007352941176470588,
+      "is_legacy": true
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.166703999042511,
+      "weight_gb_s": 534.6540005754231,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.007352941176470588,
+      "is_legacy": false
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.26547200679779054,
+      "weight_gb_s": 335.73769632098856,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.007352941176470588,
+      "is_legacy": false
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.20428800582885742,
+      "weight_gb_s": 436.29071436855634,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.007352941176470588,
+      "is_legacy": false
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.25728640556335447,
+      "weight_gb_s": 346.4192358117141,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.007352941176470588,
+      "is_legacy": false
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.2667520046234131,
+      "weight_gb_s": 334.126673671404,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.007352941176470588,
+      "is_legacy": false
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.2770015954971313,
+      "weight_gb_s": 321.7633452256525,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.007352941176470588,
+      "is_legacy": false
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.24942879676818847,
+      "weight_gb_s": 357.3322774067412,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.007352941176470588,
+      "is_legacy": false
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 64,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.1561535954475403,
+      "weight_gb_s": 570.7775075210665,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.007352941176470588,
+      "is_legacy": true
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 128,
+      "path": "dequant_cublas",
+      "config": null,
+      "ms": 2.077952003479004,
+      "weight_gb_s": 42.892694273388486,
+      "max_abs_diff": 0.0,
+      "rel_diff": 0.0
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": null,
+      "weight_gb_s": null,
+      "max_abs_diff": null,
+      "rel_diff": null,
+      "is_legacy": false,
+      "error": "OutOfResources: out of resource: shared memory, Required: 131080, Hardware limit: 101376. Reducing block sizes or `num_stages` may help."
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": null,
+      "weight_gb_s": null,
+      "max_abs_diff": null,
+      "rel_diff": null,
+      "is_legacy": false,
+      "error": "OutOfResources: out of resource: shared memory, Required: 131080, Hardware limit: 101376. Reducing block sizes or `num_stages` may help."
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.22901599407196044,
+      "weight_gb_s": 389.1822506160608,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006756756756756757,
+      "is_legacy": false
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.2263472080230713,
+      "weight_gb_s": 393.7709715019555,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006756756756756757,
+      "is_legacy": false
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.25487360954284666,
+      "weight_gb_s": 349.6986610730939,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006756756756756757,
+      "is_legacy": true
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.27381761074066163,
+      "weight_gb_s": 325.5048488623907,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006756756756756757,
+      "is_legacy": false
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.38927359580993653,
+      "weight_gb_s": 228.9622542072372,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006756756756756757,
+      "is_legacy": false
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.31329760551452634,
+      "weight_gb_s": 284.48656622709956,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006756756756756757,
+      "is_legacy": false
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.27064321041107176,
+      "weight_gb_s": 329.32272664303946,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006756756756756757,
+      "is_legacy": false
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.2739775896072388,
+      "weight_gb_s": 325.31478259871926,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006756756756756757,
+      "is_legacy": false
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.2792639970779419,
+      "weight_gb_s": 319.1566436511482,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006756756756756757,
+      "is_legacy": false
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.2521104097366333,
+      "weight_gb_s": 353.53145509980493,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006756756756756757,
+      "is_legacy": false
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 128,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.2559135913848877,
+      "weight_gb_s": 348.27755539545484,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006756756756756757,
+      "is_legacy": true
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 512,
+      "path": "dequant_cublas",
+      "config": null,
+      "ms": 2.390825653076172,
+      "weight_gb_s": 37.27957322413771,
+      "max_abs_diff": 0.0,
+      "rel_diff": 0.0
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": null,
+      "weight_gb_s": null,
+      "max_abs_diff": null,
+      "rel_diff": null,
+      "is_legacy": false,
+      "error": "OutOfResources: out of resource: shared memory, Required: 131080, Hardware limit: 101376. Reducing block sizes or `num_stages` may help."
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": null,
+      "weight_gb_s": null,
+      "max_abs_diff": null,
+      "rel_diff": null,
+      "is_legacy": false,
+      "error": "OutOfResources: out of resource: shared memory, Required: 131080, Hardware limit: 101376. Reducing block sizes or `num_stages` may help."
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.8110591888427734,
+      "weight_gb_s": 109.89205378114266,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006535947712418301,
+      "is_legacy": false
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.7926159858703613,
+      "weight_gb_s": 112.4491072459618,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006535947712418301,
+      "is_legacy": false
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.9143296241760254,
+      "weight_gb_s": 97.48011837669718,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006535947712418301,
+      "is_legacy": true
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.9863663673400879,
+      "weight_gb_s": 90.360907418561,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006535947712418301,
+      "is_legacy": false
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 1.188049602508545,
+      "weight_gb_s": 75.02124474584717,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006535947712418301,
+      "is_legacy": false
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.912384033203125,
+      "weight_gb_s": 97.68798746630097,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006535947712418301,
+      "is_legacy": false
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.8708656311035157,
+      "weight_gb_s": 102.34524915980484,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006535947712418301,
+      "is_legacy": false
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.9035200119018555,
+      "weight_gb_s": 98.64635960014752,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006535947712418301,
+      "is_legacy": false
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.8369824409484863,
+      "weight_gb_s": 106.48844663813635,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006535947712418301,
+      "is_legacy": false
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 128,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.747972822189331,
+      "weight_gb_s": 119.16069321759285,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006535947712418301,
+      "is_legacy": false
+    },
+    {
+      "label": "full_gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 512,
+      "path": "triton",
+      "config": {
+        "BLOCK_M": 64,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.8460255622863769,
+      "weight_gb_s": 105.3501974090827,
+      "max_abs_diff": 0.125,
+      "rel_diff": 0.006535947712418301,
+      "is_legacy": true
+    }
+  ]
+}

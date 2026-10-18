@@ -82,6 +82,13 @@ def test_triton_used_when_available_and_in_range(monkeypatch):
     assert torch.equal(out, sentinel)
 
 
+def test_fp8_dispatch_thresholds():
+    from inference_from_scratch.fp8_linear import fp8_dispatch
+    assert fp8_dispatch(1) == "triton" and fp8_dispatch(128) == "triton"
+    assert fp8_dispatch(512) == "triton" and fp8_dispatch(1024) == "triton"
+    assert fp8_dispatch(1025) == "reference" and fp8_dispatch(0) == "reference"
+
+
 def test_triton_skipped_above_threshold(monkeypatch):
     m = _mod(use_triton=True)
     monkeypatch.setattr(fp8_mod, "_triton_available", lambda: True)

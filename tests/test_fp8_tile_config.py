@@ -7,7 +7,10 @@ from inference_from_scratch.fp8_triton import (
 
 def test_m_bucket():
     assert m_bucket(1) == 1 and m_bucket(2) == 8 and m_bucket(8) == 8
-    assert m_bucket(9) == 16 and m_bucket(32) == 32 and m_bucket(33) == 128
+    assert m_bucket(9) == 16 and m_bucket(32) == 32 and m_bucket(33) == 64
+    assert m_bucket(64) == 64 and m_bucket(65) == 128 and m_bucket(128) == 128
+    assert m_bucket(129) == 512 and m_bucket(512) == 512
+    assert m_bucket(513) == 1024 and m_bucket(4096) == 1024
 
 
 def test_tuned_exact_shapes():
@@ -46,6 +49,20 @@ def test_mode_switch_and_validation():
         validate_config({"BLOCK_M": 16, "BLOCK_N": 16, "BLOCK_K": 128, "num_warps": 4, "num_stages": 3})
     with pytest.raises(ValueError):
         validate_config({"BLOCK_M": 16, "BLOCK_N": 32, "BLOCK_K": 64, "num_warps": 4, "num_stages": 3})
+
+
+def test_prefill_buckets_use_measured_family():
+    from inference_from_scratch.fp8_triton import PREFILL_TUNED
+    for m in (64, 65, 128, 512, 1024):
+        for n, k in ((2560, 8704), (17408, 5120), (4096, 4096)):
+            assert choose_config(m, n, k, mode="new") == PREFILL_TUNED
+    assert PREFILL_TUNED == {"BLOCK_M": 64, "BLOCK_N": 32, "BLOCK_K": 128,
+                             "num_warps": 8, "num_stages": 3}
+    # Old mode never uses the prefill family; decode M=1 untouched.
+    assert choose_config(128, 5120, 5120, mode="old")["BLOCK_N"] == 64
+    assert choose_config(1, 5120, 17408, mode="new")["BLOCK_M"] == 16
+    # Just below the prefill floor keeps legacy/new decode behaviour.
+    assert choose_config(63, 5120, 5120, mode="new") == choose_config(63, 5120, 5120, mode="old")
 
 
 def test_existing_default_preserved_for_m_gt1():
