@@ -382,6 +382,69 @@ on all 3 probes against both records — a ~5% step, still ~2.2× above
 the floor and not a win; CUDA-graph capture remains the structural
 next lever and is deliberately not built here.
 
+## Static TP state: graph-ready distributed decode
+
+The legacy distributed step above rebuilds state every token:
+`DistributedHybridLM.step` concatenates each full layer's local KV
+(`torch.cat` in `forward_with_state`), allocates a fresh gated-delta
+`(S, conv)` pair per linear layer, and returns a new `TPState` --
+the same three graph-hostile properties ch. 25 catalogues for the
+dense path. The static twin removes them per rank, mirroring
+`StaticHybridState` / `decode_token_static` there:
+
+- **`TPStaticState`** (`tp_distributed.py`), allocated once from
+  `(config, batch=1..N, max_seq_len, device, dtype, ctx)`: full
+  layers get preallocated local KV buffers `kv_k` / `kv_v`
+  `[B, H_kv_local, max_seq_len, Dh]` (this rank's KV-head slice);
+  linear layers get a fixed fp32 `S [B, Hv_local, Dk, Dv]` and conv
+  ring `[B, C_local, K-1]` holding this rank's segmented qkv rows.
+  Position is a 0-dim `int64` tensor on device, incremented
+  in-place (`add_`) inside decode; the Python `seq_len` property
+  reads it with `.item()` and is for use *outside* any captured
+  graph only. `reset()` zeroes every buffer in place, so
+  `data_ptr()` is stable across steps and across reset.
+- **`DistributedHybridLM.decode_token_static(token_ids, state, out=None)`**
+  decodes one `[B]` / `[B, 1]` token through
+  `DistributedHybridBlock.step_static`: full attention gathers its
+  RoPE row with `index_select`, writes K/V with `index_copy_` at the
+  tensor position, and attends over the full fixed-shape buffers
+  with positions past the current one masked on-device; the
+  gated-delta mixer shifts its conv ring with `copy_` and updates
+  `S` with `mul_` / `add_` (`step_inplace_static`, the dense
+  `step_inplace` pattern on rank-local head slices). Logits are
+  copied into the caller's preallocated `out` buffer when given.
+  Overflow at `max_seq_len` raises `ValueError` *before* any
+  mutation (position and buffers unchanged; asserted in tests);
+  during CUDA-graph capture that Python check cannot run, so the
+  caller must guarantee the bound before capturing, as in ch. 25.
+- **`prefill_static(ids, state)`** is labelled v1: it loops
+  `decode_token_static` over the prompt tokens (one mixer
+  all-reduce per token per linear layer, like the legacy v1
+  prefill) and stacks the logits. Chunkwise TP prefill remains
+  future work, unchanged.
+
+Honest allocation audit for the hot path: no `torch.cat`, list
+append, state clone, or (outside capture) `.item()` touches state.
+What still allocates per step is activations -- projection /
+attention / MLP intermediates, the `repeat_kv` expansion and the
+fixed-shape attention scores/mask, and the logits tensor when `out`
+is not provided -- plus whatever `torch.distributed` allocates
+inside its collectives. Those have fixed shapes and, under graph
+capture, reused addresses; sampling, EOS decisions, and any
+cross-rank graph capture itself are *not* built here (the two
+all-reduces per block remain ordinary collectives, so a TP CUDA
+graph is future work, not a claim of this section).
+
+Proof: `scripts/tp2_static_check.py` (durable subprocess test in
+`tests/test_tp_static_decode.py`, ~2 s on gloo CPU) plus the
+single-rank tests there pin, on the tiny 3-linear + 1-full config:
+static token-by-token logits equal the existing distributed `step`
+path and the dense model (fp32, max abs err ~1e-7, greedy tokens
+exact), pointers stable across steps and `reset()`, reset + rerun
+bit-identical, and overflow raising before mutation. The same
+script passes on NCCL CUDA
+(`.venv-gpu/bin/torchrun --nproc_per_node=2 scripts/tp2_static_check.py`).
+
 ## What this deliberately is not
 
 Still deliberately not built: chunkwise TP prefill (linear layers
@@ -391,3 +454,29 @@ embedding/head (both replicated here), MTP under TP, and any TP
 TP2 run above is a single-stream greedy generation measurement,
 not a serving comparison. Those remain gated on later approved
 windows, exactly like the rest of this repo's GPU work.
+
+
+## Micro-opts shipped behind flags (measured A/B)
+
+Two previously measured-not-shipped candidates now ship opt-in (artifact:
+[ours_tp2_microopts_ab.json](/home/nick/muse/llm-inference-from-scratch/benchmarks/baseline/ours_tp2_microopts_ab.json)):
+
+* **Cached FP32 FP8 scales** (`BlockFP8Linear(use_scale_cache=True)`,
+  runner `--scale-cache on`): a `persistent=False` FP32 copy of
+  `weight_scale_inv` (never in `state_dict`), built eagerly in
+  `from_pre_sliced`/`from_linear`/loader (`refresh_scale_cache`) and
+  rebuilt lazily only when the scale's `(data_ptr, _version, shape,
+  dtype, device)` key changes. Paired A/B showed no consistent gain
+  (replicated -0.33, vocab +0.10 ms/token), so the runner default
+  stays `off`.
+* **Vocab-parallel lm_head** (`DistributedHybridLM(lm_head_mode="vocab")`,
+  runner `--lm-head vocab`, now the runner default): lm_head rows are
+  sharded by vocab (zero-padded to a multiple of world; embeddings stay
+  replicated; tied embeddings are rejected). `prefill`/`step` return
+  full logits via one all-gather of local logits (decode: B x shard
+  values sent per rank); `greedy_next_token`/`prefill_greedy`/
+  `step_greedy` instead all-gather one `[B, 2]` (value, global index)
+  pair per rank. Paired ABBA segments measured 43.7 vs 45.6/45.3
+  ms/token vs replicated, so `vocab` became the runner default.
+  All four flag combos generated identical capital ids, 32/32 vs the
+  pipeline bridge.

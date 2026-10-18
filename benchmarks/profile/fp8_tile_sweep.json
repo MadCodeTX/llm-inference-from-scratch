@@ -1,0 +1,1302 @@
+{
+  "torch": "2.11.0+cu128",
+  "gpu": "NVIDIA GeForce RTX 4090",
+  "rows": [
+    {
+      "label": "down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.10499072074890137,
+      "gb_s": 849.455031490802,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.002551020408163265,
+      "is_default": false
+    },
+    {
+      "label": "down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.11950943946838379,
+      "gb_s": 746.2581733854911,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.002551020408163265,
+      "is_default": false
+    },
+    {
+      "label": "down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.11230208396911621,
+      "gb_s": 794.1517454344518,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.002551020408163265,
+      "is_default": false
+    },
+    {
+      "label": "down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.11490303993225098,
+      "gb_s": 776.1752522177404,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.002551020408163265,
+      "is_default": false
+    },
+    {
+      "label": "down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.13506560325622557,
+      "gb_s": 660.3079825646817,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.002551020408163265,
+      "is_default": true
+    },
+    {
+      "label": "down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.12609536170959473,
+      "gb_s": 707.2813368456663,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.002551020408163265,
+      "is_default": false
+    },
+    {
+      "label": "down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.1129366397857666,
+      "gb_s": 789.6896540323663,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.002551020408163265,
+      "is_default": false
+    },
+    {
+      "label": "down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.12295167922973632,
+      "gb_s": 725.3654163873372,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.002551020408163265,
+      "is_default": false
+    },
+    {
+      "label": "down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.1205452823638916,
+      "gb_s": 739.8455937145379,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.002551020408163265,
+      "is_default": false
+    },
+    {
+      "label": "down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.12083200454711913,
+      "gb_s": 738.0900145972654,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.002551020408163265,
+      "is_default": false
+    },
+    {
+      "label": "down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.19412992477416993,
+      "gb_s": 459.4082859906745,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.002551020408163265,
+      "is_default": false
+    },
+    {
+      "label": "down_5120x17408",
+      "N": 5120,
+      "K": 17408,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.19912704467773437,
+      "gb_s": 447.8793734137728,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.002551020408163265,
+      "is_default": false
+    },
+    {
+      "label": "gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.10321023941040039,
+      "gb_s": 864.1089925716511,
+      "max_abs_diff": 0.03125,
+      "rel_diff": 0.001893939393939394,
+      "is_default": false
+    },
+    {
+      "label": "gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.1144217586517334,
+      "gb_s": 779.440003814772,
+      "max_abs_diff": 0.03125,
+      "rel_diff": 0.001893939393939394,
+      "is_default": false
+    },
+    {
+      "label": "gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.11915264129638672,
+      "gb_s": 748.4928158508602,
+      "max_abs_diff": 0.03125,
+      "rel_diff": 0.001893939393939394,
+      "is_default": false
+    },
+    {
+      "label": "gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.12482208251953125,
+      "gb_s": 714.4961388225917,
+      "max_abs_diff": 0.03125,
+      "rel_diff": 0.001893939393939394,
+      "is_default": false
+    },
+    {
+      "label": "gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.1307852840423584,
+      "gb_s": 681.9184333545892,
+      "max_abs_diff": 0.03125,
+      "rel_diff": 0.001893939393939394,
+      "is_default": true
+    },
+    {
+      "label": "gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.12781503677368164,
+      "gb_s": 697.7652884293817,
+      "max_abs_diff": 0.03125,
+      "rel_diff": 0.001893939393939394,
+      "is_default": false
+    },
+    {
+      "label": "gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.10756095886230468,
+      "gb_s": 829.156758579765,
+      "max_abs_diff": 0.03125,
+      "rel_diff": 0.001893939393939394,
+      "is_default": false
+    },
+    {
+      "label": "gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.11715583801269532,
+      "gb_s": 761.250122169206,
+      "max_abs_diff": 0.03125,
+      "rel_diff": 0.001893939393939394,
+      "is_default": false
+    },
+    {
+      "label": "gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.13809439659118652,
+      "gb_s": 645.8255961248175,
+      "max_abs_diff": 0.03125,
+      "rel_diff": 0.001893939393939394,
+      "is_default": false
+    },
+    {
+      "label": "gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.13437952041625978,
+      "gb_s": 663.679225254987,
+      "max_abs_diff": 0.03125,
+      "rel_diff": 0.001893939393939394,
+      "is_default": false
+    },
+    {
+      "label": "gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.14745599746704102,
+      "gb_s": 604.8237951117205,
+      "max_abs_diff": 0.03125,
+      "rel_diff": 0.001893939393939394,
+      "is_default": false
+    },
+    {
+      "label": "gate_17408x5120",
+      "N": 17408,
+      "K": 5120,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.14879743576049806,
+      "gb_s": 599.3711890542963,
+      "max_abs_diff": 0.03125,
+      "rel_diff": 0.001893939393939394,
+      "is_default": false
+    },
+    {
+      "label": "shape_5120x12288",
+      "N": 5120,
+      "K": 12288,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.04866144180297852,
+      "gb_s": 1293.7770371642885,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.0029411764705882353,
+      "is_default": false
+    },
+    {
+      "label": "shape_5120x12288",
+      "N": 5120,
+      "K": 12288,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.07609344005584717,
+      "gb_s": 827.3650915741752,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.0029411764705882353,
+      "is_default": false
+    },
+    {
+      "label": "shape_5120x12288",
+      "N": 5120,
+      "K": 12288,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.0530515193939209,
+      "gb_s": 1186.715417753222,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.0029411764705882353,
+      "is_default": false
+    },
+    {
+      "label": "shape_5120x12288",
+      "N": 5120,
+      "K": 12288,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.05459743976593018,
+      "gb_s": 1153.113704047463,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.0029411764705882353,
+      "is_default": false
+    },
+    {
+      "label": "shape_5120x12288",
+      "N": 5120,
+      "K": 12288,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.09924351692199707,
+      "gb_s": 634.3694575987536,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.0029411764705882353,
+      "is_default": true
+    },
+    {
+      "label": "shape_5120x12288",
+      "N": 5120,
+      "K": 12288,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.08937472343444824,
+      "gb_s": 704.4167923627283,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.0029411764705882353,
+      "is_default": false
+    },
+    {
+      "label": "shape_5120x12288",
+      "N": 5120,
+      "K": 12288,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.060362238883972165,
+      "gb_s": 1042.9874233296014,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.0029411764705882353,
+      "is_default": false
+    },
+    {
+      "label": "shape_5120x12288",
+      "N": 5120,
+      "K": 12288,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.07903232097625733,
+      "gb_s": 796.5988499681464,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.0029411764705882353,
+      "is_default": false
+    },
+    {
+      "label": "shape_5120x12288",
+      "N": 5120,
+      "K": 12288,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.0794214391708374,
+      "gb_s": 792.6959855836644,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.0029411764705882353,
+      "is_default": false
+    },
+    {
+      "label": "shape_5120x12288",
+      "N": 5120,
+      "K": 12288,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.06888448238372803,
+      "gb_s": 913.9512096395136,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.0029411764705882353,
+      "is_default": false
+    },
+    {
+      "label": "shape_5120x12288",
+      "N": 5120,
+      "K": 12288,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.13701120376586914,
+      "gb_s": 459.5029769067924,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.0029411764705882353,
+      "is_default": false
+    },
+    {
+      "label": "shape_5120x12288",
+      "N": 5120,
+      "K": 12288,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.1408073616027832,
+      "gb_s": 447.1148048182418,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.0029411764705882353,
+      "is_default": false
+    },
+    {
+      "label": "shape_5120x10240",
+      "N": 5120,
+      "K": 10240,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.06640511989593506,
+      "gb_s": 790.0884763436992,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.003472222222222222,
+      "is_default": false
+    },
+    {
+      "label": "shape_5120x10240",
+      "N": 5120,
+      "K": 10240,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.06643743991851807,
+      "gb_s": 789.7041196100665,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.003472222222222222,
+      "is_default": false
+    },
+    {
+      "label": "shape_5120x10240",
+      "N": 5120,
+      "K": 10240,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.06621183872222901,
+      "gb_s": 792.3948498108368,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.003472222222222222,
+      "is_default": false
+    },
+    {
+      "label": "shape_5120x10240",
+      "N": 5120,
+      "K": 10240,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.06616799831390381,
+      "gb_s": 792.919860611461,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.003472222222222222,
+      "is_default": false
+    },
+    {
+      "label": "shape_5120x10240",
+      "N": 5120,
+      "K": 10240,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.08027039527893066,
+      "gb_s": 653.6148204787928,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.003472222222222222,
+      "is_default": true
+    },
+    {
+      "label": "shape_5120x10240",
+      "N": 5120,
+      "K": 10240,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.07233439922332764,
+      "gb_s": 725.3246112961409,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.003472222222222222,
+      "is_default": false
+    },
+    {
+      "label": "shape_5120x10240",
+      "N": 5120,
+      "K": 10240,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.06604640007019043,
+      "gb_s": 794.379707966553,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.003472222222222222,
+      "is_default": false
+    },
+    {
+      "label": "shape_5120x10240",
+      "N": 5120,
+      "K": 10240,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.06693888187408448,
+      "gb_s": 783.78841311827,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.003472222222222222,
+      "is_default": false
+    },
+    {
+      "label": "shape_5120x10240",
+      "N": 5120,
+      "K": 10240,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.06707200050354004,
+      "gb_s": 782.232818554903,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.003472222222222222,
+      "is_default": false
+    },
+    {
+      "label": "shape_5120x10240",
+      "N": 5120,
+      "K": 10240,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.066496319770813,
+      "gb_s": 789.0048679510335,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.003472222222222222,
+      "is_default": false
+    },
+    {
+      "label": "shape_5120x10240",
+      "N": 5120,
+      "K": 10240,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.11521056175231933,
+      "gb_s": 455.39158217795773,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.003472222222222222,
+      "is_default": false
+    },
+    {
+      "label": "shape_5120x10240",
+      "N": 5120,
+      "K": 10240,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.11814911842346192,
+      "gb_s": 444.06526853594687,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.003472222222222222,
+      "is_default": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.06658048152923585,
+      "gb_s": 669.829460161188,
+      "max_abs_diff": 0.03125,
+      "rel_diff": 0.0023923444976076554,
+      "is_default": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.0666108798980713,
+      "gb_s": 669.5237785215222,
+      "max_abs_diff": 0.03125,
+      "rel_diff": 0.0023923444976076554,
+      "is_default": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.06665120124816895,
+      "gb_s": 669.1187430207822,
+      "max_abs_diff": 0.03125,
+      "rel_diff": 0.0023923444976076554,
+      "is_default": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.06672383785247803,
+      "gb_s": 668.3903299837498,
+      "max_abs_diff": 0.03125,
+      "rel_diff": 0.0023923444976076554,
+      "is_default": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.06678431987762451,
+      "gb_s": 667.78501423269,
+      "max_abs_diff": 0.03125,
+      "rel_diff": 0.0023923444976076554,
+      "is_default": true
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.06662144184112549,
+      "gb_s": 669.4176344359732,
+      "max_abs_diff": 0.03125,
+      "rel_diff": 0.0023923444976076554,
+      "is_default": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.06675456047058105,
+      "gb_s": 668.082715032695,
+      "max_abs_diff": 0.03125,
+      "rel_diff": 0.0023923444976076554,
+      "is_default": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.06658751964569092,
+      "gb_s": 669.7586610419127,
+      "max_abs_diff": 0.03125,
+      "rel_diff": 0.0023923444976076554,
+      "is_default": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.06645376205444337,
+      "gb_s": 671.1067458221958,
+      "max_abs_diff": 0.03125,
+      "rel_diff": 0.0023923444976076554,
+      "is_default": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.06666240215301514,
+      "gb_s": 669.0063147984363,
+      "max_abs_diff": 0.03125,
+      "rel_diff": 0.0023923444976076554,
+      "is_default": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.06524928092956543,
+      "gb_s": 683.4951644622979,
+      "max_abs_diff": 0.03125,
+      "rel_diff": 0.0023923444976076554,
+      "is_default": false
+    },
+    {
+      "label": "tp_gate_8704x5120",
+      "N": 8704,
+      "K": 5120,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.061497278213500976,
+      "gb_s": 725.1958020836302,
+      "max_abs_diff": 0.03125,
+      "rel_diff": 0.0023923444976076554,
+      "is_default": false
+    },
+    {
+      "label": "tp_down_5120x8704",
+      "N": 5120,
+      "K": 8704,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.03448832035064697,
+      "gb_s": 1293.120904311114,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.003424657534246575,
+      "is_default": false
+    },
+    {
+      "label": "tp_down_5120x8704",
+      "N": 5120,
+      "K": 8704,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.05288959980010986,
+      "gb_s": 843.2199935063105,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.003424657534246575,
+      "is_default": false
+    },
+    {
+      "label": "tp_down_5120x8704",
+      "N": 5120,
+      "K": 8704,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.03731071949005127,
+      "gb_s": 1195.3017419535888,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.003424657534246575,
+      "is_default": false
+    },
+    {
+      "label": "tp_down_5120x8704",
+      "N": 5120,
+      "K": 8704,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.03841023921966553,
+      "gb_s": 1161.0854008211081,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.003424657534246575,
+      "is_default": false
+    },
+    {
+      "label": "tp_down_5120x8704",
+      "N": 5120,
+      "K": 8704,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.0687001609802246,
+      "gb_s": 649.1624963271547,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.003424657534246575,
+      "is_default": true
+    },
+    {
+      "label": "tp_down_5120x8704",
+      "N": 5120,
+      "K": 8704,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 16,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.06206463813781738,
+      "gb_s": 718.5664709905994,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.003424657534246575,
+      "is_default": false
+    },
+    {
+      "label": "tp_down_5120x8704",
+      "N": 5120,
+      "K": 8704,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.04252255916595459,
+      "gb_s": 1048.7978351901913,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.003424657534246575,
+      "is_default": false
+    },
+    {
+      "label": "tp_down_5120x8704",
+      "N": 5120,
+      "K": 8704,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 32,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.05737472057342529,
+      "gb_s": 777.3034457383765,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.003424657534246575,
+      "is_default": false
+    },
+    {
+      "label": "tp_down_5120x8704",
+      "N": 5120,
+      "K": 8704,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.05747776031494141,
+      "gb_s": 775.9099824981665,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.003424657534246575,
+      "is_default": false
+    },
+    {
+      "label": "tp_down_5120x8704",
+      "N": 5120,
+      "K": 8704,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 64,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.05023551940917969,
+      "gb_s": 887.7696204699846,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.003424657534246575,
+      "is_default": false
+    },
+    {
+      "label": "tp_down_5120x8704",
+      "N": 5120,
+      "K": 8704,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 4,
+        "num_stages": 3
+      },
+      "ms": 0.09846783638000488,
+      "gb_s": 452.91508008655796,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.003424657534246575,
+      "is_default": false
+    },
+    {
+      "label": "tp_down_5120x8704",
+      "N": 5120,
+      "K": 8704,
+      "M": 1,
+      "config": {
+        "BLOCK_M": 32,
+        "BLOCK_N": 128,
+        "BLOCK_K": 128,
+        "num_warps": 8,
+        "num_stages": 3
+      },
+      "ms": 0.10103808403015137,
+      "gb_s": 441.39364308107207,
+      "max_abs_diff": 0.0625,
+      "rel_diff": 0.003424657534246575,
+      "is_default": false
+    }
+  ]
+}

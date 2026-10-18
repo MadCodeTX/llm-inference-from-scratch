@@ -52,6 +52,56 @@ def test_norm_mode_flag():
         _mod.apply_norm_mode(model, "bogus")
 
 
+def test_microopt_flags():
+    args = _mod.build_parser().parse_args([])
+    # Defaults are measured A/B winners only: vocab won paired A/B;
+    # scale-cache showed no consistent gain, so it stays off.
+    assert args.lm_head == "vocab" and args.scale_cache == "off" and args.probe is None
+    args = _mod.build_parser().parse_args(
+        ["--lm-head", "vocab", "--scale-cache", "on", "--probe", "capital"])
+    assert args.lm_head == "vocab" and args.scale_cache == "on" and args.probe == "capital"
+    import torch
+    from inference_from_scratch.fp8_linear import BlockFP8Linear
+    m = torch.nn.Sequential(BlockFP8Linear.from_linear(torch.nn.Linear(128, 128, bias=False)))
+    assert _mod.apply_scale_cache_mode(m, "on") == 1
+    assert m[0].cached_fp32_scale() is not None
+    assert _mod.apply_scale_cache_mode(m, "off") == 1
+    assert m[0].cached_fp32_scale() is None
+    with pytest.raises(ValueError):
+        _mod.apply_scale_cache_mode(m, "bogus")
+
+
+def test_decode_mode_flag_and_plan():
+    args = _mod.build_parser().parse_args([])
+    assert args.decode_mode == "eager"  # default until graph measured
+    args = _mod.build_parser().parse_args(["--decode-mode", "graph"])
+    assert args.decode_mode == "graph"
+    assert _mod.validate_decode_mode("graph") == "graph"
+    assert _mod.validate_decode_mode("eager") == "eager"
+    with pytest.raises(ValueError):
+        _mod.validate_decode_mode("bogus")
+    plan = _mod.graph_decode_plan(5, 32)
+    assert plan["max_seq_len"] == 37 and plan["replays"] == 31
+    assert plan["prompt_len"] + plan["replays"] <= plan["max_seq_len"]
+    plan1 = _mod.graph_decode_plan(8, 1)
+    assert plan1["replays"] == 0 and plan1["max_seq_len"] == 9
+    with pytest.raises(ValueError):
+        _mod.graph_decode_plan(0, 32)
+    with pytest.raises(ValueError):
+        _mod.graph_decode_plan(5, 0)
+
+
+def test_fp8_config_flag():
+    args = _mod.build_parser().parse_args([])
+    assert args.fp8_config == "new"
+    args = _mod.build_parser().parse_args(["--fp8-config", "old"])
+    assert args.fp8_config == "old"
+    assert _mod.validate_fp8_config("old") == "old"
+    assert _mod.validate_fp8_config("new") == "new"
+    with pytest.raises(ValueError):
+        _mod.validate_fp8_config("bogus")
+
+
 def test_compare_ids():
     exact = _mod.compare_ids([1, 2, 3], [1, 2, 3])
     assert exact == {"exact_match": True, "matching_positions": 3,

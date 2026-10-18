@@ -88,6 +88,21 @@ Measured with [fp8_linear_bench.py](../benchmarks/fp8_linear_bench.py) (`.venv-g
 
 Correctness: Triton vs dequant reference rel diff ≤ 8e-3 across all benched shapes (BF16 dot-order rounding). GPU tests: [test_fp8_triton_gpu.py](../tests/test_fp8_triton_gpu.py) (skip-gated); CPU dispatch/fallback tests: [test_fp8_triton_dispatch.py](../tests/test_fp8_triton_dispatch.py).
 
+## Tile retune after CUDA graphs (measured)
+
+Once CUDA graphs removed the host-launch gap (TP2 graph TPOT 28.89 ms vs eager 42 ms; docs/25), kernel tiles matter again. [fp8_tile_sweep.py](../benchmarks/fp8_tile_sweep.py) sweeps `BLOCK_N {32,64,128} x num_warps {4,8} x BLOCK_M {16,32}` at M=1 on the stored orientations, CUDA-event median of interleaved rounds, raw rows in [fp8_tile_sweep.json](../benchmarks/profile/fp8_tile_sweep.json). Legacy default is `BLOCK_M=16, BLOCK_N=128, num_warps=4`; the winner on every primary shape (and, in the repeat run, both TP2 shard shapes `8704x5120` / `5120x8704`) was `BLOCK_M=16, BLOCK_N=32, num_warps=4`:
+
+| Shape N×K (M=1) | Legacy ms / GB/s | Tuned BN32 ms / GB/s | Kernel gain | Rel diff |
+|---|---|---|---|---|
+| 5120×17408 | 0.1351 / 660 | 0.1050 / 849 | 22.3% | 2.6e-3 |
+| 17408×5120 | 0.1308 / 682 | 0.1032 / 864 | 21.1% | 1.9e-3 |
+| 5120×12288 | 0.0992 / 634 | 0.0487 / 1294 | 51.0% | 2.9e-3 |
+| 5120×10240 | 0.0803 / 654 | 0.0664 / 790 | 17.3% | 3.5e-3 |
+
+GB/s above DRAM peak on the smaller shapes is L2 reuse across bench reps; the within-shape config comparison is the decision basis, and the two large (89 MB, L2-exceeding) shapes still gain 21–22%. Selection is fixed, not autotuned (graph safety): `choose_config` in [fp8_triton.py](../src/inference_from_scratch/fp8_triton.py) looks up `TUNED_CONFIGS` keyed by `(M bucket, N, K)` — bucket 1 is M=1 alone — applies the measured M=1 family config (`BLOCK_N=32`) to unlisted M=1 shapes, and falls back to the legacy heuristic for all other buckets. `--fp8-config old|new` on the TP2 runner (or `INFERENCE_FP8_TILE_CONFIG`) toggles it. CPU tests: [test_fp8_tile_config.py](../tests/test_fp8_tile_config.py).
+
+End-to-end A/B on real TP2 (graph decode, capital, 32 tokens, ABBA cross-process, [ours_tp2_tile_ab.json](../benchmarks/baseline/ours_tp2_tile_ab.json)): old TPOT 28.87 / 28.89 ms (34.63 tok/s), new TPOT 24.48 / 24.48 ms (40.85 tok/s) — **−4.40 ms (−15.2%)**, ids exact 32/32 in all four runs. Verdict: **ship new defaults**, on the end-to-end improvement (not merely the kernel-only gain).
+
 ## How the big systems do it
 
 **Qwen-family deployments** are commonly served in bf16, or weight-quantized (AWQ/GPTQ-style int4 with per-group scales and activation-aware calibration — refinements of the per-channel grid above, using small groups of columns per scale and a calibration set to protect salient weights). W4A16 ("4-bit weights, 16-bit activations") is the standard on-device recipe: dequantize weights to fp16 on the fly during the GEMV, pay ~1/4 the weight traffic, keep activations precise.

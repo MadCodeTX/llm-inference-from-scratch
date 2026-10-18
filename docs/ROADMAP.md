@@ -187,7 +187,7 @@ The Tiny-to-Qwen ladder lives here. One codebase climbs it: only
   equal the legacy path and `data_ptr` is stable across steps/reset.
   The static path has since been smoke-tested on CUDA
   (`scripts/gpu_smoke_hybrid.py`: static vs legacy `max_abs` 0.0);
-  CUDA-graph capture itself is still not built.
+  CUDA-graph capture has since been built for TP decode (`TPStaticState` + captured `decode_token_static`, tiny TP2 graph check PASS, real graph 34.6 tok/s; see ch 23).
 - **Builds on:** 05, 21, 22
 
 ### 12 — Optimizations — Read-only
@@ -234,8 +234,7 @@ The Tiny-to-Qwen ladder lives here. One codebase climbs it: only
   `tp_checkpoint.py`, `scripts/run_qwen38_tp2.py`): v1 22.9–23.6 tok/s,
   v2 (fused RMSNorm) 23.4–23.9 tok/s, both 32/32 exact ×3 vs the
   pipeline bridge (retained as oracle) and vLLM Arm A; profile shows
-  host-launch-bound decode (128 all-reduces/token = 1.28 ms). Still
-  ~2.1× off Arm A — no win claimed. See `docs/23_tensor_parallel.md`.
+  host-launch-bound decode (128 all-reduces/token = 1.28 ms). This phase: TP static state + CUDA-graph decode 34.6 tok/s (TPOT 28.9 ms, 32/32 exact ×3), vocab-parallel lm_head shipped, scale cache opt-in/off, FP8 BLOCK_N=32 tile retune 24.48 ms/token (capital ABBA) — still above Arm A 20.3 ms and the 19.17 ms floor, no win claimed. See `docs/23_tensor_parallel.md`.
 - **Builds on:** 21, 22
 
 ### 24 — Native MTP head: foundations — Built (CPU)

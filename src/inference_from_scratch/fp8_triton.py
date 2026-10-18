@@ -35,6 +35,8 @@ which keeps BF16 activations, is the fast path.
 
 from __future__ import annotations
 
+import os
+
 import torch
 
 try:  # Import-guarded so the CPU env imports this module fine.
@@ -50,8 +52,96 @@ except Exception:  # pragma: no cover - exercised by CPU-env import
 __all__ = [
     "triton_available",
     "choose_config",
+    "m_bucket",
+    "config_mode",
+    "set_config_mode",
+    "validate_config",
+    "CONFIG_MODES",
+    "TUNED_CONFIGS",
     "fp8_triton_linear",
 ]
+
+CONFIG_MODES = ("old", "new")
+
+
+def m_bucket(m: int) -> int:
+    """M bucket for config lookup: 1 / 8 / 16 / 32 / 128 (upper bounds)."""
+    m = int(m)
+    if m <= 1:
+        return 1
+    if m <= 8:
+        return 8
+    if m <= 16:
+        return 16
+    if m <= 32:
+        return 32
+    return 128
+
+
+def _legacy_config(m: int, n: int, k: int) -> dict:
+    m = int(m)
+    if m <= 32:
+        bm = 16 if m <= 16 else 32
+        return {"BLOCK_M": bm, "BLOCK_N": 128, "BLOCK_K": 128,
+                "num_warps": 4, "num_stages": 3}
+    return {"BLOCK_M": 64, "BLOCK_N": 64, "BLOCK_K": 128,
+            "num_warps": 4, "num_stages": 3}
+
+
+# Measured tuned configs keyed by (M bucket, N, K), from
+# benchmarks/fp8_tile_sweep.py (RTX 4090, M=1, two runs, see docs/10):
+# BLOCK_M=16/BLOCK_N=32/num_warps=4 beat the legacy BLOCK_N=128 config
+# by 21-51% on every measured shape and was never worse, so it is also
+# the M=1 family config for unlisted (N, K) in choose_config. Other
+# buckets fall back to the legacy heuristic.
+_M1_TUNED = {"BLOCK_M": 16, "BLOCK_N": 32, "BLOCK_K": 128,
+             "num_warps": 4, "num_stages": 3}
+TUNED_CONFIGS: dict[tuple[int, int, int], dict] = {
+    (1, 5120, 17408): dict(_M1_TUNED),
+    (1, 17408, 5120): dict(_M1_TUNED),
+    (1, 5120, 12288): dict(_M1_TUNED),
+    (1, 5120, 10240): dict(_M1_TUNED),
+    (1, 8704, 5120): dict(_M1_TUNED),
+    (1, 5120, 8704): dict(_M1_TUNED),
+}
+
+_CONFIG_MODE = os.environ.get("INFERENCE_FP8_TILE_CONFIG", "new").strip().lower()
+if _CONFIG_MODE not in CONFIG_MODES:
+    _CONFIG_MODE = "new"
+
+
+def config_mode() -> str:
+    return _CONFIG_MODE
+
+
+def set_config_mode(mode: str) -> str:
+    """Select 'old' (legacy heuristic) or 'new' (tuned map) configs.
+
+    Fixed selection only -- no runtime autotune, so CUDA-graph capture
+    sees one deterministic config per shape.
+    """
+    global _CONFIG_MODE
+    if mode not in CONFIG_MODES:
+        raise ValueError(f"unknown fp8 tile config mode {mode!r}, expected {CONFIG_MODES}")
+    _CONFIG_MODE = str(mode)
+    return _CONFIG_MODE
+
+
+def validate_config(cfg: dict) -> dict:
+    cfg = dict(cfg)
+    for key in ("BLOCK_M", "BLOCK_N", "BLOCK_K", "num_warps", "num_stages"):
+        if key not in cfg:
+            raise ValueError(f"fp8 config missing {key}: {cfg}")
+        cfg[key] = int(cfg[key])
+    if cfg["BLOCK_K"] != 128:
+        raise ValueError("BLOCK_K must be 128 (one block-scale column)")
+    if cfg["BLOCK_N"] not in (32, 64, 128):
+        raise ValueError("BLOCK_N must divide the 128 block (32/64/128)")
+    if cfg["BLOCK_M"] < 16 or (cfg["BLOCK_M"] & (cfg["BLOCK_M"] - 1)) != 0:
+        raise ValueError("BLOCK_M must be a power of two >= 16")
+    if cfg["num_warps"] not in (4, 8):
+        raise ValueError("num_warps must be 4 or 8 for measured configs")
+    return cfg
 
 
 def triton_available() -> bool:
@@ -59,25 +149,27 @@ def triton_available() -> bool:
     return bool(_TRITON_AVAILABLE and torch.cuda.is_available())
 
 
-def choose_config(m: int, n: int, k: int) -> dict:
-    """Fixed (non-autotuned) kernel config heuristic by shape.
+def choose_config(m: int, n: int, k: int, mode: str | None = None) -> dict:
+    """Fixed (non-autotuned) kernel config by (M bucket, N, K).
 
     ``BLOCK_K`` is always 128 so one K-tile is exactly one block-scale
     column; ``BLOCK_N`` divides 128 so one N-tile lies in one scale
-    row. Both keep the in-kernel scale a single scalar load.
+    row. Mode 'old' is the legacy heuristic; mode 'new' (default)
+    consults TUNED_CONFIGS keyed by (m_bucket, N, K) and falls back
+    to the legacy heuristic for unmeasured shapes.
     """
     m, n, k = int(m), int(n), int(k)
-    if m <= 8:
-        return {"BLOCK_M": 16, "BLOCK_N": 128, "BLOCK_K": 128,
-                "num_warps": 4, "num_stages": 3}
-    if m <= 16:
-        return {"BLOCK_M": 16, "BLOCK_N": 128, "BLOCK_K": 128,
-                "num_warps": 4, "num_stages": 3}
-    if m <= 32:
-        return {"BLOCK_M": 32, "BLOCK_N": 128, "BLOCK_K": 128,
-                "num_warps": 4, "num_stages": 3}
-    return {"BLOCK_M": 64, "BLOCK_N": 64, "BLOCK_K": 128,
-            "num_warps": 4, "num_stages": 3}
+    mode = config_mode() if mode is None else str(mode)
+    if mode not in CONFIG_MODES:
+        raise ValueError(f"unknown fp8 tile config mode {mode!r}, expected {CONFIG_MODES}")
+    if mode == "new":
+        tuned = TUNED_CONFIGS.get((m_bucket(m), n, k))
+        if tuned is not None:
+            return validate_config(tuned)
+        if m_bucket(m) == 1:
+            # M=1 family: measured winner on all six swept shapes.
+            return dict(_M1_TUNED)
+    return _legacy_config(m, n, k)
 
 
 if _TRITON_AVAILABLE:
@@ -135,6 +227,8 @@ def fp8_triton_linear(
     scale_inv: torch.Tensor,
     bias: torch.Tensor | None = None,
     block: tuple[int, int] = (128, 128),
+    config: dict | None = None,
+    config_mode: str | None = None,
 ) -> torch.Tensor:
     """Fused FP8 dequant matmul: ``x @ dequant(weight).T (+ bias)``.
 
@@ -165,7 +259,7 @@ def fp8_triton_linear(
     w2 = weight.contiguous()
     s2 = scale_inv.to(torch.float32).contiguous()
     out = torch.empty((m, n), device=x.device, dtype=torch.bfloat16)
-    cfg = choose_config(m, n, k)
+    cfg = validate_config(config) if config is not None else choose_config(m, n, k, mode=config_mode)
     grid = (
         triton.cdiv(m, cfg["BLOCK_M"]),
         triton.cdiv(n, cfg["BLOCK_N"]),
