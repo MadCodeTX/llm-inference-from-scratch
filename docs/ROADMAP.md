@@ -98,6 +98,26 @@ The Tiny-to-Qwen ladder lives here. One codebase climbs it: only
   prefill-then-decode loop; EOS; seeded generators.
 - **Builds on:** 07
 
+### 19 — Real weights: Qwen2.5-0.5B proved against HF — Built
+
+- **Book framing:** sec. 2.2.1 (`config.json` as source of truth), sec. 4.2.2
+  (model file formats), sec. 4.2.4 (reference implementations).
+- **Goal:** Download Qwen2.5-0.5B-Instruct, load it into `DecoderLM` with
+  zero validation errors (QKV bias gap found and fixed), and prove greedy
+  equivalence with the HF reference on identical raw ids (logits, per-step
+  top-1, exact generated ids) on CPU fp32; CPU TTFT/TPS + roofline.
+- **Builds on:** 07, 08, 09, 13
+
+### 20 — GGUF formats: safetensors vs GGUF vs pickle — Built
+
+- **Book framing:** sec. 4.2.2 (model file formats), sec. 3.5
+  (local inference).
+- **Goal:** Dissect the GGUF container by hand (`struct` only): magic/
+  version, typed metadata incl. arrays, tensor infos, alignment and
+  data-start arithmetic; compare safetensors vs GGUF vs pickle and
+  state what is not built yet (tensor dequantization, next build).
+- **Builds on:** 09, 10, 19
+
 ### 09 — Safetensors + HF config + Qwen weight mapping — Built
 
 - **Book framing:** sec. 4.2.2 (model file formats), 4.2.4 (reference

@@ -84,14 +84,16 @@ class TransformerBlock(nn.Module):
 
     ``attn_norm`` / ``mlp_norm`` are RMSNorm or LayerNorm per
     ``config.norm_type``; ``mlp`` is SwiGLU or GeluMLP per
-    ``config.mlp_type``. No dropout and no biases in the attention
-    or MLP projections: inference is deterministic, and the
-    cache-equivalence tests require prefill and decode to agree
+    ``config.mlp_type``. No dropout. Attention Q/K/V projections
+    carry a bias only when ``config.attention_bias`` is set (Qwen2);
+    MLP projections stay bias-free. Inference is deterministic, and
+    the cache-equivalence tests require prefill and decode to agree
     exactly.
 
     State-dict names (Ch 09 maps HF checkpoints onto these)::
 
-        attn_norm.weight, attn.{q,k,v,o}_proj.weight,
+        attn_norm.weight, attn.{q,k,v,o}_proj.weight
+                          (+ {q,k,v}_proj.bias if attention_bias),
         mlp_norm.weight,  mlp.{gate,up,down}_proj.weight  (SwiGLU)
                           mlp.{up,down}_proj.weight       (GELU)
     """

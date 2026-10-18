@@ -120,9 +120,11 @@ class CausalSelfAttention(nn.Module):
     """Causal self-attention with GQA, RoPE and KV-cache support.
 
     Separate ``q_proj`` / ``k_proj`` / ``v_proj`` / ``o_proj`` Linear
-    layers (all bias-free, Llama/Qwen style, and *no dropout anywhere*:
+    layers (bias-free by default, Llama style, and *no dropout anywhere*:
     inference is deterministic and the cache-equivalence tests require
-    prefill and decode to agree exactly).
+    prefill and decode to agree exactly). When
+    ``config.attention_bias`` is True (Qwen2 family) the Q/K/V
+    projections carry a bias; ``o_proj`` stays bias-free either way.
 
     Widths from ``config``: queries span all ``n_head`` heads, keys and
     values only ``n_kv_head`` heads, so the projections are::
@@ -148,12 +150,14 @@ class CausalSelfAttention(nn.Module):
 
         D = config.d_model  # residual width
         Dh = config.head_dim  # per-head width
+        use_bias = config.attention_bias
         # x [B, T, D] -> q flat [B, T, H * Dh]
-        self.q_proj = nn.Linear(D, config.n_head * Dh, bias=False)
+        self.q_proj = nn.Linear(D, config.n_head * Dh, bias=use_bias)
         # x [B, T, D] -> k/v flat [B, T, H_kv * Dh] (narrower under GQA)
-        self.k_proj = nn.Linear(D, config.n_kv_head * Dh, bias=False)
-        self.v_proj = nn.Linear(D, config.n_kv_head * Dh, bias=False)
-        # merged heads [B, T, H * Dh] -> y [B, T, D]
+        self.k_proj = nn.Linear(D, config.n_kv_head * Dh, bias=use_bias)
+        self.v_proj = nn.Linear(D, config.n_kv_head * Dh, bias=use_bias)
+        # merged heads [B, T, H * Dh] -> y [B, T, D]; o stays bias-free
+        # in both families (no *.o_proj.bias in the Qwen2 checkpoint).
         self.o_proj = nn.Linear(config.n_head * Dh, D, bias=False)
 
     def forward(

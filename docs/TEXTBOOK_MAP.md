@@ -56,6 +56,8 @@ the roadmap describe it so far — no chapter file or code exists yet.
 | [16 Software / engines](16_software_engines.md) | Ch 4 (incl. sec. 4.2.4, 4.5) | Written | Where does this hand-built engine sit beside vLLM, SGLang, TensorRT-LLM, and Dynamo? |
 | [17 Production](17_production.md) | Ch 7 (incl. sec. 7.2) | Written | What do cold starts, autoscaling, cost, observability, and client streaming add around the model? |
 | [18 Modalities](18_modalities.md) | Ch 6 | Written, read-only | What changes when inputs or outputs stop being plain text? |
+| [19 Real weights](19_real_weights_qwen.md) | Sec. 2.2.1, 4.2.2, 4.2.4 | Built | Does the hand-built engine run a real Qwen checkpoint token-for-token identically to the HF reference? |
+| [20 GGUF formats](20_gguf_formats.md) | Sec. 4.2.2, 3.5 | Built | Why do on-device runtimes ship one GGUF file, and what is byte-for-byte inside it? |
 
 Chapters 13–18 are written. Chapters 15–17 are prose chapters over
 existing code (no new code); chapter 18 is a read-only map with no

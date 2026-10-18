@@ -57,6 +57,10 @@ class ModelConfig:
         mlp_type:    'swiglu' (Llama/Qwen) or 'gelu' (GPT-2).
         pos_type:    'rope' (rotary, no learned table) or 'learned'
                      (adds an embedding row per position, GPT-2 style).
+        attention_bias: if True the Q/K/V projections carry a bias
+                     (Qwen2 family). Llama keeps them bias-free, which
+                     is why this defaults to False; the output
+                     projection is bias-free in both families.
     """
 
     vocab_size: int
@@ -72,6 +76,7 @@ class ModelConfig:
     norm_type: str = "rmsnorm"  # 'rmsnorm' | 'layernorm'
     mlp_type: str = "swiglu"  # 'swiglu' | 'gelu'
     pos_type: str = "rope"  # 'rope' | 'learned'
+    attention_bias: bool = False
 
     def __post_init__(self) -> None:
         # Fail fast at construction: a config that cannot produce a

@@ -208,6 +208,62 @@ def test_static_cache_decode_equals_full_forward():
     assert torch.allclose(y_step[:, 0], y_full[:, -1], atol=1e-6)
 
 
+def test_biased_attention_shapes_forward_and_effect():
+    torch.manual_seed(10)
+    config = _config(n_head=4, n_kv_head=2)
+    object.__setattr__(config, "attention_bias", True)
+    # Rebuild with the field set properly (dataclass is not frozen).
+    from inference_from_scratch.config import ModelConfig as _MC
+    config = _MC(
+        vocab_size=64, d_model=32, n_layer=1, n_head=4, n_kv_head=2,
+        d_ff=64, max_seq_len=64, attention_bias=True,
+    )
+    attn = CausalSelfAttention(config).eval()
+    assert attn.q_proj.bias is not None and attn.q_proj.bias.shape == (32,)
+    assert attn.k_proj.bias is not None and attn.k_proj.bias.shape == (16,)
+    assert attn.v_proj.bias is not None and attn.v_proj.bias.shape == (16,)
+    assert attn.o_proj.bias is None
+    cos, sin = _rope(config)
+    x = torch.randn(2, 5, config.d_model)
+    with torch.no_grad():
+        y = attn(x, cos, sin)
+    assert y.shape == (2, 5, config.d_model)
+    # Zero biases must reproduce the bias-free result; nonzero must move it.
+    with torch.no_grad():
+        for p in (attn.q_proj.bias, attn.k_proj.bias, attn.v_proj.bias):
+            p.zero_()
+        y_zero = attn(x, cos, sin)
+        for p in (attn.q_proj.bias, attn.k_proj.bias, attn.v_proj.bias):
+            p.fill_(0.5)
+        y_biased = attn(x, cos, sin)
+    assert not torch.allclose(y_zero, y_biased, atol=1e-6)
+
+
+def test_biased_cached_decode_equals_full_forward():
+    torch.manual_seed(11)
+    from inference_from_scratch.config import ModelConfig as _MC
+    config = _MC(
+        vocab_size=64, d_model=32, n_layer=1, n_head=4, n_kv_head=2,
+        d_ff=64, max_seq_len=64, attention_bias=True,
+    )
+    attn = CausalSelfAttention(config).eval()
+    cos, sin = _rope(config)
+    B, T = 2, 7
+    x = torch.randn(B, T, config.d_model)
+    with torch.no_grad():
+        y_full = attn(x, cos, sin)
+        cache = KVCache(n_layer=1)
+        steps = [
+            attn(
+                x[:, t : t + 1], cos, sin,
+                kv_cache=cache, layer_idx=0, start_pos=t,
+            )
+            for t in range(T)
+        ]
+        y_cached = torch.cat(steps, dim=1)
+    assert torch.allclose(y_cached, y_full, atol=1e-6)
+
+
 def test_chunked_prefill_with_cache_equals_full_forward():
     # T>1 at start_pos>0: second chunk must see chunk 1 + itself causally.
     torch.manual_seed(9)

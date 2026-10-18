@@ -195,9 +195,24 @@ def test_load_hf_config_from_fixture_dict():
         vocab_size=128, d_model=32, n_layer=2, n_head=4, n_kv_head=2,
         d_ff=64, max_seq_len=256, rope_theta=1000000.0, rms_eps=1e-6,
         tie_embeddings=True, norm_type="rmsnorm", mlp_type="swiglu",
-        pos_type="rope",
+        pos_type="rope", attention_bias=True,
     )
     assert cfg.head_dim == 8
+
+
+def test_load_hf_config_attention_bias_explicit_and_family():
+    explicit_false = dict(HF_FIXTURE, attention_bias=False)
+    assert load_hf_config(explicit_false).attention_bias is False
+    explicit_true = {
+        k: v for k, v in HF_FIXTURE.items() if k != "architectures"
+    }
+    explicit_true["attention_bias"] = True
+    assert load_hf_config(explicit_true).attention_bias is True
+    llama_like = {k: v for k, v in HF_FIXTURE.items() if k != "architectures"}
+    llama_like["model_type"] = "llama"
+    assert load_hf_config(llama_like).attention_bias is False
+    qwen_like = dict(llama_like, model_type="qwen2")
+    assert load_hf_config(qwen_like).attention_bias is True
 
 
 def test_load_hf_config_gqa_defaults_when_kv_heads_missing():
@@ -359,6 +374,38 @@ def test_map_renames_every_documented_layer_key():
     # validation must surface it as unexpected, not drop it silently.
     report = validate_state_dict(mapped, _tiny_model())
     assert f"layers.{i}.attn.q_proj.bias" in report["unexpected"]
+
+
+def test_biased_checkpoint_validates_and_roundtrips():
+    model = _tiny_model(seed=11, attention_bias=True, tie_embeddings=False)
+    hf_sd = {
+        _to_hf_name(k): v.clone() for k, v in model.state_dict().items()
+    }
+    # _to_hf_name only covers .weight; extend for .bias keys.
+    hf_biased = {}
+    for k, v in model.state_dict().items():
+        if k.endswith(".bias"):
+            parts = k.split(".")
+            layer = parts[1]
+            proj = parts[3]
+            hf_biased[f"model.layers.{layer}.self_attn.{proj}.bias"] = v.clone()
+        else:
+            hf_biased[_to_hf_name(k)] = v.clone()
+    assert "model.layers.0.self_attn.q_proj.bias" in hf_biased
+    assert "model.layers.0.self_attn.o_proj.bias" not in hf_biased
+
+    mapped = map_hf_state_dict(hf_biased)
+    assert set(mapped) == set(model.state_dict())
+    report = validate_state_dict(mapped, model)
+    assert report == {"missing": [], "unexpected": [],
+                      "shape_mismatch": [], "ok": True}
+    fresh = _tiny_model(seed=99, attention_bias=True, tie_embeddings=False)
+    assert fresh.load_state_dict(mapped, strict=True)
+    idx = torch.randint(0, 48, (2, 6))
+    with torch.no_grad():
+        want, _ = model(idx)
+        got, _ = fresh(idx)
+    assert torch.equal(got, want)
 
 
 def test_tied_checkpoint_without_lm_head_validates_and_loads():

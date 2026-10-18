@@ -81,12 +81,15 @@ HF (Llama / Qwen2 / Qwen3)             this repo (``DecoderLM``)
 =====================================  =====================================
 
 (``...`` = ``model.layers.{i}.``; every row is a ``.weight``, and a
-``.bias`` renames the same way.) Two honest caveats:
+``.bias`` renames the same way.) One honest caveat, now resolved:
 
 * *Biases.* Llama ships none; Qwen2 ships Q/K/V projection biases.
-  This repo's projections are bias-free, so a mapped ``.bias`` has no
-  home: renaming keeps it visible and :func:`validate_state_dict`
-  reports it as *unexpected* instead of silently dropping it.
+  When ``ModelConfig.attention_bias`` is True (see
+  :func:`load_hf_config`) those biases rename to
+  ``layers.{i}.attn.{q,k,v}_proj.bias`` and load strictly; with the
+  default False they have no home and :func:`validate_state_dict`
+  reports them as *unexpected* instead of silently dropping them.
+  ``o_proj`` is bias-free in both families.
 * *Tied embeddings.* HF checkpoints with ``tie_word_embeddings``
   usually omit ``lm_head.weight`` entirely (the head *is* the
   embedding). ``map_hf_state_dict(sd, tie_embeddings=True)`` then
@@ -401,6 +404,27 @@ def _hf_get(raw: Mapping[str, Any], *names: str, default: Any = None) -> Any:
     return default
 
 
+def _infer_attention_bias(raw: Mapping[str, Any]) -> bool:
+    """Whether Q/K/V projections carry a bias, from config evidence.
+
+    An explicit ``attention_bias`` key in ``config.json`` wins. When
+    the key is absent (current Qwen2 checkpoints do not serialise it)
+    the architecture is the evidence: the Qwen2 family ships Q/K/V
+    biases, Llama does not. The safetensors header remains ground
+    truth -- :func:`validate_state_dict` flags any disagreement.
+    """
+    value = raw.get("attention_bias")
+    if value is not None:
+        return bool(value)
+    model_type = str(raw.get("model_type", "")).lower()
+    if model_type in {"qwen2", "qwen2_moe"}:
+        return True
+    for arch in raw.get("architectures") or []:
+        if isinstance(arch, str) and arch.startswith("Qwen2"):
+            return True
+    return False
+
+
 def load_hf_config(path_or_dict: "str | Path | Mapping[str, Any] | ModelConfig") -> ModelConfig:
     """Translate a Llama/Qwen-style ``config.json`` into ``ModelConfig``.
 
@@ -420,13 +444,16 @@ def load_hf_config(path_or_dict: "str | Path | Mapping[str, Any] | ModelConfig")
     ``rope_theta``              ``rope_theta``
     ``rms_norm_eps``            ``rms_eps``
     ``tie_word_embeddings``     ``tie_embeddings``
+    ``attention_bias``          ``attention_bias``
     ==========================  ==========================
 
     Defaults follow HF when a field is absent: ``num_key_value_heads``
     defaults to ``num_attention_heads`` (plain MHA -- the GQA default
     this repo's tests pin), ``rope_theta`` to 10000, ``rms_norm_eps``
-    to 1e-6, ``tie_word_embeddings`` to False. Architecture flavour
-    is not an HF field: Llama/Qwen are RMSNorm + SwiGLU + RoPE, so
+    to 1e-6, ``tie_word_embeddings`` to False. ``attention_bias``
+    defaults via :func:`_infer_attention_bias` (explicit key, else
+    Qwen2-family detection). Architecture flavour is not an HF field:
+    Llama/Qwen are RMSNorm + SwiGLU + RoPE, so
     ``norm_type``/``mlp_type``/``pos_type`` take those values. A
     ``rope_theta`` nested in ``rope_scaling`` is honoured when the
     top-level key is absent. ``max_position_embeddings`` absent falls
@@ -492,6 +519,7 @@ def load_hf_config(path_or_dict: "str | Path | Mapping[str, Any] | ModelConfig")
         norm_type="rmsnorm",
         mlp_type="swiglu",
         pos_type="rope",
+        attention_bias=_infer_attention_bias(raw),
     )
 
 
