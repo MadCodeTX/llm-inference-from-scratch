@@ -76,6 +76,7 @@ from typing import Any, Mapping, Sequence
 
 import torch
 import torch.nn.functional as F
+from torch import nn
 
 __all__ = [
     "ShardSpec",
@@ -90,6 +91,18 @@ __all__ = [
     "real_config_report",
     "qwen38_tp_report",
     "allreduce_points",
+    "SimulatedProcessGroup",
+    "ColumnParallelLinear",
+    "RowParallelLinear",
+    "TPMLP",
+    "TPFullAttention",
+    "TPGatedDeltaNet",
+    "TPLinearAttention",
+    "shard_linear_state",
+    "merge_linear_state",
+    "state_bytes",
+    "state_bytes_table",
+    "print_state_bytes",
 ]
 
 # Shard kinds (plain strings so specs serialise and compare easily).
@@ -756,6 +769,663 @@ def partitioned_linear(x: torch.Tensor, shards: Sequence[torch.Tensor],
 
 
 # ---------------------------------------------------------------------------
+# Executable simulated TP runtime (CPU, in-process, world ranks as slices)
+# ---------------------------------------------------------------------------
+
+
+def _check_world(world: int) -> int:
+    world = int(world)
+    if world <= 0:
+        raise ValueError(f"world must be positive, got {world}")
+    return world
+
+
+class SimulatedProcessGroup:
+    """In-process stand-in for a process group: ranks are list positions.
+
+    ``all_reduce_sum`` sums one partial per rank (the row-parallel
+    closing collective); ``gather_concat`` concatenates per-rank
+    feature slices in rank order (the column-parallel recombination).
+    Counters let tests assert a block performs *exactly one*
+    all-reduce, not one per projection.
+    """
+
+    def __init__(self, world: int):
+        self.world = _check_world(world)
+        self.all_reduce_calls = 0
+        self.gather_calls = 0
+        self.all_reduce_elements = 0
+        self.gather_elements = 0
+
+    def all_reduce_sum(self, partials: Sequence[torch.Tensor]) -> torch.Tensor:
+        parts = list(partials)
+        if len(parts) != self.world:
+            raise ValueError(f"all_reduce_sum needs {self.world} partials, got {len(parts)}")
+        if not parts or not isinstance(parts[0], torch.Tensor):
+            raise ValueError("all_reduce_sum partials must be tensors")
+        shape = tuple(parts[0].shape)
+        for p in parts:
+            if tuple(p.shape) != shape:
+                raise ValueError(f"all_reduce_sum shape mismatch {tuple(p.shape)} != {shape}")
+        self.all_reduce_calls += 1
+        self.all_reduce_elements += int(parts[0].numel()) * len(parts)
+        total = parts[0].clone()
+        for p in parts[1:]:
+            total = total + p
+        return total
+
+    # Alias spelling used by some call sites.
+    allreduce_sum = all_reduce_sum
+
+    def gather_concat(self, partials: Sequence[torch.Tensor], dim: int = -1) -> torch.Tensor:
+        parts = list(partials)
+        if len(parts) != self.world:
+            raise ValueError(f"gather_concat needs {self.world} partials, got {len(parts)}")
+        self.gather_calls += 1
+        self.gather_elements += sum(int(p.numel()) for p in parts)
+        return torch.cat(parts, dim=dim)
+
+    all_gather_concat = gather_concat
+
+
+def _even_bounds(total: int, world: int, what: str) -> list[tuple[int, int]]:
+    if total % world != 0:
+        raise ValueError(f"{what}={total} not divisible by world={world}")
+    per = total // world
+    return [(r * per, (r + 1) * per) for r in range(world)]
+
+
+class ColumnParallelLinear(nn.Module):
+    """Column-parallel linear built by slicing a dense ``nn.Linear``.
+
+    Weight rows (output features) are split evenly; each rank computes
+    ``F.linear(x, W_r, b_r)`` and outputs gather-concatenate in rank
+    order, exactly reproducing the dense linear. No weight is
+    re-initialised: shards are clones of dense row slices.
+    """
+
+    def __init__(self, dense: nn.Linear, world: int = 2,
+                 process_group: SimulatedProcessGroup | None = None):
+        super().__init__()
+        if not isinstance(dense, nn.Linear):
+            raise TypeError("ColumnParallelLinear must be built from nn.Linear")
+        self.world = _check_world(world)
+        self.process_group = process_group or SimulatedProcessGroup(self.world)
+        if self.process_group.world != self.world:
+            raise ValueError("process_group world mismatch")
+        self.in_features = int(dense.in_features)
+        self.out_features = int(dense.out_features)
+        bounds = _even_bounds(self.out_features, self.world, "out_features")
+        self._bounds = bounds
+        self.shard_weights = nn.ParameterList(
+            [nn.Parameter(dense.weight.data[s:e].clone()) for s, e in bounds])
+        if dense.bias is not None:
+            self.shard_biases: nn.ParameterList | None = nn.ParameterList(
+                [nn.Parameter(dense.bias.data[s:e].clone()) for s, e in bounds])
+        else:
+            self.shard_biases = None
+
+    @classmethod
+    def from_dense(cls, dense: nn.Linear, world: int = 2,
+                   process_group: SimulatedProcessGroup | None = None) -> "ColumnParallelLinear":
+        return cls(dense, world=world, process_group=process_group)
+
+    def per_rank_forward(self, x: torch.Tensor) -> list[torch.Tensor]:
+        return [F.linear(x, w, (self.shard_biases[r] if self.shard_biases is not None else None))
+                for r, w in enumerate(self.shard_weights)]
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.process_group.gather_concat(self.per_rank_forward(x), dim=-1)
+
+
+class RowParallelLinear(nn.Module):
+    """Row-parallel linear built by slicing a dense ``nn.Linear``.
+
+    Weight columns (input features) are split evenly; rank ``r``
+    multiplies the matching input slice and the partials combine in
+    one ``all_reduce_sum``. Bias (if any) is replicated and added once
+    after the reduction, never per rank.
+    """
+
+    def __init__(self, dense: nn.Linear, world: int = 2,
+                 process_group: SimulatedProcessGroup | None = None):
+        super().__init__()
+        if not isinstance(dense, nn.Linear):
+            raise TypeError("RowParallelLinear must be built from nn.Linear")
+        self.world = _check_world(world)
+        self.process_group = process_group or SimulatedProcessGroup(self.world)
+        if self.process_group.world != self.world:
+            raise ValueError("process_group world mismatch")
+        self.in_features = int(dense.in_features)
+        self.out_features = int(dense.out_features)
+        bounds = _even_bounds(self.in_features, self.world, "in_features")
+        self._bounds = bounds
+        self.shard_weights = nn.ParameterList(
+            [nn.Parameter(dense.weight.data[:, s:e].clone()) for s, e in bounds])
+        self.bias = nn.Parameter(dense.bias.data.clone()) if dense.bias is not None else None
+
+    @classmethod
+    def from_dense(cls, dense: nn.Linear, world: int = 2,
+                   process_group: SimulatedProcessGroup | None = None) -> "RowParallelLinear":
+        return cls(dense, world=world, process_group=process_group)
+
+    def per_rank_partials(self, x: torch.Tensor) -> list[torch.Tensor]:
+        return [F.linear(x[..., s:e], w) for (s, e), w in zip(self._bounds, self.shard_weights)]
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = self.process_group.all_reduce_sum(self.per_rank_partials(x))
+        if self.bias is not None:
+            out = out + self.bias
+        return out
+
+
+class TPMLP(nn.Module):
+    """Tensor-parallel SwiGLU: column gate/up, row down, one all-reduce."""
+
+    def __init__(self, dense: Any, world: int = 2,
+                 process_group: SimulatedProcessGroup | None = None):
+        super().__init__()
+        self.world = _check_world(world)
+        self.process_group = process_group or SimulatedProcessGroup(self.world)
+        if self.process_group.world != self.world:
+            raise ValueError("process_group world mismatch")
+        self.d_model = int(dense.gate_proj.in_features)
+        self.d_ff = int(dense.gate_proj.out_features)
+        self.gate_proj = ColumnParallelLinear(dense.gate_proj, self.world, self.process_group)
+        self.up_proj = ColumnParallelLinear(dense.up_proj, self.world, self.process_group)
+        self.down_proj = RowParallelLinear(dense.down_proj, self.world, self.process_group)
+        # Aliases mirroring dense SwiGLU attribute names for shard access.
+        self.gate = self.gate_proj
+        self.up = self.up_proj
+        self.down = self.down_proj
+
+    @classmethod
+    def from_dense(cls, dense: Any, world: int = 2,
+                   process_group: SimulatedProcessGroup | None = None) -> "TPMLP":
+        return cls(dense, world=world, process_group=process_group)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        gate_parts = self.gate_proj.per_rank_forward(x)
+        up_parts = self.up_proj.per_rank_forward(x)
+        partials = []
+        for r in range(self.world):
+            hidden_r = F.silu(gate_parts[r]) * up_parts[r]
+            s, e = self.down_proj._bounds[r]
+            # hidden_r is exactly this rank's intermediate slice; the
+            # down shard's columns are that same slice (no re-slicing).
+            partials.append(F.linear(hidden_r, self.down_proj.shard_weights[r]))
+        out = self.process_group.all_reduce_sum(partials)
+        if self.down_proj.bias is not None:
+            out = out + self.down_proj.bias
+        return out
+
+
+class TPFullAttention(nn.Module):
+    """Tensor-parallel gated full attention (per-rank head subsets).
+
+    q/k/v are head-column shards (q by whole ``[q|gate]`` head pairs),
+    o is row-parallel over the same Q heads. Each rank runs attention
+    only over its Q-head subset, repeating its local KV heads by the
+    dense GQA factor; o partials combine in one all-reduce. Norms and
+    RoPE reuse the dense module's modules/tables. KV-cache path:
+    per-rank K/V are gathered to update the caller's cache once, then
+    each rank reads its KV-head slice of the cached tensors -- the
+    cache itself stays dense-shaped, as in ``GatedFullAttention``.
+    """
+
+    def __init__(self, dense: Any, world: int = 2,
+                 process_group: SimulatedProcessGroup | None = None):
+        super().__init__()
+        self.dense = dense
+        self.world = _check_world(world)
+        self.process_group = process_group or SimulatedProcessGroup(self.world)
+        if self.process_group.world != self.world:
+            raise ValueError("process_group world mismatch")
+        H, Hkv, Dh = int(dense.n_head), int(dense.n_kv_head), int(dense.head_dim)
+        if H % self.world != 0:
+            raise ValueError(f"n_head={H} not divisible by world={self.world}")
+        if Hkv % self.world != 0:
+            raise ValueError(f"n_kv_head={Hkv} not divisible by world={self.world}")
+        self.n_head, self.n_kv_head, self.head_dim = H, Hkv, Dh
+        self.n_rep = int(dense.n_rep)
+        self.q_heads_per_rank = [list(range(r * H // self.world, (r + 1) * H // self.world))
+                                 for r in range(self.world)]
+        self.kv_heads_per_rank = [list(range(r * Hkv // self.world, (r + 1) * Hkv // self.world))
+                                  for r in range(self.world)]
+        # The KV mapping is consistent iff each rank's Q heads map to
+        # exactly its KV heads (true when world divides both counts).
+        for r in range(self.world):
+            mapped = sorted({h // self.n_rep for h in self.q_heads_per_rank[r]})
+            if mapped != self.kv_heads_per_rank[r]:
+                raise ValueError("world splits Q heads across KV-head boundaries")
+        def _rows(w: torch.Tensor, heads: list[int], per: int) -> torch.Tensor:
+            idx = [i for h in heads for i in range(h * per, (h + 1) * per)]
+            return w.data[idx].clone()
+        def _bias(b: torch.Tensor | None, heads: list[int], per: int) -> torch.Tensor | None:
+            if b is None:
+                return None
+            idx = [i for h in heads for i in range(h * per, (h + 1) * per)]
+            return b.data[idx].clone()
+        self.q_shards = [_rows(dense.q_proj.weight, hs, 2 * Dh) for hs in self.q_heads_per_rank]
+        self.k_shards = [_rows(dense.k_proj.weight, hs, Dh) for hs in self.kv_heads_per_rank]
+        self.v_shards = [_rows(dense.v_proj.weight, hs, Dh) for hs in self.kv_heads_per_rank]
+        self.q_bias_shards = [_bias(dense.q_proj.bias, hs, 2 * Dh) for hs in self.q_heads_per_rank]
+        self.k_bias_shards = [_bias(dense.k_proj.bias, hs, Dh) for hs in self.kv_heads_per_rank]
+        self.v_bias_shards = [_bias(dense.v_proj.bias, hs, Dh) for hs in self.kv_heads_per_rank]
+        self.o_shards = []
+        for hs in self.q_heads_per_rank:
+            cols = [i for h in hs for i in range(h * Dh, (h + 1) * Dh)]
+            self.o_shards.append(dense.o_proj.weight.data[:, cols].clone())
+
+    @classmethod
+    def from_dense(cls, dense: Any, world: int = 2,
+                   process_group: SimulatedProcessGroup | None = None) -> "TPFullAttention":
+        return cls(dense, world=world, process_group=process_group)
+
+    def forward(self, x: torch.Tensor, cos: torch.Tensor | None = None,
+                sin: torch.Tensor | None = None, kv_cache: Any = None,
+                layer_idx: int = 0, start_pos: int = 0,
+                position_ids: torch.Tensor | None = None, **kwargs: Any) -> torch.Tensor:
+        from .attention import manual_scaled_dot_product_attention, repeat_kv
+        from .hybrid import _apply_rope_with_tables, apply_partial_rope, precompute_mrope_cos_sin
+        from .kv_cache import StaticKVCache
+        if position_ids is None:
+            position_ids = kwargs.get("position_ids")
+        if cos is None and "position_embeddings" in kwargs:
+            cos, sin = kwargs["position_embeddings"]
+        dense = self.dense
+        B, T, D = x.shape
+        Dh = self.head_dim
+        partials: list[torch.Tensor] = []
+        # First compute per-rank K/V so a cache is updated exactly once.
+        rank_q, rank_gate, rank_k, rank_v = [], [], [], []
+        for r in range(self.world):
+            hs, kvs = self.q_heads_per_rank[r], self.kv_heads_per_rank[r]
+            qg = F.linear(x, self.q_shards[r], self.q_bias_shards[r]).view(B, T, len(hs), 2 * Dh)
+            rank_q.append(dense.q_norm(qg[..., :Dh]).transpose(1, 2))
+            rank_gate.append(qg[..., Dh:].reshape(B, T, len(hs) * Dh))
+            k_r = F.linear(x, self.k_shards[r], self.k_bias_shards[r]).view(B, T, len(kvs), Dh)
+            v_r = F.linear(x, self.v_shards[r], self.v_bias_shards[r]).view(B, T, len(kvs), Dh)
+            rank_k.append(dense.k_norm(k_r).transpose(1, 2))
+            rank_v.append(v_r.transpose(1, 2))
+        # RoPE (same tables/order as dense).
+        if position_ids is not None:
+            pos_cos, pos_sin = precompute_mrope_cos_sin(
+                position_ids, dense.rotary_dim, theta=dense.rope_theta,
+                mrope_section=dense.mrope_section)
+            rank_q = [_apply_rope_with_tables(q, pos_cos, pos_sin, dense.rotary_dim) for q in rank_q]
+            rank_k = [_apply_rope_with_tables(k, pos_cos, pos_sin, dense.rotary_dim) for k in rank_k]
+        else:
+            if cos is None or sin is None:
+                cos, sin = dense._rope_tables(start_pos + T, x.device, x.dtype)
+            rank_q = [apply_partial_rope(q, cos, sin, start_pos=start_pos, rotary_dim=dense.rotary_dim) for q in rank_q]
+            rank_k = [apply_partial_rope(k, cos, sin, start_pos=start_pos, rotary_dim=dense.rotary_dim) for k in rank_k]
+        if kv_cache is not None:
+            k_full = torch.cat(rank_k, dim=1)
+            v_full = torch.cat(rank_v, dim=1)
+            if isinstance(kv_cache, StaticKVCache):
+                k_full, v_full = kv_cache.update(layer_idx, k_full, v_full, start_pos)
+            else:
+                k_full, v_full = kv_cache.update(layer_idx, k_full, v_full)
+            for r, kvs in enumerate(self.kv_heads_per_rank):
+                idx = torch.tensor(kvs, dtype=torch.long, device=x.device)
+                rank_k[r] = k_full.index_select(1, idx)
+                rank_v[r] = v_full.index_select(1, idx)
+        for r in range(self.world):
+            k_rep = repeat_kv(rank_k[r], self.n_rep)
+            v_rep = repeat_kv(rank_v[r], self.n_rep)
+            if dense.attn_implementation == "sdpa":
+                attn = dense._sdpa(rank_q[r], k_rep, v_rep, start_pos=start_pos)
+            else:
+                attn = manual_scaled_dot_product_attention(rank_q[r], k_rep, v_rep, is_causal=True)
+            merged = attn.transpose(1, 2).contiguous().view(B, T, -1)
+            if dense.gate_activation == "sigmoid":
+                merged = merged * torch.sigmoid(rank_gate[r])
+            elif dense.gate_activation == "silu":
+                merged = merged * F.silu(rank_gate[r])
+            partials.append(F.linear(merged, self.o_shards[r]))
+        return self.process_group.all_reduce_sum(partials)
+
+
+# --- linear (gated-delta) TP: state sharding + per-rank recurrent step -----
+
+
+def _linear_geometry(S: torch.Tensor, conv: torch.Tensor) -> dict[str, int]:
+    # S [B,Hv,Dk,Dv], conv [B,conv_dim,K-1]; conv_dim = 2*Kt + Hv*Dv.
+    Hv, Dk, Dv = int(S.shape[1]), int(S.shape[2]), int(S.shape[3])
+    conv_dim = int(conv.shape[1])
+    key_total = (conv_dim - Hv * Dv) // 2
+    return {"Hv": Hv, "Dk": Dk, "Dv": Dv, "conv_dim": conv_dim,
+            "key_total": key_total, "n_key": key_total // Dk,
+            "value_total": Hv * Dv, "n_rep": Hv // (key_total // Dk)}
+
+
+def _conv_indices(geom: Mapping[str, int], rank: int, world: int) -> tuple[list[int], list[int], int, int]:
+    """(conv_indices, value_heads, vh_per, kh_per_rank) for one rank."""
+    Hv, Dk, Dv = geom["Hv"], geom["Dk"], geom["Dv"]
+    n_rep, key_total = geom["n_rep"], geom["key_total"]
+    if Hv % world != 0:
+        raise ValueError(f"value heads {Hv} not divisible by world={world}")
+    vh_per = Hv // world
+    if vh_per % n_rep != 0:
+        raise ValueError(f"{vh_per} value heads/rank does not align to repeat factor {n_rep}")
+    v_heads = list(range(rank * vh_per, (rank + 1) * vh_per))
+    k_heads = list(range(v_heads[0] // n_rep, v_heads[-1] // n_rep + 1))
+    q_idx = [i for h in k_heads for i in range(h * Dk, (h + 1) * Dk)]
+    k_idx = [key_total + i for i in q_idx]
+    v_idx = [2 * key_total + i for h in v_heads for i in range(h * Dv, (h + 1) * Dv)]
+    return q_idx + k_idx + v_idx, v_heads, vh_per, len(k_heads)
+
+
+def shard_linear_state(state: tuple[torch.Tensor, torch.Tensor], rank: int, world: int
+                       ) -> tuple[torch.Tensor, torch.Tensor]:
+    """Rank's slice of a gated-delta state: S by value heads, conv by
+    the segmented qkv channel indices (per ``segmented_qkv`` spec)."""
+    world = _check_world(world)
+    if not 0 <= rank < world:
+        raise ValueError(f"rank {rank} out of range for world {world}")
+    S, conv = state
+    geom = _linear_geometry(S, conv)
+    conv_idx, v_heads, _, _ = _conv_indices(geom, rank, world)
+    return (S[:, v_heads].clone(),
+            conv[:, torch.tensor(conv_idx, dtype=torch.long, device=conv.device)].clone())
+
+
+def merge_linear_state(shards: Sequence[tuple[torch.Tensor, torch.Tensor]]
+                       ) -> tuple[torch.Tensor, torch.Tensor]:
+    """Inverse of :func:`shard_linear_state` (exact roundtrip).
+
+    S concatenates over value heads in rank order; conv channels are
+    scattered back to their dense segmented indices (rank storage is
+    ``[q_r|k_r|v_r]``, dense order is ``[q|k|v]``).
+    """
+    parts = list(shards)
+    if not parts:
+        raise ValueError("merge_linear_state needs at least one shard")
+    world = len(parts)
+    S = torch.cat([p[0] for p in parts], dim=1)
+    B, Hv = int(S.shape[0]), int(S.shape[1])
+    conv_dim_r = int(parts[0][1].shape[1])
+    Kminus1 = int(parts[0][1].shape[2])
+    # Recover dense conv_dim from a probe geometry built on merged S.
+    probe_conv = torch.empty(B, conv_dim_r * world, Kminus1, dtype=parts[0][1].dtype)
+    geom = _linear_geometry(S, probe_conv)
+    # Dense conv_dim is not conv_dim_r*world in general only if world
+    # misaligns; validate via indices partition below.
+    conv = torch.zeros(B, geom["conv_dim"], Kminus1, dtype=parts[0][1].dtype, device=parts[0][1].device)
+    seen: list[int] = []
+    for r, (_, conv_r) in enumerate(parts):
+        idx, _, _, _ = _conv_indices(geom, r, world)
+        if len(idx) != int(conv_r.shape[1]):
+            raise ValueError("conv shard width does not match segmented geometry")
+        seen.extend(idx)
+        conv[:, torch.tensor(idx, dtype=torch.long, device=conv.device)] = conv_r
+    if sorted(seen) != list(range(geom["conv_dim"])):
+        raise ValueError("conv shard indices do not partition the dense channels")
+    return S, conv
+
+
+class TPGatedDeltaNet(nn.Module):
+    """Tensor-parallel gated-delta layer: recurrent step only.
+
+    Weights are sliced once from the dense ``GatedDeltaNet`` (segmented
+    qkv + conv channels, value-head z/a/b/A_log/dt_bias, row-parallel
+    out_proj). Each rank steps only its value heads: its S slice and
+    conv-channel slice evolve independently, and o partials combine in
+    one all-reduce. State is held as a list of per-rank
+    ``(S_r, conv_r)`` pairs; :meth:`shard_state` / :meth:`merge_state`
+    (aliases ``restore_state``) convert to/from the dense pair exactly.
+
+    Remaining (documented, not faked): prefill (sequential or chunkwise)
+    is *not* sharded here -- only the single-token recurrent step is.
+    A TP prefill would shard the same projections/conv over T and run
+    the chunkwise triangular solve per rank over its value heads; the
+    state/boundary maths is identical, but it is separate code.
+    """
+
+    def __init__(self, dense: Any, world: int = 2,
+                 process_group: SimulatedProcessGroup | None = None):
+        super().__init__()
+        self.dense = dense
+        self.world = _check_world(world)
+        self.process_group = process_group or SimulatedProcessGroup(self.world)
+        if self.process_group.world != self.world:
+            raise ValueError("process_group world mismatch")
+        net = dense
+        if int(net.num_value_heads) % self.world != 0:
+            raise ValueError("value heads not divisible by world")
+        vh_per = int(net.num_value_heads) // self.world
+        if vh_per % int(net.n_rep) != 0:
+            raise ValueError("value heads/rank does not align to repeat factor")
+        self.vh_per = vh_per
+        # Build a probe geometry to reuse the segmented index maths.
+        probe_S = torch.empty(1, int(net.num_value_heads), int(net.key_dim), int(net.value_dim))
+        probe_conv = torch.empty(1, int(net.conv_dim), max(int(net.conv_kernel) - 1, 0))
+        geom = _linear_geometry(probe_S, probe_conv)
+        self._geom = geom
+        self.rank_shards: list[dict[str, torch.Tensor]] = []
+        for r in range(self.world):
+            conv_idx, v_heads, _, _ = _conv_indices(geom, r, self.world)
+            ci = torch.tensor(conv_idx, dtype=torch.long)
+            z_idx = [i for h in v_heads for i in range(h * int(net.value_dim), (h + 1) * int(net.value_dim))]
+            zi = torch.tensor(z_idx, dtype=torch.long)
+            self.rank_shards.append({
+                "in_proj_qkv": net.in_proj_qkv.weight.data[ci].clone(),
+                "conv_weight": net.conv1d.weight.data[ci].clone(),
+                "in_proj_z": net.in_proj_z.weight.data[zi].clone(),
+                "in_proj_a": net.in_proj_a.weight.data[v_heads].clone(),
+                "in_proj_b": net.in_proj_b.weight.data[v_heads].clone(),
+                "A_log": net.A_log.data[v_heads].clone(),
+                "dt_bias": net.dt_bias.data[v_heads].clone(),
+                "out_proj": net.out_proj.weight.data[:, zi].clone(),
+                "value_heads": torch.tensor(v_heads),
+                "conv_indices": ci,
+            })
+
+    @classmethod
+    def from_dense(cls, dense: Any, world: int = 2,
+                   process_group: SimulatedProcessGroup | None = None) -> "TPGatedDeltaNet":
+        return cls(dense, world=world, process_group=process_group)
+
+    def shard_state(self, state: tuple[torch.Tensor, torch.Tensor], rank: int
+                    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return shard_linear_state(state, rank, self.world)
+
+    def split_state(self, state: tuple[torch.Tensor, torch.Tensor] | None,
+                    batch_size: int | None = None,
+                    device: Any = None) -> list[tuple[torch.Tensor, torch.Tensor]]:
+        if state is None:
+            assert batch_size is not None
+            dense_state = self.dense.initial_state(batch_size, device=device, dtype=torch.float32)
+            state = dense_state
+        return [shard_linear_state(state, r, self.world) for r in range(self.world)]
+
+    def merge_state(self, shards: Sequence[tuple[torch.Tensor, torch.Tensor]]
+                    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return merge_linear_state(shards)
+
+    restore_state = merge_state
+
+    def step(self, x_t: torch.Tensor, state: Any = None
+             ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
+        """One recurrent token across ranks.
+
+        ``x_t`` is ``[B, D]`` or ``[B, 1, D]`` (as dense ``step``);
+        ``state`` is a list of per-rank ``(S_r, conv_r)`` pairs, a dense
+        ``(S, conv)`` pair (split here), or None (zero state). Returns
+        ``(out, new_per_rank_state)`` equal to the dense step's output
+        and (merged) new state.
+        """
+        from .linear_attention import _l2norm
+        net = self.dense
+        squeeze = False
+        if x_t.dim() == 2:
+            x2 = x_t
+        elif x_t.dim() == 3 and x_t.shape[1] == 1:
+            x2, squeeze = x_t[:, 0, :], True
+        else:
+            raise ValueError(f"x_t must be [B, D] or [B, 1, D], got {tuple(x_t.shape)}")
+        B = int(x2.shape[0])
+        if state is None:
+            rank_states = self.split_state(None, batch_size=B, device=x2.device)
+        elif isinstance(state, (list, tuple)) and len(state) == self.world and state and isinstance(state[0], (list, tuple)):
+            rank_states = [(s[0], s[1]) for s in state]  # per-rank form
+        else:
+            rank_states = self.split_state(state)  # dense pair
+        partials, new_states = [], []
+        Dk, Dv = int(net.key_dim), int(net.value_dim)
+        for r in range(self.world):
+            sh = self.rank_shards[r]
+            S_r, conv_r = rank_states[r]
+            mixed = F.linear(x2, sh["in_proj_qkv"])
+            z = F.linear(x2, sh["in_proj_z"]).reshape(B, self.vh_per, Dv)
+            beta = torch.sigmoid(F.linear(x2, sh["in_proj_b"]))
+            a = F.linear(x2, sh["in_proj_a"])
+            g = -sh["A_log"].float().exp() * F.softplus(a.float() + sh["dt_bias"].float())
+            # Conv step with this rank's channels / weight slice.
+            if int(net.conv_kernel) == 1:
+                window = mixed.unsqueeze(-1)
+                new_buf = conv_r
+            else:
+                buf = conv_r.to(dtype=mixed.dtype)
+                window = torch.cat([buf, mixed.unsqueeze(-1)], dim=-1)
+                new_buf = window[:, :, 1:]
+            w = sh["conv_weight"][:, 0, :].to(dtype=window.dtype)
+            mixed_act = F.silu((window * w.unsqueeze(0)).sum(dim=-1))
+            kh_per = self.vh_per // int(net.n_rep)
+            q_sz, v_sz = kh_per * Dk, self.vh_per * Dv
+            q_raw, k_raw, v = torch.split(mixed_act, [q_sz, q_sz, v_sz], dim=-1)
+            q = q_raw.reshape(B, kh_per, Dk)
+            k = k_raw.reshape(B, kh_per, Dk)
+            v = v.reshape(B, self.vh_per, Dv).float()
+            if int(net.n_rep) > 1:
+                q = q.repeat_interleave(int(net.n_rep), dim=1)
+                k = k.repeat_interleave(int(net.n_rep), dim=1)
+            q = _l2norm(q) * (Dk ** -0.5)
+            k = _l2norm(k)
+            S = S_r.float() * torch.exp(g.float())[:, :, None, None]
+            kv_mem = (S * k.unsqueeze(-1)).sum(dim=-2)
+            delta = (v - kv_mem) * beta.float().unsqueeze(-1)
+            S = S + k.unsqueeze(-1) * delta.unsqueeze(-2)
+            core = (S * q.unsqueeze(-1)).sum(dim=-2)
+            core = net.norm(core.reshape(B * self.vh_per, Dv), z.reshape(B * self.vh_per, Dv))
+            core = core.reshape(B, v_sz)
+            partials.append(F.linear(core.to(sh["out_proj"].dtype), sh["out_proj"]))
+            new_states.append((S, new_buf.to(dtype=mixed.dtype)))
+        out = self.process_group.all_reduce_sum(partials).to(x_t.dtype)
+        if squeeze:
+            out = out.unsqueeze(1)
+        return out, new_states
+
+
+TPLinearAttention = TPGatedDeltaNet
+
+
+# ---------------------------------------------------------------------------
+# Runtime state byte accounting (KV cache + linear recurrent/conv state)
+# ---------------------------------------------------------------------------
+
+
+def state_bytes(config: Any = None, seq_len: int = 4096, batch: int = 1,
+                kv_dtype_bytes: int | float = 2, world: int = 2,
+                recurrent_dtype_bytes: int | float = 4,
+                conv_dtype_bytes: int | float | None = None) -> dict[str, Any]:
+    """Per-rank runtime-state bytes: full KV vs linear recurrent+conv.
+
+    Formulas (per rank, ``world`` ranks):
+
+    * full KV: ``n_full * 2(K,V) * B * seq * (H_kv/world) * head_dim *
+      kv_dtype_bytes`` -- grows with ``seq_len``, sharded by KV heads.
+    * linear recurrent: ``n_lin * B * (Hv/world) * Dk * Dv *
+      recurrent_dtype_bytes`` (fp32 S, as in ``GatedDeltaNet``) --
+      independent of ``seq_len``, sharded by value heads.
+    * linear conv: ``n_lin * B * conv_dim_per_rank * (K-1) *
+      conv_dtype_bytes`` where ``conv_dim_per_rank = 2*(kh_per*Dk) +
+      vh_per*Dv`` (segmented channels) and ``conv_dtype_bytes``
+      defaults to ``kv_dtype_bytes`` -- also seq-independent.
+    """
+    world = _check_world(world)
+    if int(seq_len) <= 0 or int(batch) <= 0:
+        raise ValueError("seq_len and batch must be positive")
+    if conv_dtype_bytes is None:
+        conv_dtype_bytes = kv_dtype_bytes
+    d = _dims(config)
+    n_full = sum(1 for t in d.layer_types if t == "full_attention")
+    n_lin = len(d.layer_types) - n_full
+    if d.n_kv_head % world != 0:
+        raise ValueError(f"KV heads {d.n_kv_head} not divisible by world={world}")
+    if d.n_value_head % world != 0:
+        raise ValueError(f"value heads {d.n_value_head} not divisible by world={world}")
+    kv_per_rank = d.n_kv_head // world
+    vh_per = d.n_value_head // world
+    if vh_per % d.n_rep != 0:
+        raise ValueError("value heads/rank does not align to repeat factor")
+    kh_per = vh_per // d.n_rep
+    conv_dim_per_rank = 2 * kh_per * d.key_dim + vh_per * d.value_dim
+    B, S = int(batch), int(seq_len)
+    full_kv_per_rank = int(n_full * 2 * B * S * kv_per_rank * d.head_dim * float(kv_dtype_bytes))
+    full_kv_dense = int(n_full * 2 * B * S * d.n_kv_head * d.head_dim * float(kv_dtype_bytes))
+    lin_rec_per_rank = int(n_lin * B * vh_per * d.key_dim * d.value_dim * float(recurrent_dtype_bytes))
+    lin_rec_dense = int(n_lin * B * d.n_value_head * d.key_dim * d.value_dim * float(recurrent_dtype_bytes))
+    lin_conv_per_rank = int(n_lin * B * conv_dim_per_rank * max(d.conv_kernel - 1, 0) * float(conv_dtype_bytes))
+    lin_conv_dense = int(n_lin * B * d.conv_dim * max(d.conv_kernel - 1, 0) * float(conv_dtype_bytes))
+    lin_per_rank = lin_rec_per_rank + lin_conv_per_rank
+    return {
+        "world": world, "batch": B, "seq_len": S,
+        "kv_dtype_bytes": kv_dtype_bytes, "recurrent_dtype_bytes": recurrent_dtype_bytes,
+        "conv_dtype_bytes": conv_dtype_bytes,
+        "full_layers": n_full, "linear_layers": n_lin,
+        "kv_heads_per_rank": kv_per_rank, "value_heads_per_rank": vh_per,
+        "conv_dim_per_rank": conv_dim_per_rank, "conv_dim_dense": d.conv_dim,
+        "full_kv_bytes_per_rank": full_kv_per_rank,
+        "full_kv_bytes_dense_total": full_kv_dense,
+        "linear_recurrent_bytes_per_rank": lin_rec_per_rank,
+        "linear_recurrent_bytes_dense_total": lin_rec_dense,
+        "linear_conv_bytes_per_rank": lin_conv_per_rank,
+        "linear_conv_bytes_dense_total": lin_conv_dense,
+        "linear_bytes_per_rank": lin_per_rank,
+        "linear_bytes_dense_total": lin_rec_dense + lin_conv_dense,
+        "total_bytes_per_rank": full_kv_per_rank + lin_per_rank,
+        "total_bytes_dense_total": full_kv_dense + lin_rec_dense + lin_conv_dense,
+        "formulas": {
+            "full_kv_per_rank": "n_full * 2 * B * seq_len * (H_kv/world) * head_dim * kv_dtype_bytes",
+            "linear_recurrent_per_rank": "n_lin * B * (Hv/world) * Dk * Dv * recurrent_dtype_bytes (seq-independent)",
+            "linear_conv_per_rank": "n_lin * B * conv_dim_per_rank * (K-1) * conv_dtype_bytes (seq-independent)",
+        },
+    }
+
+
+def state_bytes_table(config: Any = None, seq_lens: Sequence[int] = (4096, 32768, 262144),
+                      batch: int = 1, kv_dtype_bytes: int | float = 2, world: int = 2,
+                      **kwargs: Any) -> list[dict[str, Any]]:
+    """``state_bytes`` at each of ``seq_lens`` (real-config long-context table)."""
+    return [state_bytes(config, seq_len=int(s), batch=batch,
+                        kv_dtype_bytes=kv_dtype_bytes, world=world, **kwargs)
+            for s in seq_lens]
+
+
+def print_state_bytes(config: Any = None, seq_lens: Sequence[int] = (4096, 32768, 262144),
+                      batch: int = 1, kv_dtype_bytes: int | float = 2, world: int = 2,
+                      **kwargs: Any) -> str:
+    """Human-readable state-bytes table (also the ``__main__`` CLI)."""
+    rows = state_bytes_table(config, seq_lens=seq_lens, batch=batch,
+                             kv_dtype_bytes=kv_dtype_bytes, world=world, **kwargs)
+    gib = lambda b: b / _GIB  # noqa: E731
+    lines = [f"state bytes per rank (world={world}, batch={batch}, kv={kv_dtype_bytes}B):",
+             "seq_len  full_kv_GiB  linear_rec_GiB  linear_conv_GiB  total_GiB"]
+    for r in rows:
+        lines.append(f"{r['seq_len']:>7}  {gib(r['full_kv_bytes_per_rank']):>11.4f}  "
+                     f"{gib(r['linear_recurrent_bytes_per_rank']):>14.4f}  "
+                     f"{gib(r['linear_conv_bytes_per_rank']):>15.4f}  "
+                     f"{gib(r['total_bytes_per_rank']):>9.4f}")
+    lines.append("full KV grows with seq_len (KV-head sharded); linear recurrent+conv "
+                 "state is fixed per token (value-head sharded).")
+    text = "\n".join(lines)
+    print(text)
+    return text
+
+
+# ---------------------------------------------------------------------------
 # Byte accounting by formula
 # ---------------------------------------------------------------------------
 
@@ -963,3 +1633,7 @@ def allreduce_points(config: Any = None, world: int = 2) -> list[dict[str, Any]]
         "bytes_per_allreduce_formula": "2*B*T*hidden*elem_bytes (ring, per rank)",
         "world": int(world),
     }]
+
+
+if __name__ == "__main__":
+    print_state_bytes()

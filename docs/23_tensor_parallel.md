@@ -160,10 +160,74 @@ KV, activations or buffers), BF16 scales, replicated embed/head. Tests
 assert ranges (FP8 10–13.5 GiB, total 12–20 GiB, `< 24 GiB`), not a
 fabricated precise figure.
 
+## Executable simulated runtime (CPU)
+
+The partitioning maths above is now also executed as simulated
+two-rank blocks in `tensor_parallel.py` (tests:
+`tests/test_tp_runtime.py`, numbers executed, not just indices):
+
+- `SimulatedProcessGroup(world)` — `all_reduce_sum(partials)` sums one
+  partial per rank; `gather_concat(partials)` concatenates feature
+  slices in rank order. Counters let tests assert exactly one
+  all-reduce per block.
+- `ColumnParallelLinear` / `RowParallelLinear` — built *from* a dense
+  `nn.Linear` by cloning its weight row/column slices (no
+  re-initialisation; tests assert the shards concatenate back to the
+  dense weight). Column outputs gather-concat; row partials
+  all-reduce-sum, bias added once.
+- `TPMLP` — gate/up as column shards, down as a row shard over the
+  same intermediate slices, `silu(gate_r) * up_r` per rank, then one
+  all-reduce. Equals the dense `SwiGLU` output.
+- `TPFullAttention` — q by whole `[q|gate]` head pairs, k/v by KV
+  heads, o row-parallel over the same Q heads. Each rank attends only
+  over its Q-head subset, repeating its local KV heads by the GQA
+  factor (rank 0: Q heads 0–1 → KV head 0 at tiny dims); q/k norms and
+  RoPE reuse the dense module. One all-reduce on the o partials equals
+  dense `GatedFullAttention`, including the KV-cache path (per-rank
+  K/V are gathered to update the dense-shaped cache once, then each
+  rank reads its KV-head slice).
+- `TPGatedDeltaNet` (linear attention, recurrent step only) — weights
+  sliced per the segmented spec (qkv/conv channels, value-head
+  z/a/b/`A_log`/`dt_bias`, row-parallel `out_proj`); state sharded by
+  value heads via `shard_linear_state` / `merge_linear_state` (S by
+  value heads, conv channels scattered back to dense `[q|k|v]` order).
+  The per-rank step equals the dense `GatedDeltaNet.step` output and
+  merged state. *Remaining:* TP prefill (sequential/chunkwise) is not
+  implemented — only the single-token recurrent step is; a TP prefill
+  would run the chunkwise triangular solve per rank over its value
+  heads with the same state/boundary maths.
+
+## Runtime state bytes: KV cache vs linear state
+
+`state_bytes(config, seq_len, batch, kv_dtype_bytes, world)` (CLI:
+`.venv/bin/python -m inference_from_scratch.tensor_parallel`) separates
+state that grows with context from fixed recurrent state, per rank:
+
+- Full KV (16 layers, KV-head sharded):
+  `n_full * 2 * B * seq_len * (H_kv/world) * head_dim * kv_dtype_bytes`
+- Linear recurrent S (48 layers, value-head sharded, fp32):
+  `n_lin * B * (Hv/world) * Dk * Dv * recurrent_dtype_bytes`
+- Linear conv buffer (48 layers, segmented channels):
+  `n_lin * B * conv_dim_per_rank * (K-1) * conv_dtype_bytes`, with
+  `conv_dim_per_rank = 2*(kh_per*Dk) + vh_per*Dv = 5120` at world 2.
+
+Real config, world 2, batch 1, KV in BF16 (2 B):
+
+| seq_len | Full KV / rank | Linear recurrent / rank | Linear conv / rank | Total / rank |
+|---|---|---|---|---|
+| 4096 | 134,217,728 B (0.125 GiB) | 75,497,472 B (0.0703 GiB) | 1,474,560 B (0.0014 GiB) | 211,189,760 B (0.197 GiB) |
+| 32768 | 1,073,741,824 B (1.0 GiB) | 75,497,472 B | 1,474,560 B | 1,150,713,856 B (1.072 GiB) |
+| 262144 | 8,589,934,592 B (8.0 GiB) | 75,497,472 B | 1,474,560 B | 8,666,906,624 B (8.072 GiB) |
+
+The linear rows do not move with `seq_len` — that fixed state is the
+hybrid model's long-context advantage — while the 16 full layers' KV
+cache is the only term that grows, and TP halves it per rank.
+
 ## What this deliberately is not
 
 No `torch.distributed`, no processes, no NCCL/PCIe transfer is run:
-`partitioned_linear` performs the all-reduce as an explicit in-process
-sum so the *maths* is the thing under test. GPU execution, real
-collectives and benchmarking the partitioning are gated on a later
-approved window, exactly like the rest of this repo's GPU work.
+the simulated process group performs collectives as explicit
+in-process sums/concatenations so the *maths* is the thing under test.
+GPU execution, real collectives and benchmarking the partitioning are
+gated on a later approved window, exactly like the rest of this
+repo's GPU work.

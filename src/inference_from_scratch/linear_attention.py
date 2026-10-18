@@ -511,6 +511,130 @@ class GatedDeltaNet(nn.Module):
             out = out.unsqueeze(1)
         return out, (S_new, new_buffer.to(dtype=mixed.dtype))
 
+    # -- in-place decode (CUDA-graph-friendly semantics, CPU-provable) -----
+
+    def _conv_step_inplace(
+        self, raw_t: torch.Tensor, conv_buffer: torch.Tensor
+    ) -> torch.Tensor:
+        """In-place version of :meth:`_conv_step`.
+
+        ``raw_t`` is ``[B, conv_dim]``; ``conv_buffer`` is the preallocated
+        ``[B, conv_dim, K-1]`` ring (chronological). The activated conv
+        output ``[B, conv_dim]`` is returned (a fresh intermediate), but
+        ``conv_buffer`` itself is shifted and overwritten in place: no
+        ``torch.cat`` and no new buffer tensor is allocated for the state.
+        The conv sum is evaluated *before* the shift so the arithmetic
+        order matches :meth:`_conv_step` exactly.
+        """
+        w = self.conv1d.weight[:, 0, :].to(dtype=raw_t.dtype)  # [C, K]
+        if self.conv_kernel == 1:
+            conv_out = raw_t * w[:, 0].unsqueeze(0)
+            return F.silu(conv_out)
+        # Build the same [B, C, K] window the legacy cat builds (an
+        # activation temporary, not state) so the conv reduction order
+        # is identical; the ring itself is then shifted in place below.
+        window = torch.empty(
+            raw_t.shape[0], self.conv_dim, self.conv_kernel,
+            device=raw_t.device, dtype=raw_t.dtype)
+        window[:, :, :-1].copy_(conv_buffer.to(dtype=raw_t.dtype))
+        window[:, :, -1].copy_(raw_t)
+        conv_out = (window * w.unsqueeze(0)).sum(dim=-1)
+        # Shift the ring left by one in place (forward copy is safe: each
+        # destination index is read as a source only in the previous iter
+        # for a strictly earlier destination, and K-1 <= 3 here).
+        for i in range(conv_buffer.shape[-1] - 1):
+            conv_buffer[:, :, i].copy_(conv_buffer[:, :, i + 1])
+        if conv_buffer.shape[-1] > 0:
+            conv_buffer[:, :, -1].copy_(raw_t.to(dtype=conv_buffer.dtype))
+        return F.silu(conv_out)
+
+    def _recurrent_token_inplace(
+        self,
+        mixed_t: torch.Tensor,
+        z_t: torch.Tensor,
+        beta_t: torch.Tensor,
+        g_t: torch.Tensor,
+        S: torch.Tensor,
+    ) -> torch.Tensor:
+        """In-place gated-delta update: mutate ``S`` and return ``out_t``.
+
+        Numerically mirrors :meth:`_recurrent_token` step-for-step, but
+        the decay and rank-1 write are ``mul_`` / ``add_`` on the caller's
+        preallocated ``S`` instead of allocating a new state tensor.
+        Intermediates (``kv_mem``, ``delta``, ``core``) are still fresh
+        temporaries -- they are activations, not state.
+        """
+        B = mixed_t.shape[0]
+        q_raw, k_raw, v = torch.split(
+            mixed_t, [self.key_total, self.key_total, self.value_total], dim=-1
+        )
+        q = q_raw.reshape(B, self.num_key_heads, self.head_k_dim)
+        k = k_raw.reshape(B, self.num_key_heads, self.head_k_dim)
+        v = v.reshape(B, self.num_value_heads, self.head_v_dim).float()
+        if self.n_rep > 1:
+            q = q.repeat_interleave(self.n_rep, dim=1)
+            k = k.repeat_interleave(self.n_rep, dim=1)
+        q = _l2norm(q) * (self.head_k_dim ** -0.5)
+        k = _l2norm(k)
+        # 1) Gated decay in place.
+        S.mul_(torch.exp(g_t.float())[:, :, None, None].to(dtype=S.dtype))
+        # 2) Delta rule in place.
+        kv_mem = (S * k.unsqueeze(-1)).sum(dim=-2)
+        delta = (v - kv_mem) * beta_t.float().unsqueeze(-1)
+        S.add_(k.unsqueeze(-1) * delta.unsqueeze(-2))
+        # 3) Read after write.
+        core = (S * q.unsqueeze(-1)).sum(dim=-2)
+        core = self.norm(core.reshape(B * self.num_value_heads, self.head_v_dim),
+                         z_t.reshape(B * self.num_value_heads, self.head_v_dim))
+        core = core.reshape(B, self.value_total)
+        out = F.linear(core.to(self.out_proj.weight.dtype), self.out_proj.weight)
+        return out
+
+    def step_inplace(
+        self, x_t: torch.Tensor, S: torch.Tensor, conv_buf: torch.Tensor
+    ) -> torch.Tensor:
+        """Decode one token in place: mutate ``S`` / ``conv_buf``, return out.
+
+        ``x_t`` is ``[B, D]`` or ``[B, 1, D]`` (output rank matches input);
+        ``S`` is the preallocated ``[B, Hv, Dk, Dv]`` recurrent state and
+        ``conv_buf`` the preallocated ``[B, conv_dim, K-1]`` ring. Both are
+        updated in place -- their ``data_ptr`` / storage are unchanged --
+        unlike :meth:`step`, which never mutates its input state and
+        returns a fresh ``(S_new, new_buffer)`` pair. No list append or
+        ``torch.cat`` is used for state. Position is not part of this
+        layer (gated-delta carries no position embedding); sequence
+        position lives in the caller's static state (see
+        ``hybrid.StaticHybridState``), as a Python ``int`` or 0-dim tensor
+        documented there. Raises ``ValueError`` on shape mismatch.
+        """
+        if x_t.dim() == 2:
+            x2 = x_t
+            squeeze = False
+        elif x_t.dim() == 3 and x_t.shape[1] == 1:
+            x2 = x_t[:, 0, :]
+            squeeze = True
+        else:
+            raise ValueError(f"x_t must be [B, D] or [B, 1, D], got {tuple(x_t.shape)}")
+        if x2.shape[-1] != self.d_model:
+            raise ValueError(f"x_t last dim must be d_model={self.d_model}, got {x2.shape[-1]}")
+        B = x2.shape[0]
+        expected_S = (B, self.num_value_heads, self.head_k_dim, self.head_v_dim)
+        if tuple(S.shape) != expected_S:
+            raise ValueError(f"S must be {expected_S}, got {tuple(S.shape)}")
+        expected_conv = (B, self.conv_dim, max(self.conv_kernel - 1, 0))
+        if tuple(conv_buf.shape) != expected_conv:
+            raise ValueError(f"conv_buf must be {expected_conv}, got {tuple(conv_buf.shape)}")
+        mixed, z, beta, g = self._project(x2)
+        mixed_act = self._conv_step_inplace(mixed, conv_buf)
+        out = self._recurrent_token_inplace(mixed_act, z, beta, g, S)
+        out = out.to(x_t.dtype)
+        if squeeze:
+            out = out.unsqueeze(1)
+        return out
+
+    # Spelling alias (in_place with underscore).
+    step_in_place = step_inplace
+
     def forward_prefill_chunkwise(
         self,
         x: torch.Tensor,

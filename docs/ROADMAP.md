@@ -177,6 +177,17 @@ The Tiny-to-Qwen ladder lives here. One codebase climbs it: only
   TensorRT-LLM, and Dynamo: same seams as ch 12, compared as systems.
 - **Builds on:** 09, 11, 12
 
+### 25 — Static decode: preallocated state — Built (CPU)
+
+- **Book framing:** sec. 4.1 (CUDA kernels/fusion), sec. 4.5
+  (performance benchmarking).
+- **Goal:** Allocate all decode state once at fixed shapes/addresses
+  (`StaticHybridState`, shared static KV cache, in-place gated-delta
+  step) so a `T=1` step never reallocates state; prove static logits
+  equal the legacy path and `data_ptr` is stable across steps/reset.
+  Sampling, EOS, and CUDA-graph capture itself stay dynamic/GPU work.
+- **Builds on:** 05, 21, 22
+
 ### 12 — Optimizations — Read-only
 
 - **Book framing:** sec. 4.1 (kernels/fusion); Ch 5 overview.
