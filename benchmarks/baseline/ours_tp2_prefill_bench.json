@@ -1,0 +1,105 @@
+{
+  "script": "scripts/prefill_bench_tp2.py",
+  "snapshot": "/home/nick/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B-FP8/snapshots/017b9c7af6b5689d5dd426a76e0bc077eb5ca20a",
+  "world": 2,
+  "fp8_path": "triton",
+  "lm_head_mode": "vocab",
+  "triton_max_m": 128,
+  "note": "ours-vs-ours prefill only; NOT a TTFT comparison vs vLLM. prefill_static capped at 512 (labelled, not run at 2048). B=1: chunk128 rows<=TRITON_MAX_M -> Triton FP8; chunk256 -> reference dequant FP8.",
+  "torch": "2.11.0+cu128",
+  "gpus": [
+    "NVIDIA GeForce RTX 4090",
+    "NVIDIA GeForce RTX 4090"
+  ],
+  "load_s_rank0": 19.03876266395673,
+  "rows": [
+    {
+      "prompt_tokens": 512,
+      "method": "prefill_static",
+      "chunk_size": null,
+      "status": "measured",
+      "seconds": 22.124389918055385,
+      "tok_per_s": 23.141881059606728,
+      "last_argmax": 30876,
+      "fp8_dispatch_B1": "n/a-dense-or-token-loop"
+    },
+    {
+      "prompt_tokens": 512,
+      "method": "chunkwise128",
+      "chunk_size": 128,
+      "status": "measured",
+      "seconds": 0.3890359797514975,
+      "tok_per_s": 1316.0736452372544,
+      "last_argmax": 30876,
+      "fp8_dispatch_B1": "triton"
+    },
+    {
+      "prompt_tokens": 512,
+      "method": "chunkwise256",
+      "chunk_size": 256,
+      "status": "measured",
+      "seconds": 0.8060820908285677,
+      "tok_per_s": 635.1710400533992,
+      "last_argmax": 30876,
+      "fp8_dispatch_B1": "reference-M>128"
+    },
+    {
+      "prompt_tokens": 512,
+      "method": "argmax_equality",
+      "chunk_size": null,
+      "status": "measured",
+      "seconds": null,
+      "tok_per_s": null,
+      "last_argmax": 30876,
+      "argmax_equal_across_measured_methods": true,
+      "argmax_by_method": {
+        "prefill_static": 30876,
+        "chunkwise128": 30876,
+        "chunkwise256": 30876
+      }
+    },
+    {
+      "prompt_tokens": 2048,
+      "method": "prefill_static",
+      "chunk_size": null,
+      "status": "capped_at_512_not_run",
+      "seconds": null,
+      "tok_per_s": null,
+      "last_argmax": null
+    },
+    {
+      "prompt_tokens": 2048,
+      "method": "chunkwise128",
+      "chunk_size": 128,
+      "status": "measured",
+      "seconds": 1.567638791166246,
+      "tok_per_s": 1306.4234003015383,
+      "last_argmax": 2336,
+      "fp8_dispatch_B1": "triton"
+    },
+    {
+      "prompt_tokens": 2048,
+      "method": "chunkwise256",
+      "chunk_size": 256,
+      "status": "measured",
+      "seconds": 3.2350093871355057,
+      "tok_per_s": 633.0738971405077,
+      "last_argmax": 2336,
+      "fp8_dispatch_B1": "reference-M>128"
+    },
+    {
+      "prompt_tokens": 2048,
+      "method": "argmax_equality",
+      "chunk_size": null,
+      "status": "measured",
+      "seconds": null,
+      "tok_per_s": null,
+      "last_argmax": 2336,
+      "argmax_equal_across_measured_methods": true,
+      "argmax_by_method": {
+        "chunkwise128": 2336,
+        "chunkwise256": 2336
+      }
+    }
+  ]
+}
