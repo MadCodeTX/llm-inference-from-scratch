@@ -32,8 +32,9 @@ from typing import Any, Iterator, Mapping, Sequence
 
 import torch
 
+from .fp8_linear import BlockFP8Linear
 from .hybrid import HybridConfig, _map_hybrid_key
-from .quantization import dequantize_block_fp8
+from .quantization import dequantize_block_fp8, quantize_block_fp8
 from .weights import read_safetensors_header
 
 __all__ = [
@@ -592,19 +593,34 @@ def validate_state_against_model(
         tied = False
     required = [k for k in model_order if not (tied and k == "lm_head.weight")]
     required_set = set(required)
+    # Resident-FP8 models carry one ``*.weight_scale_inv`` state entry
+    # per BlockFP8Linear; those names line up with the checkpoint's
+    # scale_inv manifest entries (same suffix via _map_hybrid_key),
+    # while a dequantising (dense) model never requires them.
+    scale_required = {k for k in required if k.endswith(".weight_scale_inv")}
     by_target: dict[str, ManifestEntry] = {}
+    by_scale: dict[str, ManifestEntry] = {}
     for e in man.entries:
-        if e.kind == "scale_inv" or e.target_name is None:
+        if e.target_name is None:
             continue
         if e.target_name.startswith("mtp.") and not include_mtp:
             continue
+        if e.kind == "scale_inv":
+            by_scale.setdefault(e.target_name, e)
+            continue
         by_target.setdefault(e.target_name, e)
-    missing = [t for t in required if t not in by_target]
+
+    def _entry_for(target: str) -> ManifestEntry | None:
+        if target in scale_required:
+            return by_scale.get(target)
+        return by_target.get(target)
+
+    missing = [t for t in required if _entry_for(t) is None]
     unexpected = sorted(t for t in by_target if t not in required_set)
     shape_mismatch: list[dict[str, Any]] = []
     dtype_mismatch: list[dict[str, Any]] = []
     for target in required:
-        entry = by_target.get(target)
+        entry = _entry_for(target)
         if entry is None:
             continue
         expected_shape = [int(d) for d in sd[target].shape]
@@ -626,9 +642,13 @@ def validate_state_against_model(
                 "kind": entry.kind,
             })
     try:
-        parameter_count = int(sum(int(p.numel()) for p in model.parameters()))
-    except Exception:
+        # State-entry count: identical to parameters() for a dense
+        # model, and the honest element count for a resident-FP8
+        # model whose FP8 weights live in buffers, not Parameters
+        # (scale entries included; tied lm_head counted once).
         parameter_count = int(sum(int(sd[k].numel()) for k in required))
+    except Exception:
+        parameter_count = int(sum(int(p.numel()) for p in model.parameters()))
     counts = {
         "expected": len(required),
         "present": len(required) - len(missing),
@@ -659,6 +679,7 @@ def load_into_model(
     include_mtp: bool = False,
     dequantize: bool = True,
     *,
+    fp8_mode: str = "dequantize",
     config: Any = None,
     manifest: Manifest | None = None,
 ) -> dict[str, Any]:
@@ -671,14 +692,31 @@ def load_into_model(
     leaves the model unmutated.  With ``strict=False``, mismatched /
     unexpected tensors are skipped and the rest are loaded.
 
-    Each tensor is loaded one at a time via
-    :func:`iter_checkpoint_state` (FP8 dequantised to BF16, scales
-    consumed) and copied with ``copy_`` under ``no_grad`` (which
-    casts BF16 into the parameter dtype).  Returns the validation
-    report plus ``loaded`` (target names, in load order) and
-    ``loaded_count``.  For the real 27B model this is future GPU
-    code; tests exercise it on tiny synthetic fixtures.
+    ``fp8_mode`` selects how FP8 checkpoint weights land:
+
+    * ``"dequantize"`` (default, the historic behaviour): each FP8
+      weight is dequantised to BF16 via :func:`iter_checkpoint_state`
+      and copied into a dense parameter (``dequantize=False`` keeps
+      the raw stored tensors on this path);
+    * ``"resident"``: for every
+      :class:`~inference_from_scratch.fp8_linear.BlockFP8Linear` in
+      the model, the raw FP8 bits and their ``weight_scale_inv`` are
+      copied into the module's buffers on the module's device, so
+      the weights stay FP8 in memory. All other targets load on the
+      dequantising path. A resident target whose checkpoint tensor
+      is stored dense (BF16) is quantised on the fly instead, so a
+      converted BF16 projection still loads.
+
+    Returns the validation report plus ``loaded`` (target names, in
+    load order), ``loaded_count``, ``fp8_mode`` and
+    ``resident_targets`` (qualified FP8 module names, resident mode
+    only). Tests exercise both modes on tiny synthetic fixtures.
     """
+    if fp8_mode not in ("dequantize", "resident"):
+        raise ValueError(
+            f"fp8_mode must be 'dequantize' or 'resident', got {fp8_mode!r}"
+        )
+    resident = fp8_mode == "resident"
     cfg = _resolve_config(snapshot_dir, config=config, model=model)
     man = snapshot_dir if isinstance(snapshot_dir, Manifest) else manifest
     report = validate_state_against_model(
@@ -695,12 +733,61 @@ def load_into_model(
         params.setdefault(name, p)
     for name, b in model.named_buffers():
         params.setdefault(name, b)
+    # Resident targets: qualified BlockFP8Linear names -> weight target.
+    resident_modules: dict[str, BlockFP8Linear] = {}
+    if resident:
+        for qual, module in model.named_modules():
+            if isinstance(module, BlockFP8Linear):
+                resident_modules[qual] = module
+    resident_weight_targets = {f"{q}.weight" for q in resident_modules}
+    root = _resolve_dir(snapshot_dir)
     loaded: list[str] = []
     with torch.no_grad():
+        if resident:
+            for qual in sorted(resident_modules):
+                module = resident_modules[qual]
+                weight_target = f"{qual}.weight"
+                scale_target = f"{qual}.weight_scale_inv"
+                if weight_target in bad_shapes or scale_target in bad_shapes:
+                    continue
+                ckpt_weight = _target_to_checkpoint(weight_target)
+                try:
+                    raw = _load_one(root, ckpt_weight, manifest=man)
+                except KeyError:
+                    if strict:
+                        raise
+                    continue
+                if raw.dtype == torch.float8_e4m3fn:
+                    try:
+                        scale = _load_one(
+                            root, ckpt_weight + "_scale_inv", manifest=man)
+                    except KeyError:
+                        if strict:
+                            raise
+                        continue
+                    module.weight.copy_(
+                        raw.to(device=module.weight.device))
+                    module.weight_scale_inv.copy_(
+                        scale.to(dtype=torch.bfloat16,
+                                 device=module.weight.device))
+                else:
+                    # Dense-stored projection converted to resident FP8:
+                    # quantise on the fly so the buffers still land.
+                    q, scale_f32 = quantize_block_fp8(
+                        raw.to(torch.float32), block=module.block)
+                    module.weight.copy_(
+                        q.to(device=module.weight.device))
+                    module.weight_scale_inv.copy_(
+                        scale_f32.to(dtype=torch.bfloat16,
+                                     device=module.weight.device))
+                loaded.append(weight_target)
+                loaded.append(scale_target)
         for target, tensor in iter_checkpoint_state(
             snapshot_dir, config=cfg, include_mtp=include_mtp,
             dequantize=dequantize, manifest=man,
         ):
+            if resident and target in resident_weight_targets:
+                continue  # already loaded raw above
             dest = params.get(target)
             if dest is None or target in bad_shapes:
                 continue
@@ -715,4 +802,6 @@ def load_into_model(
     out = dict(report)
     out["loaded"] = loaded
     out["loaded_count"] = len(loaded)
+    out["fp8_mode"] = fp8_mode
+    out["resident_targets"] = sorted(resident_modules)
     return out

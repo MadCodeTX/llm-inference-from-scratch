@@ -79,6 +79,23 @@ from torch import nn
 LinearAttentionState = tuple[torch.Tensor, torch.Tensor]
 
 
+def _linear(module: nn.Module, x: torch.Tensor, *, cast_to_weight: bool = False) -> torch.Tensor:
+    """Apply a projection module, dense or resident-FP8.
+
+    Dense ``nn.Linear`` keeps the historic ``F.linear`` form (with the
+    optional cast of ``x`` to the weight dtype the out-projection
+    sites relied on); any other module -- notably
+    :class:`~inference_from_scratch.fp8_linear.BlockFP8Linear`, whose
+    FP8 ``weight`` buffer must never reach ``F.linear`` directly --
+    is called, so it can dequantise first.
+    """
+    if isinstance(module, nn.Linear):
+        if cast_to_weight:
+            x = x.to(module.weight.dtype)
+        return F.linear(x, module.weight, module.bias)
+    return module(x)
+
+
 def _l2norm(x: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
     """L2-normalise over the last dim, as in HF ``l2norm`` (modeling_qwen3_5.py).
 
@@ -314,7 +331,7 @@ class GatedDeltaNet(nn.Module):
         core = self.norm(core.reshape(B * self.num_value_heads, self.head_v_dim),
                          z_t.reshape(B * self.num_value_heads, self.head_v_dim))
         core = core.reshape(B, self.value_total)
-        out = F.linear(core.to(self.out_proj.weight.dtype), self.out_proj.weight)
+        out = _linear(self.out_proj, core, cast_to_weight=True)
         return out, S
 
     def _project(
@@ -327,12 +344,12 @@ class GatedDeltaNet(nn.Module):
         ``g = -exp(A_log) * softplus(a + dt_bias)`` (HF forward verbatim;
         the float32 upcast keeps ``A_log`` finite in half precision).
         """
-        mixed = F.linear(x, self.in_proj_qkv.weight)
-        z = F.linear(x, self.in_proj_z.weight).reshape(
+        mixed = _linear(self.in_proj_qkv, x)
+        z = _linear(self.in_proj_z, x).reshape(
             x.shape[0], self.num_value_heads, self.head_v_dim
         )
-        b = F.linear(x, self.in_proj_b.weight)
-        a = F.linear(x, self.in_proj_a.weight)
+        b = _linear(self.in_proj_b, x)
+        a = _linear(self.in_proj_a, x)
         beta = torch.sigmoid(b)
         g = -self.A_log.float().exp() * F.softplus(a.float() + self.dt_bias.float())
         return mixed, z, beta, g
@@ -587,7 +604,7 @@ class GatedDeltaNet(nn.Module):
         core = self.norm(core.reshape(B * self.num_value_heads, self.head_v_dim),
                          z_t.reshape(B * self.num_value_heads, self.head_v_dim))
         core = core.reshape(B, self.value_total)
-        out = F.linear(core.to(self.out_proj.weight.dtype), self.out_proj.weight)
+        out = _linear(self.out_proj, core, cast_to_weight=True)
         return out
 
     def step_inplace(
@@ -676,12 +693,12 @@ class GatedDeltaNet(nn.Module):
             return torch.empty_like(x), (S0.clone(), conv_buffer.clone())
 
         # Per-token projections for the whole sequence up front (fp32 gates).
-        mixed_all = F.linear(x, self.in_proj_qkv.weight)  # [B, T, C]
-        z_all = F.linear(x, self.in_proj_z.weight).reshape(
+        mixed_all = _linear(self.in_proj_qkv, x)  # [B, T, C]
+        z_all = _linear(self.in_proj_z, x).reshape(
             B, T, self.num_value_heads, self.head_v_dim
         )
-        b_all = F.linear(x, self.in_proj_b.weight)
-        a_all = F.linear(x, self.in_proj_a.weight)
+        b_all = _linear(self.in_proj_b, x)
+        a_all = _linear(self.in_proj_a, x)
         beta_all = torch.sigmoid(b_all.float())  # [B, T, Hv] fp32
         g_all = -self.A_log.float().exp() * F.softplus(
             a_all.float() + self.dt_bias.float()
@@ -714,7 +731,7 @@ class GatedDeltaNet(nn.Module):
             z_all.reshape(B * T * self.num_value_heads, self.head_v_dim),
         )
         core = core.reshape(B, T, self.value_total)
-        out = F.linear(core.to(self.out_proj.weight.dtype), self.out_proj.weight)
+        out = _linear(self.out_proj, core, cast_to_weight=True)
         return out.to(x.dtype), (S_final, new_buffer.to(dtype=mixed_all.dtype))
 
     def forward_prefill(
@@ -759,12 +776,12 @@ class GatedDeltaNet(nn.Module):
         else:
             S, conv_buffer = state
         # Per-token projections for the whole sequence up front.
-        mixed_all = F.linear(x, self.in_proj_qkv.weight)  # [B, T, C]
-        z_all = F.linear(x, self.in_proj_z.weight).reshape(
+        mixed_all = _linear(self.in_proj_qkv, x)  # [B, T, C]
+        z_all = _linear(self.in_proj_z, x).reshape(
             B, T, self.num_value_heads, self.head_v_dim
         )
-        b_all = F.linear(x, self.in_proj_b.weight)
-        a_all = F.linear(x, self.in_proj_a.weight)
+        b_all = _linear(self.in_proj_b, x)
+        a_all = _linear(self.in_proj_a, x)
         beta_all = torch.sigmoid(b_all)
         g_all = -self.A_log.float().exp() * F.softplus(
             a_all.float() + self.dt_bias.float()
