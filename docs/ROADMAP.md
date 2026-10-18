@@ -234,7 +234,7 @@ The Tiny-to-Qwen ladder lives here. One codebase climbs it: only
   `tp_checkpoint.py`, `scripts/run_qwen38_tp2.py`): v1 22.9–23.6 tok/s,
   v2 (fused RMSNorm) 23.4–23.9 tok/s, both 32/32 exact ×3 vs the
   pipeline bridge (retained as oracle) and vLLM Arm A; profile shows
-  host-launch-bound decode (128 all-reduces/token = 1.28 ms). This phase: TP static state + CUDA-graph decode 34.6 tok/s (TPOT 28.9 ms, 32/32 exact ×3), vocab-parallel lm_head shipped, scale cache opt-in/off, FP8 BLOCK_N=32 tile retune 24.48 ms/token (capital ABBA) — still above Arm A 20.3 ms and the 19.17 ms floor, no win claimed. See `docs/23_tensor_parallel.md`.
+  host-launch-bound decode (128 all-reduces/token = 1.28 ms). This phase: TP static state + CUDA-graph decode 34.6 tok/s (TPOT 28.9 ms, 32/32 exact ×3), vocab-parallel lm_head shipped, scale cache opt-in/off, FP8 BLOCK_N=32 tile retune 24.48 ms/token, fused gated-delta 23.67 ms/token (42.25 tok/s, exact x3) — still above Arm A 20.3 ms and the 19.17 ms floor, no win claimed. See `docs/23_tensor_parallel.md`.
 - **Builds on:** 21, 22
 
 ### 24 — Native MTP head: foundations — Built (CPU)
@@ -248,16 +248,14 @@ The Tiny-to-Qwen ladder lives here. One codebase climbs it: only
   acceptance accounting with no fabricated numbers; record the
   shape-silent joins as inferred and design Phase 3 rollback
   (truncate KV, snapshot recurrent state) before wiring generation.
-  Arm B (vLLM + MTP) remains **UNMEASURED**; no acceptance or win
-  numbers are claimed.
+  Arm B attempted 2026-10-18 **FAILED_TO_START** (exact-flags KV overflow); no acceptance or win numbers are claimed.
 - **Status (2026-10-18, measured):** wiring sweep (48 candidates,
   teacher-forced) resolved=false — best acceptance 0.8721 with tied
   rows, so no winner was written in as default. The TP2 speculative
   loop (eager + graph-captured) is exact (32/32 x3, capital 128/128)
   with acceptance 0.88–0.94 but slower than graph-nonspec
   (32.51 vs 24.49 ms effective TPOT, capital x128); not a win.
-  Arm B (vLLM + MTP) is still **UNMEASURED** and is the next
-  workflow's first job.
+  Arm B **FAILED_TO_START** 2026-10-18; retry needs owner decision on max-model-len/gpu-memory-utilization. Also: mtp1-graph2 merged graph 32.90 ms eff capital x128 (exact, not faster); best is fused nonspec 23.67 ms (42.25 tok/s).
 - **Builds on:** 14, 22
 
 ### 11 — Serving: batching / PagedAttention — Built

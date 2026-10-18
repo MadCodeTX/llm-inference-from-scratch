@@ -778,6 +778,7 @@ class DistributedGatedDeltaNet(nn.Module):
         self.in_proj_qkv_fp8: BlockFP8Linear | None = None
         self.in_proj_z_fp8: BlockFP8Linear | None = None
         self.out_proj_fp8: BlockFP8Linear | None = None
+        self.use_fused_delta: bool = False
 
     @staticmethod
     def _linear(x: torch.Tensor, weight: Any, fp8: Any) -> torch.Tensor:
@@ -829,6 +830,7 @@ class DistributedGatedDeltaNet(nn.Module):
         obj.shard_shapes = {"linear_attn.in_proj_qkv.weight": qkv_shape,
                             "linear_attn.in_proj_z.weight": z_shape,
                             "linear_attn.out_proj.weight": out_shape}
+        obj.use_fused_delta = False
         return obj
 
     def step(self, x_t: torch.Tensor, state: tuple[torch.Tensor, torch.Tensor],
@@ -952,11 +954,21 @@ class DistributedGatedDeltaNet(nn.Module):
             k = k.repeat_interleave(self.n_rep, dim=1)
         q = _l2norm(q) * (Dk ** -0.5)
         k = _l2norm(k)
-        S.mul_(torch.exp(g.float())[:, :, None, None].to(dtype=S.dtype))
-        kv_mem = (S.float() * k.unsqueeze(-1)).sum(dim=-2)
-        delta = (v - kv_mem) * beta.float().unsqueeze(-1)
-        S.add_((k.unsqueeze(-1) * delta.unsqueeze(-2)).to(dtype=S.dtype))
-        core = (S.float() * q.unsqueeze(-1)).sum(dim=-2)
+        if getattr(self, "use_fused_delta", False):
+            from .gated_delta_fused import gated_delta_inplace
+            core = gated_delta_inplace(
+                q.reshape(B * self.vh_per, Dk).float(),
+                k.reshape(B * self.vh_per, Dk).float(),
+                v.reshape(B * self.vh_per, Dv),
+                beta.reshape(B * self.vh_per).float(),
+                g.reshape(B * self.vh_per).float(),
+                S.reshape(B * self.vh_per, Dk, Dv), mode="fused")
+        else:
+            S.mul_(torch.exp(g.float())[:, :, None, None].to(dtype=S.dtype))
+            kv_mem = (S.float() * k.unsqueeze(-1)).sum(dim=-2)
+            delta = (v - kv_mem) * beta.float().unsqueeze(-1)
+            S.add_((k.unsqueeze(-1) * delta.unsqueeze(-2)).to(dtype=S.dtype))
+            core = (S.float() * q.unsqueeze(-1)).sum(dim=-2)
         core = self.norm(core.reshape(B * self.vh_per, Dv), z.reshape(B * self.vh_per, Dv))
         core = core.reshape(B, v_sz)
         partial = (self.out_proj_fp8(core) if self.out_proj_fp8 is not None

@@ -380,7 +380,13 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--speculative", choices=list(SPECULATIVE_MODES), default="off",
                     help="speculative: off (default), mtp1 (native MTP gamma=1 "
                          "greedy speculation on the eager static path) or "
-                         "mtp1-graph (chunk+draft CUDA-graph speculation); loads mtp.*")
+                         "mtp1-graph (chunk+draft CUDA-graph speculation) or mtp1-graph2 "
+                         "(one merged graph/cycle, 1 sync/cycle); loads mtp.*")
+    ap.add_argument("--delta", choices=list(DELTA_MODES), default="fused",
+                    help="gated-delta recurrence: fused (default; one Triton "
+                         "kernel/layer, measured 24.48 -> 23.67 ms TPOT exact "
+                         "in benchmarks/baseline/ours_tp2_graph_v2.json) or ref "
+                         "(multi-op A/B baseline; fused falls back to it off-CUDA)")
     ap.add_argument("--probe", default=None,
                     help="only run the probe with this id (e.g. capital)")
     ap.add_argument("--debug-token-sync", action="store_true",
@@ -526,6 +532,7 @@ def main() -> int:
             "lm_head_mode": args.lm_head,
             "scale_cache": args.scale_cache,
             "decode_mode": args.decode_mode,
+            "delta_mode": args.delta,
             "speculative": args.speculative,
             "fp8_config": args.fp8_config,
             "tokenizer_choice": "all ranks encode identically (deterministic, zero comms)",

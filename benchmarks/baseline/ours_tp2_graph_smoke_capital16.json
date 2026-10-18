@@ -1,0 +1,103 @@
+{
+  "script": "scripts/run_qwen38_tp2.py",
+  "snapshot": "/home/nick/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B-FP8/snapshots/017b9c7af6b5689d5dd426a76e0bc077eb5ca20a",
+  "world": 2,
+  "parallelism": "tensor_parallel_tp2",
+  "fp8_path": "triton",
+  "norm_mode": "fused",
+  "lm_head_mode": "vocab",
+  "scale_cache": "off",
+  "decode_mode": "graph",
+  "delta_mode": "fused",
+  "speculative": "off",
+  "fp8_config": "new",
+  "tokenizer_choice": "all ranks encode identically (deterministic, zero comms)",
+  "token_agreement": "replicated logits + local argmax, batched host transfer at end; --debug-token-sync asserts per-step",
+  "torch": "2.11.0+cu128",
+  "cuda": "12.8",
+  "gpus": [
+    "NVIDIA GeForce RTX 4090",
+    "NVIDIA GeForce RTX 4090"
+  ],
+  "max_new_tokens": 16,
+  "resident_estimate_gib_per_rank": 15.177884757518768,
+  "load_time_s_by_rank": {
+    "0": 25.448165541980416,
+    "1": 25.483972523827106
+  },
+  "resident_bytes_by_rank": {
+    "0": 16006074880,
+    "1": 16006074880
+  },
+  "peak_memory_bytes_by_rank": {
+    "0": 16335454720,
+    "1": 16335454720
+  },
+  "roofline_tpot_floor_ms": 19.17,
+  "arm_a_tpot_ms": 20.3,
+  "probes": [
+    {
+      "id": "capital",
+      "prompt": "The capital of France is",
+      "prompt_token_ids": [
+        760,
+        6511,
+        314,
+        9338,
+        369
+      ],
+      "generated_token_ids": [
+        11751,
+        13,
+        198,
+        760,
+        6511,
+        314,
+        9564,
+        369,
+        19241,
+        13,
+        198,
+        760,
+        6511,
+        314,
+        14898,
+        369
+      ],
+      "generated_text": " Paris.\nThe capital of Germany is Berlin.\nThe capital of Italy is",
+      "logits_finite": true,
+      "vs_bridge": {
+        "exact_match": false,
+        "matching_positions": 16,
+        "compared_tokens": 16,
+        "first_divergence": null,
+        "generated_at_divergence": null,
+        "reference_at_divergence": null
+      },
+      "vs_arm_a": {
+        "exact_match": false,
+        "matching_positions": 16,
+        "compared_tokens": 16,
+        "first_divergence": null,
+        "generated_at_divergence": null,
+        "reference_at_divergence": null
+      },
+      "prefill_s": 0.9446583702228963,
+      "decode_s": 0.3552976711653173,
+      "capture_s": 0.061668857000768185,
+      "graph_replays": 15,
+      "max_seq_len": 21,
+      "decode_mode": "graph",
+      "speculative": "off",
+      "speculative_stats": null,
+      "profile": null,
+      "acceptance": null,
+      "cycles": null,
+      "tpot_effective_ms": null,
+      "fp8_config": "new",
+      "decode_tok_per_s": 42.218120796577395,
+      "tpot_ms": 23.686511411021154,
+      "peak_memory_bytes_rank_local": 16335454720
+    }
+  ]
+}
