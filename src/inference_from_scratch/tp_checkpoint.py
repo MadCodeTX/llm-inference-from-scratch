@@ -70,7 +70,9 @@ def _scale_shard_shape(weight_name: str, weight_shape, scale_shape,
 
 
 def _shard_shape(name: str, shape, rank: int, world: int, config,
-                 expected: dict | None = None) -> tuple[int, ...]:
+                 expected: dict | None = None, lm_head_mode: str = "replicated") -> tuple[int, ...]:
+    if lm_head_mode == "vocab" and (name == "lm_head.weight" or name.endswith(".lm_head.weight")):
+        return _lm_head_shard_shape(shape, rank, world)
     if name.endswith("weight_scale_inv") and expected is not None:
         base = name[: -len("_scale_inv")]
         base_spec = expected.get(base)
@@ -78,6 +80,24 @@ def _shard_shape(name: str, shape, rank: int, world: int, config,
             return _scale_shard_shape(base, base_spec["shape"], shape, rank, world, config)
     return shard_spec_for(name, tuple(shape), config).shard_shape(rank, world)
 
+
+
+def _vocab_shard_tensor(full: torch.Tensor, rank: int, world: int) -> torch.Tensor:
+    """This rank's zero-padded vocab rows of lm_head ``[V, H]``."""
+    from .tp_distributed import vocab_shard_layout
+    padded, shard = vocab_shard_layout(int(full.shape[0]), int(world))
+    start = int(rank) * shard
+    end = min(start + shard, int(full.shape[0]))
+    out = torch.zeros((shard, int(full.shape[1])), dtype=full.dtype)
+    if end > start:
+        out[: end - start].copy_(full[start:end])
+    return out
+
+
+def _lm_head_shard_shape(shape, rank: int, world: int) -> tuple[int, ...]:
+    from .tp_distributed import vocab_shard_layout
+    _, shard = vocab_shard_layout(int(shape[0]), int(world))
+    return (shard, int(shape[1]))
 
 def iter_rank_shards(
     snapshot_dir: Any,
@@ -88,6 +108,7 @@ def iter_rank_shards(
     fp8_mode: str = "resident",
     include_mtp: bool = False,
     manifest: Manifest | None = None,
+    lm_head_mode: str = "replicated",
 ) -> Iterator[tuple[str, torch.Tensor]]:
     """Yield ``(target_name, cpu_shard)`` for ONLY this rank's tensors.
 
@@ -104,6 +125,8 @@ def iter_rank_shards(
     if include_mtp:
         raise ValueError("include_mtp=True is unsupported: DistributedHybridLM "
                          "holds no MTP block in v1")
+    if lm_head_mode not in ("replicated", "vocab"):
+        raise ValueError(f"lm_head_mode must be 'replicated' or 'vocab', got {lm_head_mode!r}")
     root = _resolve_dir(snapshot_dir)
     man = snapshot_dir if isinstance(snapshot_dir, Manifest) else (manifest or build_manifest(root))
     cfg = _resolve_config(snapshot_dir, config=config)
@@ -129,7 +152,10 @@ def iter_rank_shards(
             yield target + "_scale_inv", s_shard
         else:
             full = load_tensor(root, ckpt, dequantize=True, manifest=man)
-            yield target, shard_state_dict({target: full}, rank, world, cfg)[target]
+            if lm_head_mode == "vocab" and target == "lm_head.weight":
+                yield target, _vocab_shard_tensor(full, rank, world)
+            else:
+                yield target, shard_state_dict({target: full}, rank, world, cfg)[target]
 
 
 def _destinations(model: DistributedHybridLM, config: Any) -> dict[str, tuple[Any, str]]:
@@ -214,6 +240,8 @@ def load_rank_state(
     include_mtp: bool = False,
     use_triton: bool | None = None,
     manifest: Manifest | None = None,
+    lm_head_mode: str = "replicated",
+    use_scale_cache: bool = False,
 ) -> tuple[DistributedHybridLM, dict[str, Any]]:
     """Build this rank's :class:`DistributedHybridLM` from a checkpoint.
 
@@ -230,7 +258,7 @@ def load_rank_state(
     man = snapshot_dir if isinstance(snapshot_dir, Manifest) else (manifest or build_manifest(root))
     cfg = _resolve_config(snapshot_dir, config=config)
     dev = torch.device(device) if device is not None else torch.device("cpu")
-    model = DistributedHybridLM.empty(cfg, rank, world, fp8_mode=fp8_mode, use_triton=use_triton)
+    model = DistributedHybridLM.empty(cfg, rank, world, fp8_mode=fp8_mode, use_triton=use_triton, lm_head_mode=lm_head_mode)
     dest = _destinations(model, cfg)
     by_name = man.by_name()
     # Every destination (scale destinations included) maps to exactly
@@ -242,7 +270,7 @@ def load_rank_state(
     with torch.no_grad():
         for target, shard in iter_rank_shards(
                 root, config=cfg, rank=rank, world=world, fp8_mode=fp8_mode,
-                include_mtp=include_mtp, manifest=man):
+                include_mtp=include_mtp, manifest=man, lm_head_mode=lm_head_mode):
             owner_attr = dest.get(target)
             if owner_attr is None:
                 if strict:
@@ -250,6 +278,10 @@ def load_rank_state(
                 continue
             _assign(owner_attr[0], owner_attr[1], shard, dev)
             loaded.append(target)
+    scale_cache_modules = 0
+    if use_scale_cache:
+        from .fp8_linear import apply_scale_cache
+        scale_cache_modules = apply_scale_cache(model, True)
     not_loaded = sorted(set(dest) - set(loaded))
     if strict and not_loaded:
         raise RuntimeError(f"load_rank_state: destinations never loaded: {not_loaded[:8]}")
@@ -263,14 +295,17 @@ def load_rank_state(
         "loaded": loaded, "loaded_count": len(loaded),
         "missing": missing, "not_loaded": not_loaded,
         "resident_bytes": model.local_parameter_bytes(),
-        "device": str(dev),
+        "device": str(dev), "lm_head_mode": str(lm_head_mode),
+        "use_scale_cache": bool(use_scale_cache),
+        "scale_cache_modules": int(scale_cache_modules),
     }
     return model, report
 
 
 def rank_shard_summary(snapshot_dir: Any, config: Any = None, rank: int = 0,
                        world: int = 2, *, include_mtp: bool = True,
-                       manifest: Manifest | None = None) -> dict[str, Any]:
+                       manifest: Manifest | None = None,
+                       lm_head_mode: str = "replicated") -> dict[str, Any]:
     """This rank's shard shapes/count/bytes + shape-hash (headers only).
 
     Covers every expected language tensor (MTP included by default;
@@ -289,7 +324,7 @@ def rank_shard_summary(snapshot_dir: Any, config: Any = None, rank: int = 0,
         entry = by_name.get(ckpt)
         if entry is None:
             continue
-        shard_shape = _shard_shape(ckpt, entry.shape, rank, world, cfg, expected)
+        shard_shape = _shard_shape(ckpt, entry.shape, rank, world, cfg, expected, lm_head_mode=lm_head_mode)
         shapes[ckpt] = list(shard_shape)
         lines.append(f"{ckpt}|{tuple(shard_shape)}|{entry.dtype}")
         numel = 1
@@ -375,7 +410,8 @@ def validate_rank_coverage(snapshot_dir: Any, config: Any = None, world: int = 2
 
 
 def resident_memory_report(snapshot_dir: Any, config: Any = None, world: int = 2,
-                           *, manifest: Manifest | None = None) -> dict[str, Any]:
+                           *, manifest: Manifest | None = None,
+                           lm_head_mode: str = "replicated") -> dict[str, Any]:
     """Per-rank resident bytes by category for the REAL config (headers only).
 
     Categories follow the checkpoint's storage: sharded FP8 weights
@@ -396,7 +432,7 @@ def resident_memory_report(snapshot_dir: Any, config: Any = None, world: int = 2
         for entry in man.entries:
             if entry.target_name is None:
                 continue  # vision: deferred, excluded from both sides
-            shard_shape = _shard_shape(entry.checkpoint_name, entry.shape, rank, world, cfg, expected)
+            shard_shape = _shard_shape(entry.checkpoint_name, entry.shape, rank, world, cfg, expected, lm_head_mode=lm_head_mode)
             numel = 1
             for s in shard_shape:
                 numel *= int(s)
@@ -407,7 +443,8 @@ def resident_memory_report(snapshot_dir: Any, config: Any = None, world: int = 2
                 row["scale_inv"] += nbytes
             else:
                 spec = shard_spec_for(entry.target_name, tuple(entry.shape), cfg)
-                row["bf16_sharded" if spec.is_sharded else "bf16_replicated"] += nbytes
+                is_sh = spec.is_sharded or (lm_head_mode == "vocab" and entry.target_name == "lm_head.weight")
+                row["bf16_sharded" if is_sh else "bf16_replicated"] += nbytes
         row["total"] = int(sum(row.values()))
         per_rank[rank] = {k: int(v) for k, v in row.items()}
     estimate = parameter_bytes_by_rank(cfg, world)[0]

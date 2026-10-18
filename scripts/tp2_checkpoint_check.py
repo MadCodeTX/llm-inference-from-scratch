@@ -92,6 +92,8 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--backend", default=None, choices=["nccl", "gloo"])
     p.add_argument("--device", default=None, choices=["cuda", "cpu"])
+    p.add_argument("--lm-head", default="replicated", choices=["replicated", "vocab"])
+    p.add_argument("--scale-cache", action="store_true")
     args = p.parse_args()
     backend = args.backend or ("nccl" if args.device != "cpu" else "gloo")
     device_type = args.device or ("cuda" if backend == "nccl" else "cpu")
@@ -111,7 +113,10 @@ def main() -> int:
     load_into_model(dense, fixture, strict=True)
 
     tp, report = load_rank_state(fixture, cfg, rank=rank, world=ctx.world_size,
-                                 device=dev, fp8_mode="resident", ctx=ctx)
+                                 device=dev, fp8_mode="resident", ctx=ctx,
+                                 lm_head_mode=args.lm_head, use_scale_cache=args.scale_cache)
+    print(f"[rank {rank}] lm_head_mode={args.lm_head} lm_head_shape={tuple(tp.lm_head.weight.shape)} "
+          f"scale_cache={args.scale_cache} scale_modules={report['scale_cache_modules']}", flush=True)
     print(f"[rank {rank}] loaded={report['loaded_count']} "
           f"resident_bytes={report['resident_bytes']}", flush=True)
 
@@ -142,6 +147,9 @@ def main() -> int:
         _check("prefill_logits", tp_logits, dense_logits, rank)
         if not torch.equal(dense_logits[:, -1].argmax(-1), tp_logits[:, -1].argmax(-1)):
             raise AssertionError("prefill greedy tokens differ")
+        gt, gv, _ = tp.prefill_greedy(idx)
+        if not torch.equal(gt.cpu(), dense_logits[:, -1].argmax(-1).cpu()):
+            raise AssertionError("prefill_greedy tokens differ from dense")
         next_token = dense_logits[:, -1].argmax(dim=-1)
         for step_i in range(6):
             d_logits, dense_state = dense.step(next_token, dense_state)

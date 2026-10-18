@@ -51,6 +51,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "BlockFP8Linear",
+    "apply_scale_cache",
     "replace_linears_with_fp8",
     "scaled_mm_block_supported",
     "shard_fp8_pair",
@@ -137,6 +138,7 @@ class BlockFP8Linear(nn.Module):
         device: torch.device | str | None = None,
         use_fast_path: bool = False,
         use_triton: bool | None = None,
+        use_scale_cache: bool = False,
     ):
         super().__init__()
         if int(in_features) <= 0 or int(out_features) <= 0:
@@ -149,7 +151,10 @@ class BlockFP8Linear(nn.Module):
         self.use_fast_path = bool(use_fast_path)
         # Explicit flag wins; None falls back to INFERENCE_FP8_TRITON env.
         self.use_triton = _env_use_triton() if use_triton is None else bool(use_triton)
+        self.use_scale_cache = bool(use_scale_cache)
         self._triton_fallback_reason: str | None = None
+        self._scale_cache_key: tuple | None = None
+        self._scale_cache_builds = 0
         gr = -(-self.out_features // self.block[0])
         gc = -(-self.in_features // self.block[1])
         self.register_buffer(
@@ -163,12 +168,87 @@ class BlockFP8Linear(nn.Module):
             "weight_scale_inv",
             torch.ones((gr, gc), dtype=torch.bfloat16, device=device),
         )
+        # FP32 scale cache (persistent=False: never in state_dict).
+        self.register_buffer(
+            "_scale_f32_cache",
+            torch.empty((0,), dtype=torch.float32, device=device),
+            persistent=False,
+        )
         if bias:
             self.bias = nn.Parameter(
                 torch.zeros(self.out_features, device=device)
             )
         else:
             self.register_parameter("bias", None)
+
+    # -- cached FP32 scales -------------------------------------------------
+    def _scale_cache_key_now(self) -> tuple:
+        s = self.weight_scale_inv
+        try:
+            ptr = int(s.data_ptr())
+        except Exception:
+            ptr = -1
+        try:
+            ver = int(s._version)  # type: ignore[attr-defined]
+        except Exception:
+            ver = -1
+        return (ptr, ver, tuple(s.shape), str(s.dtype), str(s.device))
+
+    def refresh_scale_cache(self) -> torch.Tensor | None:
+        """(Re)build the cached FP32 scale from ``weight_scale_inv``.
+
+        Explicit invalidation entry point: loaders call this after
+        assigning new scale tensors. Returns the cache, or ``None``
+        on meta device / when caching is disabled and not forced by
+        an explicit enable. Building increments ``_scale_cache_builds``
+        so tests can prove it happens once per scale version.
+        """
+        if not self.use_scale_cache:
+            return None
+        s = self.weight_scale_inv
+        if s.device.type == "meta":
+            return None
+        cache = s.detach().to(torch.float32).contiguous()
+        # Assign via buffer object replacement keeps persistent=False.
+        self._scale_f32_cache = cache
+        self._scale_cache_key = self._scale_cache_key_now()
+        self._scale_cache_builds += 1
+        return cache
+
+    def set_use_scale_cache(self, enabled: bool) -> bool:
+        """Toggle the FP32 scale cache; builds eagerly when enabling."""
+        self.use_scale_cache = bool(enabled)
+        if self.use_scale_cache:
+            self.refresh_scale_cache()
+        else:
+            self._scale_cache_key = None
+            try:
+                self._scale_f32_cache = torch.empty(
+                    (0,), dtype=torch.float32, device=self.weight_scale_inv.device)
+            except Exception:
+                pass
+        return self.use_scale_cache
+
+    def cached_fp32_scale(self) -> torch.Tensor | None:
+        """Cached FP32 scale, rebuilt iff storage/version changed.
+
+        Honest invalidation: the key is (data_ptr, _version, shape,
+        dtype, device) of ``weight_scale_inv``. In-place writes bump
+        ``_version``; tensor replacement changes ``data_ptr``; either
+        triggers exactly one rebuild on next use. Returns ``None``
+        when caching is disabled.
+        """
+        if not self.use_scale_cache:
+            return None
+        if self.weight_scale_inv.device.type == "meta":
+            return None
+        if self._scale_cache_key != self._scale_cache_key_now() or \
+                tuple(self._scale_f32_cache.shape) != tuple(self.weight_scale_inv.shape):
+            return self.refresh_scale_cache()
+        return self._scale_f32_cache
+
+    # Back-compat alias used by tests/loaders.
+    _cached_fp32_scale = cached_fp32_scale
 
     @classmethod
     def from_pre_sliced(
@@ -180,6 +260,7 @@ class BlockFP8Linear(nn.Module):
         *,
         use_fast_path: bool = False,
         use_triton: bool | None = None,
+        use_scale_cache: bool = False,
     ) -> "BlockFP8Linear":
         """Build from pre-sliced FP8 ``weight`` + ``weight_scale_inv``.
 
@@ -199,13 +280,15 @@ class BlockFP8Linear(nn.Module):
                 f"for weight {(out_f, in_f)} block {tuple(block)}")
         module = cls(in_f, out_f, bias=bias is not None, block=block,
                      device=weight.device, use_fast_path=use_fast_path,
-                     use_triton=use_triton)
+                     use_triton=use_triton, use_scale_cache=use_scale_cache)
         with torch.no_grad():
             module.weight.copy_(weight.to(module.weight.device))
             module.weight_scale_inv.copy_(
                 weight_scale_inv.to(dtype=torch.bfloat16, device=module.weight.device))
             if module.bias is not None and bias is not None:
                 module.bias.copy_(bias.detach().to(module.bias.dtype))
+        if module.use_scale_cache:
+            module.refresh_scale_cache()
         return module
 
     @classmethod
@@ -216,6 +299,7 @@ class BlockFP8Linear(nn.Module):
         *,
         use_fast_path: bool = False,
         use_triton: bool | None = None,
+        use_scale_cache: bool = False,
     ) -> "BlockFP8Linear":
         """Quantise a dense ``nn.Linear`` into a resident FP8 module."""
         if not isinstance(linear, nn.Linear):
@@ -226,7 +310,7 @@ class BlockFP8Linear(nn.Module):
             linear.in_features, linear.out_features,
             bias=linear.bias is not None, block=block,
             device=w.device, use_fast_path=use_fast_path,
-            use_triton=use_triton,
+            use_triton=use_triton, use_scale_cache=use_scale_cache,
         )
         with torch.no_grad():
             module.weight.copy_(q.to(module.weight.device))
@@ -235,7 +319,15 @@ class BlockFP8Linear(nn.Module):
             )
             if module.bias is not None and linear.bias is not None:
                 module.bias.copy_(linear.bias.detach().to(module.bias.dtype))
+        if module.use_scale_cache:
+            module.refresh_scale_cache()
         return module
+
+    def _load_from_state_dict(self, *args, **kwargs):  # type: ignore[override]
+        super()._load_from_state_dict(*args, **kwargs)
+        # Loaded scales may share storage/version coincidentally in
+        # exotic cases; force one rebuild on next Triton use.
+        self._scale_cache_key = None
 
     def dequantized_weight(self, dtype: torch.dtype | None = None) -> torch.Tensor:
         """Dense weight via the block-FP8 reference dequantisation."""
@@ -305,8 +397,11 @@ class BlockFP8Linear(nn.Module):
             lead_shape = x.shape[:-1]
             x2 = x.reshape(flat_m, x.shape[-1])
             bias = self.bias.to(torch.bfloat16) if self.bias is not None else None
+            scale = self.cached_fp32_scale()
             out = _run_triton(
-                x2, self.weight, self.weight_scale_inv, bias, self.block
+                x2, self.weight,
+                scale if scale is not None else self.weight_scale_inv,
+                bias, self.block
             )
             return out.reshape(*lead_shape, self.out_features)
         except Exception as exc:  # Logged fallback, not silent.
@@ -341,6 +436,15 @@ class BlockFP8Linear(nn.Module):
             f"bias={self.bias is not None}, block={self.block}"
         )
 
+
+
+def apply_scale_cache(model: nn.Module, enabled: bool) -> int:
+    """Set the FP32 scale cache on every BlockFP8Linear in ``model``."""
+    n=0
+    for mod in model.modules():
+        if isinstance(mod, BlockFP8Linear):
+            mod.set_use_scale_cache(bool(enabled)); n+=1
+    return n
 
 def shard_fp8_pair(
     name: str,
@@ -400,6 +504,7 @@ def replace_linears_with_fp8(
     *,
     use_fast_path: bool = False,
     use_triton: bool | None = None,
+    use_scale_cache: bool = False,
 ) -> nn.Module:
     """Convert named ``nn.Linear`` modules of ``model`` in place.
 
@@ -421,7 +526,7 @@ def replace_linears_with_fp8(
             continue
         replacement = BlockFP8Linear.from_linear(
             module, block=block, use_fast_path=use_fast_path,
-            use_triton=use_triton,
+            use_triton=use_triton, use_scale_cache=use_scale_cache,
         )
         if "." in name:
             parent_name, attr = name.rsplit(".", 1)

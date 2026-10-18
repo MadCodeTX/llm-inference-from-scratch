@@ -54,6 +54,7 @@ def main() -> int:
     p.add_argument("--backend", default=None, choices=["nccl", "gloo"])
     p.add_argument("--device", default=None, choices=["cuda", "cpu"])
     p.add_argument("--dtype", default="fp32", choices=["fp32", "bf16"])
+    p.add_argument("--lm-head", default="replicated", choices=["replicated", "vocab"])
     args = p.parse_args()
     backend = args.backend or ("nccl" if args.device != "cpu" else "gloo")
     device_type = args.device or ("cuda" if backend == "nccl" else "cpu")
@@ -69,7 +70,8 @@ def main() -> int:
     torch.manual_seed(1234)
     dense = TinyHybridLM(cfg).to(dev, dtype)
     dense.eval()
-    tp = DistributedHybridLM.from_dense(dense, ctx, config=cfg).to(dtype)
+    tp = DistributedHybridLM.from_dense(dense, ctx, config=cfg, lm_head_mode=args.lm_head).to(dtype)
+    print(f'[rank {rank}] lm_head_mode={args.lm_head} lm_head_shape={tuple(tp.lm_head.weight.shape)} vocab_start={tp.vocab_start}', flush=True)
     tp.eval()
 
     local_bytes = tp.local_parameter_bytes()
@@ -100,6 +102,11 @@ def main() -> int:
         d_pos_logits, _ = dense.prefill(idx, position_ids=pos)
         t_pos_logits, _ = tp.prefill(idx, position_ids=pos)
         _check("prefill_position_ids_logits", t_pos_logits, d_pos_logits, rank, atol, rtol)
+        # Greedy fast path (vocab: local max + small pair gather).
+        gt, gv, _gs = tp.prefill_greedy(idx)
+        print(f"[rank {rank}] prefill_greedy tokens={gt.tolist()} values_finite={bool(torch.isfinite(gv).all())}", flush=True)
+        if not torch.equal(gt.cpu(), dense_logits[:, -1].argmax(dim=-1).cpu()):
+            raise AssertionError("prefill_greedy tokens differ from dense")
         dense_greedy = dense_logits[:, -1].argmax(dim=-1)
         tp_greedy = tp_logits[:, -1].argmax(dim=-1)
         print(f"[rank {rank}] prefill greedy dense={dense_greedy.tolist()} tp={tp_greedy.tolist()}", flush=True)

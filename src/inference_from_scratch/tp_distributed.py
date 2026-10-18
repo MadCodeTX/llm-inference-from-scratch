@@ -265,6 +265,10 @@ class _LocalContext:
         self._check_single()
         return tensor
 
+    def all_gather(self, tensor: torch.Tensor) -> list[torch.Tensor]:
+        self._check_single()
+        return [tensor]
+
     def all_gather_concat(self, tensor: torch.Tensor, dim: int = 0) -> torch.Tensor:
         self._check_single()
         return tensor
@@ -1285,32 +1289,50 @@ class DistributedHybridLM(nn.Module):
     TP prefill is a later task.
     """
 
-    def __init__(self, ctx: DistributedTPContext, dense: Any, config: Any = None):
+    def __init__(self, ctx: DistributedTPContext, dense: Any, config: Any = None,
+                 lm_head_mode: str = "replicated"):
         super().__init__()
+        if lm_head_mode not in LM_HEAD_MODES:
+            raise ValueError(f"lm_head_mode must be one of {LM_HEAD_MODES}, got {lm_head_mode!r}")
+        if lm_head_mode == "vocab" and bool(getattr(config if config is not None else dense.config, "tie_word_embeddings", False)):
+            raise ValueError("lm_head_mode='vocab' requires untied embeddings "
+                             "(tied lm_head would need the full replicated weight)")
         self.ctx = ctx
         self.config = config if config is not None else dense.config
+        self.lm_head_mode = str(lm_head_mode)
         dev = ctx.device
         cfg = self.config
-        # Replicated embedding (whole copy per rank).
+        self._init_vocab_layout()
+        # Replicated embedding (whole copy per rank; stays replicated
+        # in vocab mode -- only lm_head rows are sharded).
         self.embed_tokens = nn.Embedding(cfg.vocab_size, cfg.hidden_size)
         with torch.no_grad():
             self.embed_tokens.weight.copy_(dense.embed_tokens.weight.data.to(dev))
         self.embed_tokens = self.embed_tokens.to(dev)
         self.layers = nn.ModuleList(
             [DistributedHybridBlock(ctx, block, config=cfg) for block in dense.layers])
-        # Replicated final norm + lm_head (vocab-parallel deferred).
         self.norm = copy.deepcopy(dense.norm).to(dev)
-        self.lm_head = nn.Linear(cfg.hidden_size, cfg.vocab_size, bias=False)
-        with torch.no_grad():
-            if dense.lm_head.weight.data_ptr() == dense.embed_tokens.weight.data_ptr():
-                self.lm_head.weight = self.embed_tokens.weight  # tied
-            else:
-                self.lm_head.weight.copy_(dense.lm_head.weight.data.to(dev))
-        self.lm_head = self.lm_head.to(dev) if not cfg.tie_word_embeddings else self.lm_head
+        if self.lm_head_mode == "vocab":
+            start, end, shard = _vocab_range(int(cfg.vocab_size), int(ctx.rank), int(ctx.world_size))
+            self.lm_head = nn.Linear(cfg.hidden_size, shard, bias=False)
+            with torch.no_grad():
+                w = torch.zeros((shard, int(cfg.hidden_size)), dtype=dense.lm_head.weight.dtype)
+                if end > start:
+                    w[: end - start].copy_(dense.lm_head.weight.data[start:end].to("cpu"))
+                self.lm_head.weight.copy_(w.to(dev))
+            self.lm_head = self.lm_head.to(dev)
+        else:
+            self.lm_head = nn.Linear(cfg.hidden_size, cfg.vocab_size, bias=False)
+            with torch.no_grad():
+                if dense.lm_head.weight.data_ptr() == dense.embed_tokens.weight.data_ptr():
+                    self.lm_head.weight = self.embed_tokens.weight  # tied
+                else:
+                    self.lm_head.weight.copy_(dense.lm_head.weight.data.to(dev))
+            self.lm_head = self.lm_head.to(dev) if not cfg.tie_word_embeddings else self.lm_head
 
     @classmethod
     def empty(cls, config: Any, rank: int, world: int, fp8_mode: str = "resident",
-              use_triton: bool | None = None) -> "DistributedHybridLM":
+              use_triton: bool | None = None, lm_head_mode: str = "replicated") -> "DistributedHybridLM":
         """Shard-shaped empty LM on meta for rank ``rank`` (loader fills it).
 
         ``fp8_mode="resident"`` builds resident-FP8 projections
@@ -1320,12 +1342,18 @@ class DistributedHybridLM(nn.Module):
         """
         if fp8_mode not in ("resident", "dequantize"):
             raise ValueError(f"fp8_mode must be 'resident' or 'dequantize', got {fp8_mode!r}")
+        if lm_head_mode not in LM_HEAD_MODES:
+            raise ValueError(f"lm_head_mode must be one of {LM_HEAD_MODES}, got {lm_head_mode!r}")
+        if lm_head_mode == "vocab" and bool(getattr(config, "tie_word_embeddings", False)):
+            raise ValueError("lm_head_mode='vocab' requires untied embeddings")
         from .hybrid import QwenRMSNorm
         obj = cls.__new__(cls)
         nn.Module.__init__(obj)
         ctx = _LocalContext(int(rank), int(world), torch.device("meta"))
         obj.ctx = ctx  # type: ignore[assignment]
         obj.config = config
+        obj.lm_head_mode = str(lm_head_mode)
+        obj._init_vocab_layout()
         obj.fp8_mode = fp8_mode
         fp8 = fp8_mode == "resident"
         meta = torch.device("meta")
@@ -1336,11 +1364,17 @@ class DistributedHybridLM(nn.Module):
             DistributedHybridBlock.empty(ctx, config, i, fp8=fp8, use_triton=use_triton)
             for i in range(len(config.layer_types))])
         obj.norm = QwenRMSNorm(int(config.hidden_size), eps=float(config.rms_norm_eps)).to(meta)
-        obj.lm_head = nn.Linear(int(config.hidden_size), int(config.vocab_size), bias=False)
-        obj.lm_head.weight = nn.Parameter(
-            torch.empty((int(config.vocab_size), int(config.hidden_size)), device=meta))
-        if config.tie_word_embeddings:
-            obj.lm_head.weight = obj.embed_tokens.weight
+        if obj.lm_head_mode == "vocab":
+            _, _, shard = _vocab_range(int(config.vocab_size), int(rank), int(world))
+            obj.lm_head = nn.Linear(int(config.hidden_size), shard, bias=False)
+            obj.lm_head.weight = nn.Parameter(
+                torch.empty((shard, int(config.hidden_size)), device=meta))
+        else:
+            obj.lm_head = nn.Linear(int(config.hidden_size), int(config.vocab_size), bias=False)
+            obj.lm_head.weight = nn.Parameter(
+                torch.empty((int(config.vocab_size), int(config.hidden_size)), device=meta))
+            if config.tie_word_embeddings:
+                obj.lm_head.weight = obj.embed_tokens.weight
         return obj
 
     def set_ctx(self, ctx: Any) -> "DistributedHybridLM":
@@ -1353,14 +1387,14 @@ class DistributedHybridLM(nn.Module):
 
     @classmethod
     def from_dense(cls, model: Any, ctx: DistributedTPContext,
-                   config: Any = None) -> "DistributedHybridLM":
+                   config: Any = None, lm_head_mode: str = "replicated") -> "DistributedHybridLM":
         """Build this rank's model by slicing ``model`` (dense TinyHybridLM).
 
         Every sharded weight is cut via ``shard_state_dict`` specs (the
         same specs as the simulated runtime), so this rank stores only
         its slice; replicated tensors are cloned whole.
         """
-        return cls(ctx, model, config=config)
+        return cls(ctx, model, config=config, lm_head_mode=lm_head_mode)
 
     def local_parameter_bytes(self) -> int:
         """Bytes held on THIS rank (params + FP8 buffers, shards+replicated)."""
@@ -1482,9 +1516,10 @@ class DistributedHybridLM(nn.Module):
             x, new_payload = block.forward_prefill(
                 x, layer_state=payload, start_pos=start_pos, position_ids=position_ids)
             new_entries.append((tag, new_payload))
-        logits = self.lm_head(self.norm(x))
-        return logits, TPState(entries=new_entries, seq_len=start_pos + T,
-                               layer_types=list(self.config.layer_types))
+        new_state = TPState(entries=new_entries, seq_len=start_pos + T,
+                            layer_types=list(self.config.layer_types))
+        logits = self._lm_head_logits(self.norm(x))
+        return logits, new_state
 
     def step(self, token: torch.Tensor, state: TPState,
              ) -> tuple[torch.Tensor, TPState]:

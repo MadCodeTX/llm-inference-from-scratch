@@ -134,16 +134,27 @@ def greedy_generate_tp(model, prompt_ids, max_new_tokens, *,
         gen_t.append(nxt)
         return nxt
 
+    vocab_greedy = getattr(model, "lm_head_mode", "replicated") == "vocab" and not debug_token_sync
     torch.cuda.synchronize(dev)
     t_pre = time.perf_counter()
-    logits, state = model.prefill(idx)
-    nxt_t = _take(logits)
+    if vocab_greedy:
+        nxt_t, top_val, state = model.prefill_greedy(idx)
+        finite_t = torch.isfinite(top_val).all()
+        gen_t.append(nxt_t.reshape(()))
+    else:
+        logits, state = model.prefill(idx)
+        nxt_t = _take(logits)
     torch.cuda.synchronize(dev)
     prefill_s = time.perf_counter() - t_pre
     t_dec = time.perf_counter()
     for _ in range(1, max_new_tokens):
-        logits, state = model.step(nxt_t.reshape(1, 1), state)
-        nxt_t = _take(logits)
+        if vocab_greedy:
+            nxt_t, top_val, state = model.step_greedy(nxt_t.reshape(1, 1), state)
+            finite_t = torch.isfinite(top_val).all() if finite_t is None else (finite_t & torch.isfinite(top_val).all())
+            gen_t.append(nxt_t.reshape(()))
+        else:
+            logits, state = model.step(nxt_t.reshape(1, 1), state)
+            nxt_t = _take(logits)
     torch.cuda.synchronize(dev)
     decode_s = time.perf_counter() - t_dec
     gen_ids = [int(v) for v in torch.stack(gen_t).cpu().tolist()]

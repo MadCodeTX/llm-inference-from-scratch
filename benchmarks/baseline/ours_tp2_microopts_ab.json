@@ -1,0 +1,342 @@
+{
+  "script": "scripts/run_qwen38_tp2.py (+ scripts/ab_microopts_tp2.py paired)",
+  "probe": "capital",
+  "max_new_tokens": 32,
+  "method": "Primary decision: paired interleaved ABBA segments in one process per lm_head mode (scripts/ab_microopts_tp2.py; 8-token segments, scale toggled between segments, order reversed on pass 2, prefill segment excluded). Secondary: four independent cross-process runner runs (round 1) for identical-ids/32-32 proof. A second cross-process round hit unexplained 10-14 tok/s replicated outliers (clock/contention) and was excluded from the decision; the paired in-process data is the decision basis.",
+  "generated_token_ids": [
+    11751,
+    13,
+    198,
+    760,
+    6511,
+    314,
+    9564,
+    369,
+    19241,
+    13,
+    198,
+    760,
+    6511,
+    314,
+    14898,
+    369,
+    21047,
+    13,
+    198,
+    760,
+    6511,
+    314,
+    17163,
+    369,
+    23327,
+    13,
+    198,
+    760,
+    6511,
+    314,
+    32208,
+    369
+  ],
+  "all_combos_ids_identical": true,
+  "cross_process_round1": {
+    "replicated_off": {
+      "lm_head_mode": "replicated",
+      "scale_cache": "off",
+      "generated_token_ids": [
+        11751,
+        13,
+        198,
+        760,
+        6511,
+        314,
+        9564,
+        369,
+        19241,
+        13,
+        198,
+        760,
+        6511,
+        314,
+        14898,
+        369,
+        21047,
+        13,
+        198,
+        760,
+        6511,
+        314,
+        17163,
+        369,
+        23327,
+        13,
+        198,
+        760,
+        6511,
+        314,
+        32208,
+        369
+      ],
+      "logits_finite": true,
+      "vs_bridge": {
+        "exact_match": true,
+        "matching_positions": 32,
+        "compared_tokens": 32,
+        "first_divergence": null,
+        "generated_at_divergence": null,
+        "reference_at_divergence": null
+      },
+      "vs_arm_a": {
+        "exact_match": true,
+        "matching_positions": 32,
+        "compared_tokens": 32,
+        "first_divergence": null,
+        "generated_at_divergence": null,
+        "reference_at_divergence": null
+      },
+      "decode_tok_per_s": 23.604629910708823,
+      "tpot_ms": 42.36457016198866,
+      "prefill_s": 0.7903223861940205
+    },
+    "replicated_on": {
+      "lm_head_mode": "replicated",
+      "scale_cache": "on",
+      "generated_token_ids": [
+        11751,
+        13,
+        198,
+        760,
+        6511,
+        314,
+        9564,
+        369,
+        19241,
+        13,
+        198,
+        760,
+        6511,
+        314,
+        14898,
+        369,
+        21047,
+        13,
+        198,
+        760,
+        6511,
+        314,
+        17163,
+        369,
+        23327,
+        13,
+        198,
+        760,
+        6511,
+        314,
+        32208,
+        369
+      ],
+      "logits_finite": true,
+      "vs_bridge": {
+        "exact_match": true,
+        "matching_positions": 32,
+        "compared_tokens": 32,
+        "first_divergence": null,
+        "generated_at_divergence": null,
+        "reference_at_divergence": null
+      },
+      "vs_arm_a": {
+        "exact_match": true,
+        "matching_positions": 32,
+        "compared_tokens": 32,
+        "first_divergence": null,
+        "generated_at_divergence": null,
+        "reference_at_divergence": null
+      },
+      "decode_tok_per_s": 22.97549201368802,
+      "tpot_ms": 43.524639185277685,
+      "prefill_s": 0.8839252721518278
+    },
+    "vocab_off": {
+      "lm_head_mode": "vocab",
+      "scale_cache": "off",
+      "generated_token_ids": [
+        11751,
+        13,
+        198,
+        760,
+        6511,
+        314,
+        9564,
+        369,
+        19241,
+        13,
+        198,
+        760,
+        6511,
+        314,
+        14898,
+        369,
+        21047,
+        13,
+        198,
+        760,
+        6511,
+        314,
+        17163,
+        369,
+        23327,
+        13,
+        198,
+        760,
+        6511,
+        314,
+        32208,
+        369
+      ],
+      "logits_finite": true,
+      "vs_bridge": {
+        "exact_match": true,
+        "matching_positions": 32,
+        "compared_tokens": 32,
+        "first_divergence": null,
+        "generated_at_divergence": null,
+        "reference_at_divergence": null
+      },
+      "vs_arm_a": {
+        "exact_match": true,
+        "matching_positions": 32,
+        "compared_tokens": 32,
+        "first_divergence": null,
+        "generated_at_divergence": null,
+        "reference_at_divergence": null
+      },
+      "decode_tok_per_s": 22.770594594528035,
+      "tpot_ms": 43.916288432815385,
+      "prefill_s": 0.6132752578705549
+    },
+    "vocab_on": {
+      "lm_head_mode": "vocab",
+      "scale_cache": "on",
+      "generated_token_ids": [
+        11751,
+        13,
+        198,
+        760,
+        6511,
+        314,
+        9564,
+        369,
+        19241,
+        13,
+        198,
+        760,
+        6511,
+        314,
+        14898,
+        369,
+        21047,
+        13,
+        198,
+        760,
+        6511,
+        314,
+        17163,
+        369,
+        23327,
+        13,
+        198,
+        760,
+        6511,
+        314,
+        32208,
+        369
+      ],
+      "logits_finite": true,
+      "vs_bridge": {
+        "exact_match": true,
+        "matching_positions": 32,
+        "compared_tokens": 32,
+        "first_divergence": null,
+        "generated_at_divergence": null,
+        "reference_at_divergence": null
+      },
+      "vs_arm_a": {
+        "exact_match": true,
+        "matching_positions": 32,
+        "compared_tokens": 32,
+        "first_divergence": null,
+        "generated_at_divergence": null,
+        "reference_at_divergence": null
+      },
+      "decode_tok_per_s": 23.12545317075672,
+      "tpot_ms": 43.24239584046506,
+      "prefill_s": 0.7840329860337079
+    }
+  },
+  "paired_abba_ms_per_token": {
+    "replicated": {
+      "off": {
+        "samples_ms_per_token": [
+          45.42836337350309,
+          45.10794050293043,
+          46.2583068292588
+        ],
+        "mean_ms_per_token": 45.59820356856411
+      },
+      "on": {
+        "samples_ms_per_token": [
+          45.362240460235626,
+          45.43119063600898,
+          45.00096896663308
+        ],
+        "mean_ms_per_token": 45.26480002095923
+      }
+    },
+    "vocab": {
+      "off": {
+        "samples_ms_per_token": [
+          43.70738012949005,
+          43.7704895157367,
+          43.716977757867426
+        ],
+        "mean_ms_per_token": 43.73161580103139
+      },
+      "on": {
+        "samples_ms_per_token": [
+          43.69125288212672,
+          43.71694813016802,
+          44.0869148587808
+        ],
+        "mean_ms_per_token": 43.831705290358514
+      }
+    }
+  },
+  "paired_vs_bridge": {
+    "exact_match": true,
+    "matching_positions": 32,
+    "compared_tokens": 32,
+    "first_divergence": null,
+    "generated_at_divergence": null,
+    "reference_at_divergence": null
+  },
+  "default_check_vocab_off": {
+    "decode_tok_per_s": 23.78983245911908,
+    "tpot_ms": 42.03476429346107,
+    "vs_bridge": {
+      "exact_match": true,
+      "matching_positions": 32,
+      "compared_tokens": 32,
+      "first_divergence": null,
+      "generated_at_divergence": null,
+      "reference_at_divergence": null
+    }
+  },
+  "decision": {
+    "lm_head": "vocab is the measured winner: paired 43.73 (off) / 43.83 (on) vs replicated 45.60 / 45.26 ms/token, segment ranges non-overlapping; runner default set to vocab.",
+    "scale_cache": "no consistent winner: replicated -0.33 ms/token but vocab +0.10 ms/token (within noise, opposite signs); runner default stays off. Flag ships opt-in."
+  },
+  "runner_defaults": {
+    "lm_head": "vocab",
+    "scale_cache": "off"
+  },
+  "torch": "2.11.0+cu128"
+}
