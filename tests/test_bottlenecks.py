@@ -15,6 +15,7 @@ from inference_from_scratch.bottlenecks import (
     ridge_point,
     roofline_time_lower_bound,
     try_read_local_gpu,
+    try_read_local_gpus,
 )
 from inference_from_scratch.config import ModelConfig
 from inference_from_scratch.model import DecoderLM
@@ -123,3 +124,40 @@ def test_try_read_local_gpu_never_fabricates_peaks():
         assert spec.peak_flops is None
         assert spec.memory_bandwidth_bytes_s is None
         assert spec.memory_bytes and spec.memory_bytes > 0
+
+
+def _fake_nvidia_smi(tmp_path, monkeypatch, body: str):
+    script = tmp_path / "nvidia-smi"
+    script.write_text(f"#!/bin/sh\n{body}\n")
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:/usr/bin:/bin")
+
+
+def test_try_read_local_gpus_enumerates_all(tmp_path, monkeypatch):
+    _fake_nvidia_smi(
+        tmp_path, monkeypatch,
+        "printf 'NVIDIA GeForce RTX 4090, 24564\\nNVIDIA GeForce RTX 4090, 24564\\n'",
+    )
+    gpus = try_read_local_gpus()
+    assert len(gpus) == 2
+    assert all(g.name == "NVIDIA GeForce RTX 4090" for g in gpus)
+    assert all(g.memory_bytes == 24564 * 1024 * 1024 for g in gpus)
+    assert all(g.peak_flops is None for g in gpus)
+    # Backward compat: singular helper returns the first GPU.
+    assert try_read_local_gpu() == gpus[0]
+
+
+def test_try_read_local_gpus_absent_returns_empty(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert try_read_local_gpus() == []
+    assert try_read_local_gpu() is None
+
+
+def test_try_read_local_gpus_skips_malformed_lines(tmp_path, monkeypatch):
+    _fake_nvidia_smi(
+        tmp_path, monkeypatch,
+        "printf 'garbage-line\\nNVIDIA GeForce RTX 4090, 24564\\nBad, notanumber\\n'",
+    )
+    gpus = try_read_local_gpus()
+    assert len(gpus) == 1
+    assert gpus[0].memory_bytes == 24564 * 1024 * 1024

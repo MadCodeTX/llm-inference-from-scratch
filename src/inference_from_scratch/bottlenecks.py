@@ -141,22 +141,24 @@ def make_example_spec() -> HardwareSpec:
     )
 
 
-def try_read_local_gpu() -> HardwareSpec | None:
-    """Best-effort local GPU name/VRAM via ``nvidia-smi``.
+def try_read_local_gpus() -> list[HardwareSpec]:
+    """Best-effort enumeration of ALL local GPUs via ``nvidia-smi``.
 
-    Returns ``None`` when ``nvidia-smi`` is absent or fails (the
-    common CPU-only case). On success returns a
-    :class:`HardwareSpec` with only ``name`` and ``memory_bytes``
-    filled: ``peak_flops`` and ``memory_bandwidth_bytes_s`` are
-    left ``None`` on purpose -- fill them from the vendor spec
-    sheet for the exact card and the precision you will run
+    Returns an empty list when ``nvidia-smi`` is absent or fails
+    (the common CPU-only case). On success returns one
+    :class:`HardwareSpec` per GPU line, in ``nvidia-smi`` order,
+    with only ``name`` and ``memory_bytes`` filled:
+    ``peak_flops`` and ``memory_bandwidth_bytes_s`` are left
+    ``None`` on purpose -- fill them from the vendor spec sheet
+    for the exact card and the precision you will run
     (fp16/bf16 tensor-core peaks differ from fp32, and boost
     clocks differ per SKU). ``nvidia-smi`` reports total memory
     in MiB; the conversion to bytes is exact (``MiB * 2**20``).
+    Malformed lines are skipped rather than discarding the rest.
     """
     exe = shutil.which("nvidia-smi")
     if exe is None:
-        return None
+        return []
     try:
         out = subprocess.run(
             [exe, "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
@@ -166,24 +168,44 @@ def try_read_local_gpu() -> HardwareSpec | None:
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
-        return None
+        return []
     if out.returncode != 0 or not out.stdout.strip():
-        return None
-    first = out.stdout.strip().splitlines()[0]
-    parts = [p.strip() for p in first.rsplit(",", 1)]
-    if len(parts) != 2:
-        return None
-    name, mem_text = parts
-    try:
-        mem_mib = int(float(mem_text))
-    except ValueError:
-        return None
-    return HardwareSpec(
-        name=name,
-        peak_flops=None,
-        memory_bandwidth_bytes_s=None,
-        memory_bytes=mem_mib * 1024 * 1024,
-    )
+        return []
+    specs: list[HardwareSpec] = []
+    for line in out.stdout.strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = [p.strip() for p in line.rsplit(",", 1)]
+        if len(parts) != 2:
+            continue
+        name, mem_text = parts
+        try:
+            mem_mib = int(float(mem_text))
+        except ValueError:
+            continue
+        specs.append(
+            HardwareSpec(
+                name=name,
+                peak_flops=None,
+                memory_bandwidth_bytes_s=None,
+                memory_bytes=mem_mib * 1024 * 1024,
+            )
+        )
+    return specs
+
+
+def try_read_local_gpu() -> HardwareSpec | None:
+    """Best-effort first local GPU name/VRAM via ``nvidia-smi``.
+
+    Backward-compatible single-GPU view of
+    :func:`try_read_local_gpus`: returns the first enumerated GPU,
+    or ``None`` when no GPU is visible. Prefer
+    :func:`try_read_local_gpus` on multi-GPU boxes so later GPUs
+    are not silently dropped.
+    """
+    gpus = try_read_local_gpus()
+    return gpus[0] if gpus else None
 
 
 # ---------------------------------------------------------------------------

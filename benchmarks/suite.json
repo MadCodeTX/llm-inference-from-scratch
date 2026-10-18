@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "description": "Synthetic public benchmark shapes matching the incumbent token geometries. Prompt text is generated procedurally by benchmarks/run_bench.py from a neutral filler paragraph written for this repo (no incumbent prompt text). Sizes are target token counts; the harness repeats/truncates the filler by words and reports both word and token counts when a tokenizer is available.",
+  "model_default": "Qwen/Qwen3.8-27B-FP8",
+  "base_url_default": "http://127.0.0.1:8000",
+  "concurrency": [1, 4, 16],
+  "repeats": 2,
+  "arms": {
+    "greedy": {"temperature": 0.0, "top_p": 1.0, "seed": null},
+    "sampled": {"temperature": 0.7, "top_p": 0.8, "seed": 1234}
+  },
+  "shapes": [
+    {
+      "id": "short",
+      "description": "Short request, incumbent patient_gen input geometry with a short decode.",
+      "prompt_tokens": 2048,
+      "output_tokens": 512,
+      "shared_prefix_tokens": 0,
+      "unique_tokens": 2048
+    },
+    {
+      "id": "medium",
+      "description": "Medium request, incumbent chart_summary geometry.",
+      "prompt_tokens": 16384,
+      "output_tokens": 1024,
+      "shared_prefix_tokens": 0,
+      "unique_tokens": 16384
+    },
+    {
+      "id": "long",
+      "description": "Long request, incumbent research_synth input geometry with a 1024-token decode.",
+      "prompt_tokens": 49152,
+      "output_tokens": 1024,
+      "shared_prefix_tokens": 0,
+      "unique_tokens": 49152
+    },
+    {
+      "id": "agent-shared-prefix",
+      "description": "Agent-style requests sharing an 8192-token prefix plus 512 unique tokens each; exercises prefix caching.",
+      "prompt_tokens": 8704,
+      "output_tokens": 512,
+      "shared_prefix_tokens": 8192,
+      "unique_tokens": 512
+    }
+  ]
+}
