@@ -640,13 +640,13 @@ class _MergedSpecGraph:
         self.result_gpu = torch.zeros(3, dtype=torch.long, device=dev)
         self.result_pin = torch.empty(3, dtype=torch.long, pin_memory=True)
         self.snap_state = state.alloc_snapshot()
-        self.snap_mtp_pos = torch.zeros((), dtype=torch.long, device=dev)
+        self.snap_mtp_pos = torch.zeros_like(mtp_state.position)
         # Warmup on scratch states (side stream), then capture on live.
         scratch = model.static_state(batch_size=1, max_seq_len=state.max_seq_len)
         scratch_mtp = mtp.initial_static_state(
             batch_size=1, max_seq_len=mtp_state.max_seq_len)
         scratch_snap = scratch.alloc_snapshot()
-        scratch_mtp_pos = torch.zeros((), dtype=torch.long, device=dev)
+        scratch_mtp_pos = torch.zeros_like(scratch_mtp.position)
         side = torch.cuda.Stream(device=dev)
         side.wait_stream(torch.cuda.current_stream(dev))
         with torch.cuda.stream(side):

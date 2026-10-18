@@ -52,7 +52,7 @@ def test_static_state_shapes_and_validation():
     assert tuple(state.linear_S[0].shape) == (2, 2, 8, 8)
     assert tuple(state.linear_conv_buffers[0].shape) == (2, 32, 3)
     assert state.kv_k[0] is None and state.linear_S[3] is None
-    assert state.position.shape == () and state.position.dtype == torch.long
+    assert state.position.shape == (2,) and state.position.dtype == torch.long
     assert state.seq_len == 0
     with pytest.raises(ValueError):
         TPStaticState(cfg, batch_size=0, max_seq_len=4)
@@ -121,7 +121,7 @@ def test_static_ptrs_stable_reset_rerun_and_overflow_no_mutation():
         s_before = small.linear_S[0].clone()
         with pytest.raises(ValueError, match="overflow"):
             tp.decode_token_static(nxt, small)
-        assert int(small.position.item()) == 3
+        assert small.positions == [3, 3]
         assert torch.equal(small.kv_k[3], kv_before)
         assert torch.equal(small.linear_S[0], s_before)
         with pytest.raises(ValueError, match="overflow"):

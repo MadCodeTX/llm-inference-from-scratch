@@ -601,19 +601,20 @@ class DistributedFullAttention(nn.Module):
 
         Mirrors :meth:`forward_with_state` at ``T=1`` step-for-step, but
         K/V are written in place into the preallocated local buffers
-        ``k_buf`` / ``v_buf`` (``[B, H_kv_local, max_seq, Dh]``) with
-        ``index_copy_`` at the 0-dim tensor ``position``, RoPE rows are
-        gathered with ``index_select``, and attention runs over the
-        full fixed-shape buffers with positions past ``position``
-        masked on-device. No ``.item()``, ``torch.cat`` or shape change
-        on the state. Exactly one all-reduce, as in the legacy step.
+        ``k_buf`` / ``v_buf`` (``[B, H_kv_local, max_seq, Dh]``) at each
+        row's own slot in ``position`` (int64 ``[B]``; legacy scalar /
+        ``[1]`` positions broadcast), RoPE rows are gathered per row,
+        and attention runs over the full fixed-shape buffers with keys
+        past each row's ``position`` masked on-device. No ``.item()``,
+        ``torch.cat`` or shape change on the state. Exactly one
+        all-reduce, as in the legacy step.
 
-        ``rope_position`` (0-dim tensor) optionally decouples the RoPE
-        row from the KV slot: K/V still land at ``position`` and the
-        mask still keys on ``position``, but Q/K are rotated at
-        ``rope_position``. The MTP draft needs this: its KV slots are
-        sequential (one per committed draft) while its RoPE position
-        is the target's absolute hidden position.
+        ``rope_position`` (scalar or ``[B]`` tensor) optionally
+        decouples the RoPE row from the KV slot: K/V still land at
+        ``position`` and the mask still keys on ``position``, but Q/K
+        are rotated at ``rope_position``. The MTP draft needs this: its
+        KV slots are sequential (one per committed draft) while its
+        RoPE position is the target's absolute hidden position.
         """
         from .attention import repeat_kv
         from .hybrid import _apply_rope_with_tables
@@ -621,9 +622,9 @@ class DistributedFullAttention(nn.Module):
             x = x.unsqueeze(1)
         if x.dim() != 3 or x.shape[1] != 1:
             raise ValueError(f"x must be [B, D] or [B, 1, D], got {tuple(x.shape)}")
-        if not isinstance(position, torch.Tensor) or position.dim() != 0:
-            raise ValueError("position must be a 0-dim tensor")
         B = int(x.shape[0])
+        pos = _row_positions(position, B)  # [B]
+        rope_pos = pos if rope_position is None else _row_positions(rope_position, B)
         Dh = self.head_dim
         hs, kvs = self.q_heads_local, self.kv_heads_local
         qg = self._linear(x, self.q_weight, self.q_bias, self.q_fp8).view(B, 1, len(hs), 2 * Dh)
@@ -634,29 +635,25 @@ class DistributedFullAttention(nn.Module):
         k = self.k_norm(k).transpose(1, 2)
         v = v.transpose(1, 2)
         cos, sin = self._static_rope_tables(int(k_buf.shape[2]), x.device, x.dtype)
-        pos1 = position.reshape(1)
-        rope1 = pos1 if rope_position is None else rope_position.reshape(1)
-        row_cos = cos.index_select(0, rope1)
-        row_sin = sin.index_select(0, rope1)
+        row_cos = cos[rope_pos].unsqueeze(1)  # [B, 1, R]
+        row_sin = sin[rope_pos].unsqueeze(1)
         q = _apply_rope_with_tables(q, row_cos, row_sin, self.rotary_dim)
         k = _apply_rope_with_tables(k, row_cos, row_sin, self.rotary_dim)
-        k_buf.index_copy_(2, pos1, k)
-        v_buf.index_copy_(2, pos1, v)
+        _write_kv_at(k_buf, v_buf, pos.reshape(B, 1), k, v)
         k_rep = repeat_kv(k_buf, self.n_rep)
         v_rep = repeat_kv(v_buf, self.n_rep)
         t_k = int(k_buf.shape[2])
+        k_pos = torch.arange(t_k, device=q.device)
+        future = k_pos.unsqueeze(0) > pos.unsqueeze(1)  # [B, t_k]
         if self.attn_implementation == "sdpa":
-            k_pos = torch.arange(t_k, device=q.device)
-            mask = torch.zeros(1, t_k, device=q.device, dtype=q.dtype)
-            mask = mask.masked_fill(k_pos > position, float("-inf"))
+            mask = torch.zeros(B, t_k, device=q.device, dtype=q.dtype)
+            mask = mask.masked_fill(future, float("-inf"))
             attn = F.scaled_dot_product_attention(
-                q, k_rep, v_rep, attn_mask=mask.view(1, 1, 1, t_k),
+                q, k_rep, v_rep, attn_mask=mask.view(B, 1, 1, t_k),
                 is_causal=False, scale=self.scaling)
         else:
             scores = torch.matmul(q, k_rep.transpose(-2, -1)) / (Dh ** 0.5)
-            k_pos = torch.arange(t_k, device=q.device)
-            scores = scores.masked_fill(
-                (k_pos > position).view(1, 1, 1, t_k), float("-inf"))
+            scores = scores.masked_fill(future.view(B, 1, 1, t_k), float("-inf"))
             attn = torch.matmul(torch.softmax(scores, dim=-1), v_rep)
         merged = attn.transpose(1, 2).contiguous().view(B, 1, -1)
         if self.gate_activation == "sigmoid":
@@ -671,18 +668,17 @@ class DistributedFullAttention(nn.Module):
         """Two-token chunk twin of :meth:`step_static`: ``x [B,2,D]``.
 
         Q/K/V/gate projections run ONCE over both tokens (one matmul
-        each, M=2); K/V are written at ``position`` and ``position+1``;
-        attention is causal per query (query 0 sees keys <= position,
-        query 1 sees keys <= position+1, buffer tail masked). Exactly
-        one all-reduce, as in the single-token step.
+        each, M=2); K/V are written at each row's ``position`` and
+        ``position+1``; attention is causal per row/query (query 0 sees
+        keys <= its row's position, query 1 <= position+1, buffer tail
+        masked). Exactly one all-reduce, as in the single-token step.
         """
         from .attention import repeat_kv
         from .hybrid import _apply_rope_with_tables
         if x.dim() != 3 or x.shape[1] != 2:
             raise ValueError(f"x must be [B, 2, D], got {tuple(x.shape)}")
-        if not isinstance(position, torch.Tensor) or position.dim() != 0:
-            raise ValueError("position must be a 0-dim tensor")
         B, T, _ = x.shape
+        base = _row_positions(position, B)  # [B]
         Dh = self.head_dim
         hs, kvs = self.q_heads_local, self.kv_heads_local
         qg = self._linear(x, self.q_weight, self.q_bias, self.q_fp8).view(B, T, len(hs), 2 * Dh)
@@ -693,28 +689,26 @@ class DistributedFullAttention(nn.Module):
         k = self.k_norm(k).transpose(1, 2)
         v = v.transpose(1, 2)
         cos, sin = self._static_rope_tables(int(k_buf.shape[2]), x.device, x.dtype)
-        pos2 = torch.stack([position, position + 1])  # [2] absolute rows
-        row_cos = cos.index_select(0, pos2)
-        row_sin = sin.index_select(0, pos2)
+        pos2 = base.unsqueeze(1) + torch.arange(T, device=x.device, dtype=torch.long).unsqueeze(0)  # [B, 2]
+        row_cos = cos[pos2]  # [B, 2, R]
+        row_sin = sin[pos2]
         q = _apply_rope_with_tables(q, row_cos, row_sin, self.rotary_dim)
         k = _apply_rope_with_tables(k, row_cos, row_sin, self.rotary_dim)
-        k_buf.index_copy_(2, pos2, k)
-        v_buf.index_copy_(2, pos2, v)
+        _write_kv_at(k_buf, v_buf, pos2, k, v)
         k_rep = repeat_kv(k_buf, self.n_rep)
         v_rep = repeat_kv(v_buf, self.n_rep)
         t_k = int(k_buf.shape[2])
         k_pos = torch.arange(t_k, device=q.device)
-        q_pos = pos2  # [2] absolute query positions
-        future = k_pos.unsqueeze(0) > q_pos.unsqueeze(1)  # [2, T_k]
+        future = k_pos.view(1, 1, t_k) > pos2.unsqueeze(-1)  # [B, T, T_k]
         if self.attn_implementation == "sdpa":
-            mask = torch.zeros(T, t_k, device=q.device, dtype=q.dtype)
+            mask = torch.zeros(B, T, t_k, device=q.device, dtype=q.dtype)
             mask = mask.masked_fill(future, float("-inf"))
             attn = F.scaled_dot_product_attention(
-                q, k_rep, v_rep, attn_mask=mask.view(1, 1, T, t_k),
+                q, k_rep, v_rep, attn_mask=mask.view(B, 1, T, t_k),
                 is_causal=False, scale=self.scaling)
         else:
             scores = torch.matmul(q, k_rep.transpose(-2, -1)) / (Dh ** 0.5)
-            scores = scores.masked_fill(future.view(1, 1, T, t_k), float("-inf"))
+            scores = scores.masked_fill(future.view(B, 1, T, t_k), float("-inf"))
             attn = torch.matmul(torch.softmax(scores, dim=-1), v_rep)
         merged = attn.transpose(1, 2).contiguous().view(B, T, -1)
         if self.gate_activation == "sigmoid":
@@ -732,20 +726,20 @@ class DistributedFullAttention(nn.Module):
 
         Generalises :meth:`step_chunk_static` (M=2) to any ``M >= 1``:
         Q/K/V/gate projections run ONCE over the chunk (one matmul each,
-        M rows), K/V are written in place at ``position .. position+M-1``
-        in the preallocated buffers, and attention is causal per query
-        (query ``i`` sees keys ``<= position+i``, cached prefix included,
-        buffer tail masked). RoPE rows follow ``position_ids`` when given
+        M rows), K/V are written in place at each row's
+        ``position .. position+M-1`` in the preallocated buffers, and
+        attention is causal per row/query (query ``i`` sees keys
+        ``<= row_position+i``, cached prefix included, buffer tail
+        masked). RoPE rows follow ``position_ids`` when given
         (mRoPE tables, as in :meth:`forward_with_state`), else the
-        sequential slot positions. Exactly one all-reduce, as in decode.
+        per-row sequential slot positions. Exactly one all-reduce.
         """
         from .attention import repeat_kv
         from .hybrid import _apply_rope_with_tables, precompute_mrope_cos_sin
         if x.dim() != 3 or x.shape[1] < 1:
             raise ValueError(f"x must be [B, M>=1, D], got {tuple(x.shape)}")
-        if not isinstance(position, torch.Tensor) or position.dim() != 0:
-            raise ValueError("position must be a 0-dim tensor")
         B, T, _ = x.shape
+        base = _row_positions(position, B)  # [B]
         Dh = self.head_dim
         hs, kvs = self.q_heads_local, self.kv_heads_local
         qg = self._linear(x, self.q_weight, self.q_bias, self.q_fp8).view(B, T, len(hs), 2 * Dh)
@@ -755,7 +749,7 @@ class DistributedFullAttention(nn.Module):
         v = self._linear(x, self.v_weight, self.v_bias, self.v_fp8).view(B, T, len(kvs), Dh)
         k = self.k_norm(k).transpose(1, 2)
         v = v.transpose(1, 2)
-        pos_m = position + torch.arange(T, device=x.device, dtype=torch.long)
+        pos_m = base.unsqueeze(1) + torch.arange(T, device=x.device, dtype=torch.long).unsqueeze(0)  # [B, T]
         if position_ids is not None:
             if not isinstance(position_ids, torch.Tensor) or position_ids.shape[-1] != T:
                 got = (tuple(position_ids.shape) if isinstance(position_ids, torch.Tensor)
@@ -768,26 +762,25 @@ class DistributedFullAttention(nn.Module):
             k = _apply_rope_with_tables(k, pos_cos, pos_sin, self.rotary_dim)
         else:
             cos, sin = self._static_rope_tables(int(k_buf.shape[2]), x.device, x.dtype)
-            row_cos = cos.index_select(0, pos_m)
-            row_sin = sin.index_select(0, pos_m)
+            row_cos = cos[pos_m]  # [B, T, R]
+            row_sin = sin[pos_m]
             q = _apply_rope_with_tables(q, row_cos, row_sin, self.rotary_dim)
             k = _apply_rope_with_tables(k, row_cos, row_sin, self.rotary_dim)
-        k_buf.index_copy_(2, pos_m, k)
-        v_buf.index_copy_(2, pos_m, v)
+        _write_kv_at(k_buf, v_buf, pos_m, k, v)
         k_rep = repeat_kv(k_buf, self.n_rep)
         v_rep = repeat_kv(v_buf, self.n_rep)
         t_k = int(k_buf.shape[2])
         k_pos = torch.arange(t_k, device=q.device)
-        future = k_pos.unsqueeze(0) > pos_m.unsqueeze(1)  # [T, T_k]
+        future = k_pos.view(1, 1, t_k) > pos_m.unsqueeze(-1)  # [B, T, T_k]
         if self.attn_implementation == "sdpa":
-            mask = torch.zeros(T, t_k, device=q.device, dtype=q.dtype)
+            mask = torch.zeros(B, T, t_k, device=q.device, dtype=q.dtype)
             mask = mask.masked_fill(future, float("-inf"))
             attn = F.scaled_dot_product_attention(
-                q, k_rep, v_rep, attn_mask=mask.view(1, 1, T, t_k),
+                q, k_rep, v_rep, attn_mask=mask.view(B, 1, T, t_k),
                 is_causal=False, scale=self.scaling)
         else:
             scores = torch.matmul(q, k_rep.transpose(-2, -1)) / (Dh ** 0.5)
-            scores = scores.masked_fill(future.view(1, 1, T, t_k), float("-inf"))
+            scores = scores.masked_fill(future.view(B, 1, T, t_k), float("-inf"))
             attn = torch.matmul(torch.softmax(scores, dim=-1), v_rep)
         merged = attn.transpose(1, 2).contiguous().view(B, T, -1)
         if self.gate_activation == "sigmoid":
@@ -1228,6 +1221,43 @@ class DistributedGatedDeltaNet(nn.Module):
 # ---------------------------------------------------------------------------
 
 
+def _row_positions(position: torch.Tensor, batch: int) -> torch.Tensor:
+    """Normalise ``position`` to per-row ``[B]`` int64 positions.
+
+    Accepts the current ``[B]`` form plus the legacy scalar forms
+    (0-dim or ``[1]``), which broadcast to every row -- this keeps
+    B=1 graph/spec callers that pass a scalar position working.
+    """
+    if not isinstance(position, torch.Tensor):
+        raise ValueError("position must be a tensor")
+    p = position.to(torch.long)
+    if p.dim() == 0:
+        return p.reshape(1).expand(int(batch))
+    if p.dim() == 1 and int(p.shape[0]) == int(batch):
+        return p
+    if p.dim() == 1 and int(p.shape[0]) == 1:
+        return p.expand(int(batch))
+    raise ValueError(
+        f"position must be scalar, [1] or [{int(batch)}], got {tuple(p.shape)}")
+
+
+def _write_kv_at(k_buf: torch.Tensor, v_buf: torch.Tensor,
+                 pos: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> None:
+    """Write ``k``/``v`` ``[B, H, T, Dh]`` at per-row slots ``pos [B, T]``.
+
+    Loop-free ``scatter_`` along the sequence dim with the per-row
+    index expanded over heads/head-dim (advanced indexing equivalent).
+    """
+    B, H, T, Dh = (int(s) for s in k.shape)
+    idx = pos.to(torch.long).reshape(B, 1, T, 1).expand(B, H, T, Dh)
+    k_buf.scatter_(2, idx, k)
+    v_buf.scatter_(2, idx, v)
+
+
+def _static_overflow_rows(positions: list[int], n: int, max_seq_len: int) -> list[int]:
+    return [i for i, p in enumerate(positions) if int(p) + int(n) > int(max_seq_len)]
+
+
 class TPStaticState:
     """Preallocated per-rank state for static (graph-ready) TP decode.
 
@@ -1237,19 +1267,23 @@ class TPStaticState:
     * full layers: local KV buffers ``kv_k`` / ``kv_v`` (parallel
       lists, ``None`` at linear layers), each
       ``[B, H_kv_local, max_seq_len, Dh]`` -- this rank's KV-head
-      slice, slice/``index_copy_``-written in place, never
+      slice, written in place at per-row positions, never
       concatenated;
     * linear layers: fixed ``S`` (``[B, Hv_local, Dk, Dv]``, fp32 as
       in :meth:`DistributedGatedDeltaNet.zero_state`) and conv ring
       (``[B, C_local, K-1]``, ``C_local`` = this rank's segmented
       qkv rows) in ``linear_S`` / ``linear_conv_buffers``.
 
-    ``position`` is a 0-dim ``torch.long`` tensor on ``device``,
-    advanced in place (``add_``) inside
-    :meth:`DistributedHybridLM.decode_token_static`; the Python
-    ``seq_len`` property reads it (a host sync, for use outside any
-    captured graph only). ``reset()`` zeroes every buffer in place,
-    so ``data_ptr()`` is stable across steps and across reset.
+    ``position`` is an int64 ``[B]`` tensor on ``device`` (one entry
+    per batch row), advanced in place (``add_``) inside
+    :meth:`DistributedHybridLM.decode_token_static`; rows may hold
+    different positions (e.g. after a selective :meth:`reset`). The
+    Python ``seq_len`` property returns the common position when all
+    rows agree (a host sync, for use outside any captured graph only)
+    and raises when they diverge -- read ``position`` then.
+    ``reset()`` zeroes every buffer in place, so ``data_ptr()`` is
+    stable across steps and across reset; ``reset(rows=...)`` zeroes
+    only the selected rows.
     """
 
     def __init__(self, config: Any, batch_size: int = 1,
@@ -1316,36 +1350,99 @@ class TPStaticState:
                 self.linear_conv_buffers.append(torch.zeros(
                     B, conv_dim_local, max(int(config.linear_conv_kernel_dim) - 1, 0),
                     device=Dev, dtype=Dtype))
-        self.position = torch.zeros((), dtype=torch.long, device=Dev)
+        self.position = torch.zeros(B, dtype=torch.long, device=Dev)
         self.position_tensor = self.position
 
     @property
     def seq_len(self) -> int:
-        """Positions processed (host sync; read only outside a graph)."""
-        return int(self.position.item())
+        """Common per-row position (host sync; outside a graph only).
+
+        Raises ``ValueError`` when rows diverge (after a selective
+        reset / staggered start); read ``position`` directly then.
+        """
+        vals = self.position.tolist()
+        if any(int(v) != int(vals[0]) for v in vals):
+            raise ValueError(
+                f"per-row positions diverge {vals}; read state.position instead of seq_len")
+        return int(vals[0])
 
     @seq_len.setter
-    def seq_len(self, value: int) -> None:
-        self.position.fill_(int(value))
+    def seq_len(self, value) -> None:
+        if isinstance(value, (list, tuple, torch.Tensor)):
+            vals = torch.as_tensor(value, dtype=torch.long).reshape(-1)
+            if int(vals.shape[0]) != self.batch_size:
+                raise ValueError(
+                    f"seq_len sequence must have {self.batch_size} rows, got {int(vals.shape[0])}")
+            self.position.copy_(vals.to(device=self.position.device))
+        else:
+            self.position.fill_(int(value))
+
+    @property
+    def scalar_position(self) -> int:
+        """Backward-compatible scalar view of :attr:`seq_len`."""
+        return self.seq_len
+
+    @property
+    def positions(self) -> list[int]:
+        """Per-row positions as Python ints (host sync)."""
+        return [int(v) for v in self.position.tolist()]
 
     def __len__(self) -> int:
         return len(self.layer_types)
 
-    def reset(self) -> None:
-        """Zero all buffers in place; every ``data_ptr`` is preserved."""
-        for t in self.kv_k:
-            if t is not None:
-                t.zero_()
-        for t in self.kv_v:
-            if t is not None:
-                t.zero_()
-        for t in self.linear_S:
-            if t is not None:
-                t.zero_()
-        for t in self.linear_conv_buffers:
-            if t is not None:
-                t.zero_()
-        self.position.zero_()
+    def _normalise_rows(self, rows) -> list[int]:
+        if isinstance(rows, (bool,)):
+            raise ValueError(f"rows must be row indices, got {rows!r}")
+        if isinstance(rows, int):
+            raw = [rows]
+        elif isinstance(rows, slice):
+            raw = list(range(self.batch_size))[rows]
+        elif isinstance(rows, torch.Tensor):
+            if rows.dtype == torch.bool:
+                if tuple(rows.shape) != (self.batch_size,):
+                    raise ValueError(f"bool rows mask must be [{self.batch_size}]")
+                raw = [i for i, keep in enumerate(rows.tolist()) if keep]
+            else:
+                raw = [int(v) for v in rows.reshape(-1).tolist()]
+        else:
+            raw = list(rows)
+            if any(isinstance(v, bool) for v in raw):
+                raise ValueError(f"rows must be row indices, got {rows!r}")
+            raw = [int(v) for v in raw]
+        out: list[int] = []
+        for r in raw:
+            rr = int(r) + self.batch_size if int(r) < 0 else int(r)
+            if rr < 0 or rr >= self.batch_size:
+                raise ValueError(f"row index {int(r)} out of range for batch_size={self.batch_size}")
+            if rr not in out:
+                out.append(rr)
+        return out
+
+    def reset(self, rows=None) -> None:
+        """Zero buffers in place; every ``data_ptr`` is preserved.
+
+        ``rows=None`` resets every row. ``rows`` (an int, a sequence /
+        tensor of row indices, a bool mask, or a slice) resets only
+        those rows: their KV, linear ``S`` and conv buffers and their
+        ``position`` entries are zeroed; all other rows are untouched.
+        Invalid rows raise ``ValueError`` before any mutation.
+        """
+        if rows is None:
+            for lst in (self.kv_k, self.kv_v, self.linear_S, self.linear_conv_buffers):
+                for t in lst:
+                    if t is not None:
+                        t.zero_()
+            self.position.zero_()
+            return
+        sel = self._normalise_rows(rows)
+        if not sel:
+            return
+        idx = torch.tensor(sel, dtype=torch.long, device=self.device)
+        for lst in (self.kv_k, self.kv_v, self.linear_S, self.linear_conv_buffers):
+            for t in lst:
+                if t is not None:
+                    t[idx] = 0
+        self.position[idx] = 0
 
     def snapshot(self) -> "TPStaticState":
         """Independent deep copy (cloned buffers; the only copy path).
@@ -1445,7 +1542,7 @@ class TPStaticState:
 
     def __repr__(self) -> str:
         return (f"TPStaticState(batch={self.batch_size}, "
-                f"max_seq_len={self.max_seq_len}, seq_len={self.seq_len}, "
+                f"max_seq_len={self.max_seq_len}, positions={self.positions}, "
                 f"layers={len(self.layer_types)})")
 
 
@@ -2092,6 +2189,20 @@ class DistributedHybridLM(nn.Module):
 
     initial_static_state = static_state
 
+    def _raise_if_static_overflow(self, state: TPStaticState, n: int, what: str) -> None:
+        """Per-row overflow check before any mutation (skipped in capture)."""
+        from .hybrid import _is_capturing
+        if _is_capturing(state.position):
+            return
+        positions = state.positions
+        bad = _static_overflow_rows(positions, int(n), state.max_seq_len)
+        if bad:
+            raise ValueError(
+                f"TPStaticState overflow: {what} of {int(n)} token(s) at per-row "
+                f"positions {positions} would exceed max_seq_len={state.max_seq_len} "
+                f"for rows {bad}; allocate a larger TPStaticState "
+                "or reset() it before decoding more tokens")
+
     def decode_token_static(self, token_ids: torch.Tensor, state: TPStaticState,
                             out: torch.Tensor | None = None,
                             return_hidden: bool = False):
@@ -2132,15 +2243,7 @@ class DistributedHybridLM(nn.Module):
         if out is not None and tuple(out.shape) != (state.batch_size, int(self.config.vocab_size)):
             raise ValueError(
                 f"out must be {(state.batch_size, int(self.config.vocab_size))}, got {tuple(out.shape)}")
-        capturing = _is_capturing(state.position)
-        if not capturing:
-            pos = int(state.position.item())
-            if pos >= state.max_seq_len:
-                raise ValueError(
-                    f"TPStaticState overflow: position {pos} would exceed "
-                    f"max_seq_len={state.max_seq_len} (state already holds "
-                    f"{pos} tokens); allocate a larger TPStaticState "
-                    "or reset() it before decoding more tokens")
+        self._raise_if_static_overflow(state, 1, "decode")
         x = self.embed_tokens(toks.to(self.ctx.device)).unsqueeze(1)
         for block in self.layers:
             x = block.step_static(x, state)
@@ -2183,14 +2286,7 @@ class DistributedHybridLM(nn.Module):
                 f"token batch {int(token_ids.shape[0])} does not match state batch_size={state.batch_size}")
         if len(state) != len(self.layers):
             raise ValueError(f"state has {len(state)} layers, model has {len(self.layers)}")
-        from .hybrid import _is_capturing
-        if not _is_capturing(state.position):
-            pos = int(state.position.item())
-            if pos + 2 > state.max_seq_len:
-                raise ValueError(
-                    f"TPStaticState overflow: chunk of 2 at position {pos} would exceed "
-                    f"max_seq_len={state.max_seq_len}; allocate a larger TPStaticState "
-                    "or reset() it first")
+        self._raise_if_static_overflow(state, 2, "chunk of 2")
         if out is not None and tuple(out.shape) != (
                 state.batch_size, 2, int(self.config.vocab_size)):
             raise ValueError(
@@ -2236,14 +2332,7 @@ class DistributedHybridLM(nn.Module):
         if int(idx.shape[0]) != state.batch_size:
             raise ValueError(
                 f"idx batch {int(idx.shape[0])} does not match state batch_size={state.batch_size}")
-        from .hybrid import _is_capturing
-        if not _is_capturing(state.position):
-            pos = int(state.position.item())
-            if pos + int(idx.shape[1]) > state.max_seq_len:
-                raise ValueError(
-                    f"TPStaticState overflow: prefill of {int(idx.shape[1])} tokens at "
-                    f"position {pos} would exceed max_seq_len={state.max_seq_len}; "
-                    "allocate a larger TPStaticState or reset() it first")
+        self._raise_if_static_overflow(state, int(idx.shape[1]), "prefill")
         outs: list[torch.Tensor] = []
         hids: list[torch.Tensor] = []
         for t in range(int(idx.shape[1])):
@@ -2314,14 +2403,7 @@ class DistributedHybridLM(nn.Module):
             got = (tuple(position_ids.shape) if isinstance(position_ids, torch.Tensor)
                    else type(position_ids).__name__)
             raise ValueError(f"position_ids must end with T={T}, got {got}")
-        from .hybrid import _is_capturing
-        if not _is_capturing(state.position):
-            pos = int(state.position.item())
-            if pos + T > state.max_seq_len:
-                raise ValueError(
-                    f"TPStaticState overflow: chunkwise prefill of {T} tokens at "
-                    f"position {pos} would exceed max_seq_len={state.max_seq_len}; "
-                    "allocate a larger TPStaticState or reset() it first")
+        self._raise_if_static_overflow(state, T, "chunkwise prefill")
         if T == 0:
             empty_logits = torch.empty(B, 0, int(self.config.vocab_size),
                                        device=self.ctx.device)
@@ -2345,6 +2427,61 @@ class DistributedHybridLM(nn.Module):
         if return_hidden:
             return logits, torch.cat(hids, dim=1)
         return logits
+
+    def generate_static_batched(self, idx: torch.Tensor, max_new_tokens: int,
+                                state: TPStaticState, *, chunk_size: int = 128) -> torch.Tensor:
+        """Batched greedy generation over a :class:`TPStaticState`.
+
+        ``idx`` is ``[B, T]`` (equal-length prompts, ``T >= 1``);
+        returns the generated token ids ``[B, max_new_tokens]`` on the
+        model device (prompt not included, EOS ignored -- a fixed
+        greedy count, as in the decode benches).
+
+        The whole batch is prefilled at once with
+        :meth:`prefill_chunkwise_static` (per-row positions mean rows
+        starting at different offsets -- e.g. one row selectively
+        reset -- are still exact; prompts are equal-length because
+        ``idx`` is a dense ``[B, T]`` tensor, there is no per-row
+        length). The first generated token is the argmax of the
+        prefill's last logits; each later token comes from one
+        :meth:`decode_token_static` step fed the previous GPU argmax.
+        No per-token host sync happens in eager mode: argmax stays on
+        device and the generated ids are only stacked (still on
+        device) at the end -- the caller pays the single final
+        transfer if it reads them on the host.
+
+        Overflow (any row's position + prompt + decode steps past
+        ``max_seq_len``) raises ``ValueError`` before any mutation.
+        """
+        if isinstance(max_new_tokens, bool) or not isinstance(max_new_tokens, int) or max_new_tokens < 0:
+            raise ValueError(f"max_new_tokens must be a non-negative int, got {max_new_tokens!r}")
+        if idx.dim() == 1:
+            idx = idx.unsqueeze(0)
+        if idx.dim() != 2:
+            raise ValueError(f"idx must be [B, T], got {tuple(idx.shape)}")
+        if not isinstance(state, TPStaticState):
+            raise ValueError(
+                f"generate_static_batched requires a TPStaticState, got {type(state).__name__}")
+        B, T = int(idx.shape[0]), int(idx.shape[1])
+        if B != state.batch_size:
+            raise ValueError(
+                f"idx batch {B} does not match state batch_size={state.batch_size}")
+        if T < 1:
+            raise ValueError("idx must contain at least one prompt token per row")
+        # Prefill (T) + fed-back generated tokens (all but the last one).
+        self._raise_if_static_overflow(
+            state, T + max(int(max_new_tokens) - 1, 0), "batched generate")
+        if int(max_new_tokens) == 0:
+            self.prefill_chunkwise_static(idx, state, chunk_size=chunk_size)
+            return torch.empty(B, 0, dtype=torch.long, device=self.ctx.device)
+        logits = self.prefill_chunkwise_static(idx, state, chunk_size=chunk_size)
+        nxt = logits.float().argmax(dim=-1)  # [B] on device
+        generated = [nxt]
+        for _ in range(int(max_new_tokens) - 1):
+            logits = self.decode_token_static(nxt, state)
+            nxt = logits.float().argmax(dim=-1)
+            generated.append(nxt)
+        return torch.stack(generated, dim=1)
 
     def forward(self, idx: torch.Tensor, state: TPState | None = None,
                 position_ids: torch.Tensor | None = None,

@@ -129,7 +129,7 @@ def main() -> int:
         # Overflow raises BEFORE mutation (position + buffers unchanged).
         small = tp.static_state(batch_size=2, max_seq_len=3)
         tp.prefill_static(idx[:, :3], small)
-        pos_before = int(small.position.item())
+        pos_before = small.positions
         kv_before = small.kv_k[3].clone()
         s_before = small.linear_S[0].clone()
         try:
@@ -138,7 +138,7 @@ def main() -> int:
             print(f"[rank {rank}] overflow_raised=True msg={exc}", flush=True)
         else:
             raise AssertionError("decode past max_seq_len did not raise")
-        if int(small.position.item()) != pos_before:
+        if small.positions != pos_before:
             raise AssertionError("overflow mutated position")
         if not (torch.equal(small.kv_k[3], kv_before) and torch.equal(small.linear_S[0], s_before)):
             raise AssertionError("overflow mutated state buffers")
