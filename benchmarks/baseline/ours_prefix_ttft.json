@@ -1,0 +1,26 @@
+{
+  "shape_label": "scaled agent: 2048 shared + 256 unique = 2304 tokens",
+  "shared_tokens": 2048,
+  "unique_tokens": 256,
+  "total_tokens": 2304,
+  "block_size": 16,
+  "chunk_size": 128,
+  "reps": 3,
+  "cold_ttft_s_median": 10.66237176116556,
+  "cold_ttft_s": [
+    13.377971646841615,
+    10.66237176116556,
+    10.41922745341435
+  ],
+  "warm_ttft_s_median": 1.3102011107839644,
+  "warm_ttft_s": [
+    1339.9899487779476,
+    1.3102011107839644,
+    1.250853972043842
+  ],
+  "warm_n_reused": 2048,
+  "last_argmax_cold": 12356,
+  "last_argmax_warm": 12356,
+  "speedup_median": 8.137965746942227,
+  "context_only": "Arm A agent-shared-prefix TTFT 1.81s at 8704 tokens (different shape; no win claim)"
+}
