@@ -60,6 +60,40 @@ MEMORY_GUARD_GIB = 23.0
 
 
 NORM_MODES = ("fused", "manual")
+LM_HEAD_MODES = ("replicated", "vocab")
+SCALE_CACHE_MODES = ("off", "on")
+DECODE_MODES = ("eager", "graph")
+FP8_CONFIG_MODES = ("old", "new")
+
+
+def validate_fp8_config(mode: str) -> str:
+    if mode not in FP8_CONFIG_MODES:
+        raise ValueError(f"unknown fp8-config {mode!r}, expected {FP8_CONFIG_MODES}")
+    from inference_from_scratch.fp8_triton import set_config_mode
+    return set_config_mode(mode)
+
+
+def validate_decode_mode(mode: str) -> str:
+    if mode not in DECODE_MODES:
+        raise ValueError(f"unknown decode mode {mode!r}, expected {DECODE_MODES}")
+    return mode
+
+
+def graph_decode_plan(prompt_len: int, max_new_tokens: int) -> dict:
+    """Bound/plan for graph decode: static state sized once, asserted.
+
+    max_seq_len = prompt + max_new_tokens covers prefill positions plus
+    every decode replay (prompt + max_new_tokens - 1 <= max_seq_len).
+    """
+    if int(prompt_len) < 1:
+        raise ValueError(f"prompt_len must be >= 1, got {prompt_len}")
+    if int(max_new_tokens) < 1:
+        raise ValueError(f"max_new_tokens must be >= 1, got {max_new_tokens}")
+    max_seq = int(prompt_len) + int(max_new_tokens)
+    replays = int(max_new_tokens) - 1
+    assert int(prompt_len) + replays <= max_seq, "graph decode would exceed max_seq_len"
+    return {"prompt_len": int(prompt_len), "max_new_tokens": int(max_new_tokens),
+            "max_seq_len": max_seq, "replays": replays, "warmup_steps": 3}
 
 
 def apply_norm_mode(model, mode: str) -> int:
@@ -87,6 +121,14 @@ def use_triton_for_path(path: str) -> bool:
     if path == "reference":
         return False
     raise ValueError(f"unknown fp8-path {path!r}, expected {FP8_PATH_CHOICES}")
+
+
+def apply_scale_cache_mode(model, mode: str) -> int:
+    """Enable/disable cached FP32 FP8 scales on every BlockFP8Linear."""
+    if mode not in SCALE_CACHE_MODES:
+        raise ValueError(f"unknown scale-cache mode {mode!r}, expected {SCALE_CACHE_MODES}")
+    from inference_from_scratch.fp8_linear import apply_scale_cache
+    return apply_scale_cache(model, mode == "on")
 
 
 def compare_ids(gen_ids, ref_ids) -> dict:
@@ -162,6 +204,81 @@ def greedy_generate_tp(model, prompt_ids, max_new_tokens, *,
             "prefill_s": prefill_s, "decode_s": decode_s}
 
 
+def greedy_generate_graph_tp(model, prompt_ids, max_new_tokens, *,
+                             warmup_steps: int = 3):
+    """Greedy generation: prefill_static + one captured decode step replayed.
+
+    Captured (per rank): one decode_token_static step over the real
+    TPStaticState -- static input token tensor, static logits out buffer,
+    position advances inside the graph via state.position (add_).
+    Outside: prefill, warmup (3 eager static steps on a side stream over
+    a scratch state), capture itself, argmax on static logits and its
+    copy_ into the static input between replays, finite checks, EOS
+    (none: fixed token count). Graph is deleted (sync) before return so
+    process-group teardown cannot hang on a live captured NCCL graph.
+    """
+    validate_decode_mode("graph")
+    plan = graph_decode_plan(len(prompt_ids), max_new_tokens)
+    dev = model.ctx.device
+    vocab = int(model.config.vocab_size)
+    state = model.static_state(batch_size=1, max_seq_len=plan["max_seq_len"])
+    assert state.max_seq_len >= plan["prompt_len"] + plan["replays"]
+    idx = torch.tensor([list(prompt_ids)], dtype=torch.long, device=dev)
+    gen_t = []
+    torch.cuda.synchronize(dev)
+    t_pre = time.perf_counter()
+    logits = model.prefill_static(idx, state)
+    last = logits[0, -1].float()
+    finite_t = torch.isfinite(last).all()
+    nxt = last.argmax()
+    gen_t.append(nxt.reshape(()))
+    torch.cuda.synchronize(dev)
+    prefill_s = time.perf_counter() - t_pre
+    capture_s, decode_s = 0.0, 0.0
+    if plan["replays"] > 0:
+        # Warmup on a side stream over a scratch state (real state untouched).
+        scratch = model.static_state(batch_size=1, max_seq_len=plan["max_seq_len"])
+        warm_in = nxt.reshape(1).clone()
+        side = torch.cuda.Stream(device=dev)
+        side.wait_stream(torch.cuda.current_stream(dev))
+        with torch.cuda.stream(side):
+            for _ in range(int(warmup_steps)):
+                model.decode_token_static(warm_in, scratch)
+        torch.cuda.current_stream(dev).wait_stream(side)
+        del scratch
+        if int(model.ctx.world_size) > 1:
+            model.ctx.barrier()
+        static_input = nxt.reshape(1).clone()
+        static_out = torch.empty(1, vocab, device=dev, dtype=logits.dtype)
+        torch.cuda.synchronize(dev)
+        t_cap = time.perf_counter()
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            model.decode_token_static(static_input, state, out=static_out)
+        torch.cuda.synchronize(dev)
+        capture_s = time.perf_counter() - t_cap
+        if int(model.ctx.world_size) > 1:
+            model.ctx.barrier()
+        torch.cuda.synchronize(dev)
+        t_dec = time.perf_counter()
+        for _ in range(plan["replays"]):
+            graph.replay()
+            finite_t = finite_t & torch.isfinite(static_out.float()).all()
+            nxt = static_out.float().argmax(dim=-1)
+            gen_t.append(nxt.reshape(()))
+            static_input.copy_(nxt)
+        torch.cuda.synchronize(dev)
+        decode_s = time.perf_counter() - t_dec
+        torch.cuda.synchronize(dev)
+        del graph
+        torch.cuda.synchronize(dev)
+    gen_ids = [int(v) for v in torch.stack(gen_t).cpu().tolist()]
+    return {"gen_ids": gen_ids, "logits_finite": bool(finite_t.cpu()),
+            "prefill_s": prefill_s, "decode_s": decode_s,
+            "capture_s": capture_s, "graph_replays": plan["replays"],
+            "max_seq_len": plan["max_seq_len"]}
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--snapshot", default=DEFAULT_SNAPSHOT)
@@ -174,6 +291,19 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--norm", choices=list(NORM_MODES), default="fused",
                     help="RMSNorm: fused F.rms_norm (default, profiled) or "
                          "manual multi-op (TP2 v1; A/B baseline)")
+    ap.add_argument("--lm-head", choices=list(LM_HEAD_MODES), default="vocab",
+                    help="lm_head: vocab-parallel shard (default; measured winner in "
+                         "benchmarks/baseline/ours_tp2_microopts_ab.json) or replicated")
+    ap.add_argument("--scale-cache", choices=list(SCALE_CACHE_MODES), default="off",
+                    help="cached FP32 FP8 scales: off (default until A/B) or on")
+    ap.add_argument("--fp8-config", choices=list(FP8_CONFIG_MODES), default="new",
+                    help="Triton FP8 tile config: new (default, M=1 BLOCK_N=32 tuned) "
+                         "or old (legacy BLOCK_N=128 heuristic; A/B baseline)")
+    ap.add_argument("--decode-mode", choices=list(DECODE_MODES), default="eager",
+                    help="decode: eager (default until graph is measured) or graph "
+                         "(one captured decode_token_static step replayed per token)")
+    ap.add_argument("--probe", default=None,
+                    help="only run the probe with this id (e.g. capital)")
     ap.add_argument("--debug-token-sync", action="store_true",
                     help="all-gather + assert the argmax token every step (slow)")
     ap.add_argument("--memory-guard-gib", type=float, default=MEMORY_GUARD_GIB)
@@ -182,17 +312,22 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
+    validate_fp8_config(args.fp8_config)
     ctx = DistributedTPContext.from_env(backend="nccl", device_type="cuda")
     rank, dev = ctx.rank, ctx.device
     snapshot = Path(args.snapshot)
     probes = json.loads(Path(args.probes).read_text())["probes"]
     bridge_probes = {p["id"]: p for p in
                      json.loads(Path(args.bridge).read_text())["probes"]}
+    if args.probe is not None:
+        probes = [p for p in probes if p["id"] == args.probe]
+        if not probes:
+            raise ValueError(f"no probe with id {args.probe!r}")
     config = HybridConfig.from_text_config(snapshot)
     manifest = build_manifest(snapshot)
 
     mem = resident_memory_report(snapshot, config=config, world=ctx.world_size,
-                                 manifest=manifest)
+                                 manifest=manifest, lm_head_mode=args.lm_head)
     est_gib = float(mem["per_rank_total_gib"])
     if rank == 0:
         print(f"config: layers={config.num_hidden_layers} hidden={config.hidden_size} "
@@ -218,12 +353,15 @@ def main() -> int:
     model, report = load_rank_state(
         snapshot, config=config, rank=rank, world=ctx.world_size, device=dev,
         fp8_mode="resident", ctx=ctx, use_triton=use_triton_for_path(args.fp8_path),
-        manifest=manifest)
+        manifest=manifest, lm_head_mode=args.lm_head,
+        use_scale_cache=(args.scale_cache == "on"))
     torch.cuda.synchronize(dev)
     load_s = time.perf_counter() - t0
     n_norms = apply_norm_mode(model, args.norm)
+    n_scale = apply_scale_cache_mode(model, args.scale_cache) if args.scale_cache != "on" else report.get("scale_cache_modules", 0)
     if rank == 0:
-        print(f"norm_mode={args.norm} norms_switched={n_norms}", flush=True)
+        print(f"norm_mode={args.norm} norms_switched={n_norms} lm_head={args.lm_head} "
+              f"scale_cache={args.scale_cache} scale_modules={n_scale}", flush=True)
     resident_gib = report["resident_bytes"] / (1024 ** 3)
     print(f"[rank {rank}] load {load_s:.1f}s loaded={report['loaded_count']} "
           f"resident={resident_gib:.3f} GiB", flush=True)
@@ -239,9 +377,14 @@ def main() -> int:
         for probe in probes:
             ref_arm = probe["output_token_ids"]
             ref_bridge = bridge_probes[probe["id"]]["generated_token_ids"]
-            gen = greedy_generate_tp(model, prompt_ids[probe["id"]],
-                                     args.max_new_tokens,
-                                     debug_token_sync=args.debug_token_sync)
+            validate_decode_mode(args.decode_mode)
+            if args.decode_mode == "graph":
+                gen = greedy_generate_graph_tp(model, prompt_ids[probe["id"]],
+                                               args.max_new_tokens)
+            else:
+                gen = greedy_generate_tp(model, prompt_ids[probe["id"]],
+                                         args.max_new_tokens,
+                                         debug_token_sync=args.debug_token_sync)
             gen_ids, n = gen["gen_ids"], len(gen["gen_ids"])
             decode_tok_s = (n - 1) / gen["decode_s"] if gen["decode_s"] > 0 and n > 1 else None
             row = {
@@ -253,6 +396,11 @@ def main() -> int:
                 "vs_bridge": compare_ids(gen_ids, ref_bridge),
                 "vs_arm_a": compare_ids(gen_ids, ref_arm),
                 "prefill_s": gen["prefill_s"], "decode_s": gen["decode_s"],
+                "capture_s": gen.get("capture_s"),
+                "graph_replays": gen.get("graph_replays"),
+                "max_seq_len": gen.get("max_seq_len"),
+                "decode_mode": args.decode_mode,
+                "fp8_config": args.fp8_config,
                 "decode_tok_per_s": decode_tok_s,
                 "tpot_ms": (1000.0 * gen["decode_s"] / (n - 1)) if n > 1 else None,
                 "peak_memory_bytes_rank_local": int(torch.cuda.max_memory_allocated(dev)),
@@ -283,6 +431,10 @@ def main() -> int:
             "parallelism": "tensor_parallel_tp2",
             "fp8_path": args.fp8_path,
             "norm_mode": args.norm,
+            "lm_head_mode": args.lm_head,
+            "scale_cache": args.scale_cache,
+            "decode_mode": args.decode_mode,
+            "fp8_config": args.fp8_config,
             "tokenizer_choice": "all ranks encode identically (deterministic, zero comms)",
             "token_agreement": ("replicated logits + local argmax, batched host "
                                 "transfer at end; --debug-token-sync asserts per-step"),
