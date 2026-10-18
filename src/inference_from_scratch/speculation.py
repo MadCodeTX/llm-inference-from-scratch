@@ -364,6 +364,105 @@ class _PhaseTimer:
         return profile
 
 
+SEGMENT_NAMES = (
+    "draft_replay_launch_ms", "draft_token_readback_ms",
+    "verify_input_fill_ms", "verify_replay_ms",
+    "argmax_pair_readback_ms", "snapshot_ms", "rollback_refeed_ms",
+    "loop_bookkeeping_ms",
+)
+
+_SYNC_KINDS = ("item", "tolist", "synchronize", "copy_", "fill_",
+               "setitem", "snapshot_calls", "copy_from_calls")
+
+
+class SegmentAccumulator:
+    """Off-by-default wall-clock segment + host-sync counting.
+
+    Segments are host wall time (``time.perf_counter``) around each
+    named region of one speculative cycle. A segment that ends in a
+    ``.item()``/``.tolist()`` therefore includes any GPU-queue drain
+    wait; a segment with no synchronisation is pure launch/bookkeeping
+    wall. ``loop_bookkeeping_ms`` is the residual: loop wall minus the
+    explicitly timed segments. Sync counters are bumped only at the
+    call sites in :func:`speculative_generate_tp` / graph ``run``.
+    """
+
+    def __init__(self):
+        self.totals: dict = {n: 0.0 for n in SEGMENT_NAMES}
+        self.sync_counts: dict = {k: 0 for k in _SYNC_KINDS}
+        self._explicit_ms = 0.0
+        self._loop_wall_ms = 0.0
+
+    def add(self, name: str, ms: float) -> None:
+        if name not in self.totals:
+            raise ValueError(f"unknown segment {name!r}, expected {SEGMENT_NAMES}")
+        self.totals[name] += float(ms)
+        if name != "loop_bookkeeping_ms":
+            self._explicit_ms += float(ms)
+
+    def bump(self, kind: str, n: int = 1) -> None:
+        if kind not in self.sync_counts:
+            raise ValueError(f"unknown sync kind {kind!r}, expected {_SYNC_KINDS}")
+        self.sync_counts[kind] += int(n)
+
+    def add_loop_wall(self, ms: float) -> None:
+        self._loop_wall_ms += float(ms)
+
+    def finish_into(self, out: dict, cycles: int) -> dict:
+        book = max(self._loop_wall_ms - self._explicit_ms, 0.0)
+        self.totals["loop_bookkeeping_ms"] = book
+        n = max(int(cycles), 1)
+        out["segment_totals_ms"] = dict(self.totals)
+        out["segment_per_cycle_ms"] = {k: v / n for k, v in self.totals.items()}
+        out["sync_counts"] = dict(self.sync_counts)
+        out["sync_per_cycle"] = {k: v / n for k, v in self.sync_counts.items()}
+        out["segment_loop_wall_ms"] = float(self._loop_wall_ms)
+        return out
+
+
+def summarize_segments(segment_per_cycle: dict) -> list:
+    """Rank segments by ms/cycle descending (pure; for diagnosis docs)."""
+    return sorted(
+        ({"segment": k, "ms_per_cycle": float(v)}
+         for k, v in segment_per_cycle.items()),
+        key=lambda r: -r["ms_per_cycle"])
+
+
+def pack_acceptance_triple(draft_token, target_at_last, bonus_token) -> tuple:
+    """Pack one cycle's outcome as ``(draft, correction, bonus)`` ints."""
+    out = []
+    for name, v in (("draft_token", draft_token),
+                    ("target_at_last", target_at_last),
+                    ("bonus_token", bonus_token)):
+        if isinstance(v, bool):
+            raise ValueError(f"{name} must be an int token id, got {v!r}")
+        if not isinstance(v, (int,)):
+            try:
+                iv = int(v)  # type: ignore[arg-type]
+            except Exception as exc:
+                raise ValueError(f"{name} must be an int token id, got {v!r}") from exc
+            if not isinstance(v, torch.Tensor) and iv != v:
+                raise ValueError(f"{name} must be an int token id, got {v!r}")
+            v = iv
+        if int(v) < 0:
+            raise ValueError(f"{name} must be >= 0, got {v}")
+        out.append(int(v))
+    return (out[0], out[1], out[2])
+
+
+def decode_acceptance_triple(triple) -> dict:
+    """Validate/unpack a packed ``(draft, correction, bonus)`` triple."""
+    if isinstance(triple, torch.Tensor):
+        vals = [int(x) for x in triple.reshape(-1).tolist()]
+    else:
+        vals = list(triple)  # type: ignore[arg-type]
+    if len(vals) != 3:
+        raise ValueError(f"acceptance triple must have 3 values, got {len(vals)}")
+    draft, correction, bonus = pack_acceptance_triple(vals[0], vals[1], vals[2])
+    return {"draft_token": draft, "correction_token": correction,
+            "bonus_token": bonus, "accepted": draft == correction}
+
+
 def _barrier(model) -> None:
     ctx = getattr(model, "ctx", None)
     if ctx is not None and int(getattr(ctx, "world_size", 1)) > 1:
@@ -409,10 +508,20 @@ class _ChunkGraph:
         torch.cuda.synchronize(dev)
         _barrier(model)
 
-    def run(self, token_a: int, token_b: int):
+    def run(self, token_a: int, token_b: int, _seg=None):
+        if _seg is None:
+            self.input[0, 0] = int(token_a)
+            self.input[0, 1] = int(token_b)
+            self.graph.replay()
+            return self.logits, self.hidden
+        t0 = time.perf_counter()
         self.input[0, 0] = int(token_a)
         self.input[0, 1] = int(token_b)
+        _seg.bump("setitem", 2)
+        _seg.add("verify_input_fill_ms", (time.perf_counter() - t0) * 1000.0)
+        t0 = time.perf_counter()
         self.graph.replay()
+        _seg.add("verify_replay_ms", (time.perf_counter() - t0) * 1000.0)
         return self.logits, self.hidden
 
     def close(self) -> None:
@@ -472,11 +581,21 @@ class _DraftGraph:
         torch.cuda.synchronize(dev)
         _barrier(model)
 
-    def run(self, hidden_t, token_id: int, rope_pos: int):
+    def run(self, hidden_t, token_id: int, rope_pos: int, _seg=None):
+        if _seg is None:
+            self.hidden_in.copy_(hidden_t.reshape(1, -1).to(self.hidden_in.dtype))
+            self.token_in.fill_(int(token_id))
+            self.rope_pos.fill_(int(rope_pos))
+            self.graph.replay()
+            return self.logits
+        t0 = time.perf_counter()
         self.hidden_in.copy_(hidden_t.reshape(1, -1).to(self.hidden_in.dtype))
         self.token_in.fill_(int(token_id))
         self.rope_pos.fill_(int(rope_pos))
+        _seg.bump("copy_", 1)
+        _seg.bump("fill_", 2)
         self.graph.replay()
+        _seg.add("draft_replay_launch_ms", (time.perf_counter() - t0) * 1000.0)
         return self.logits
 
     def close(self) -> None:
@@ -543,6 +662,9 @@ def speculative_generate_tp(model, mtp, idx, max_new_tokens, *,
     model.eval()
     chunk_graph = None
     draft_graph = None
+    merged_graph = None
+    refeed_graph = None
+    seg = SegmentAccumulator() if segment_profile is not None else None
     timer = _PhaseTimer(dev) if profile is not None else None
     wall_start = time.perf_counter()
     try:
@@ -593,26 +715,39 @@ def speculative_generate_tp(model, mtp, idx, max_new_tokens, *,
                     from .mtp import _POSITION_OFFSET
                     abs_pos = int(mtp_pos) + _POSITION_OFFSET[
                         wiring.get("position_rule", "hidden_pos")]
-                    d_logits = draft_graph.run(hidden_t, last_accepted, abs_pos)
-                    draft_int = int(d_logits[0].argmax().item())
+                    d_logits = draft_graph.run(hidden_t, last_accepted, abs_pos, _seg=seg)
+                    if seg is not None:
+                        _t = time.perf_counter()
+                        draft_int = int(d_logits[0].argmax().item())
+                        seg.bump("item")
+                        seg.add("draft_token_readback_ms",
+                                (time.perf_counter() - _t) * 1000.0)
+                    else:
+                        draft_int = int(d_logits[0].argmax().item())
                 else:
                     draft_id, _draft_logits, tentative = mtp.draft_token(
                         hidden_t, last_accepted, mtp_state, position=mtp_pos,
                         **draft_kwargs)
                     draft_int = int(torch.as_tensor(draft_id).reshape(-1)[0].item())
+                    if seg is not None:
+                        seg.bump("item")
                 if timer:
                     timer.stop(tok_t)
                 stats["mtp_forwards"] += 1
                 stats["proposed"] += 1
                 pos_before = host_pos
                 tok_t = timer.start("snapshot_ms") if timer else None
+                _snap_t = time.perf_counter() if seg is not None else 0.0
                 snapshot = state.snapshot()
+                if seg is not None:
+                    seg.bump("snapshot_calls")
+                    seg.add("snapshot_ms", (time.perf_counter() - _snap_t) * 1000.0)
                 if timer:
                     timer.stop(tok_t)
                 tok_t = timer.start("verify_ms") if timer else None
                 if chunk_graph is not None:
                     chunk_logits, chunk_hidden = chunk_graph.run(
-                        last_accepted, draft_int)
+                        last_accepted, draft_int, _seg=seg)
                 else:
                     chunk = torch.tensor([[last_accepted, draft_int]],
                                          dtype=torch.long, device=dev)
@@ -622,7 +757,14 @@ def speculative_generate_tp(model, mtp, idx, max_new_tokens, *,
                     timer.stop(tok_t)
                 stats["target_forwards"] += 1
                 stats["cycles"] += 1
-                _pair = chunk_logits[0].argmax(dim=-1).tolist()
+                if seg is not None:
+                    _t = time.perf_counter()
+                    _pair = chunk_logits[0].argmax(dim=-1).tolist()
+                    seg.bump("tolist")
+                    seg.add("argmax_pair_readback_ms",
+                            (time.perf_counter() - _t) * 1000.0)
+                else:
+                    _pair = chunk_logits[0].argmax(dim=-1).tolist()
                 target_at_last, bonus_or_next = int(_pair[0]), int(_pair[1])
                 if draft_int == target_at_last:
                     stats["accepted"] += 1
@@ -641,10 +783,15 @@ def speculative_generate_tp(model, mtp, idx, max_new_tokens, *,
                     host_pos = pos_before + 2
                 else:
                     stats["rollbacks"] += 1
+                    _rb_t = time.perf_counter() if seg is not None else 0.0
                     if draft_graph is not None and mtp_static is not None:
                         mtp_static.position.fill_(committed_slot)
+                        if seg is not None:
+                            seg.bump("fill_")
                     tok_t = timer.start("rollback_copy_ms") if timer else None
                     state.copy_from(snapshot)  # roll back (see design note)
+                    if seg is not None:
+                        seg.bump("copy_from_calls")
                     if timer:
                         timer.stop(tok_t)
                     del snapshot
@@ -655,12 +802,19 @@ def speculative_generate_tp(model, mtp, idx, max_new_tokens, *,
                         torch.tensor([last_accepted], dtype=torch.long, device=dev), state)
                     if timer:
                         timer.stop(tok_t)
+                    if seg is not None:
+                        seg.add("rollback_refeed_ms",
+                                (time.perf_counter() - _rb_t) * 1000.0)
                     stats["target_forwards"] += 1
                     generated.append(target_at_last)
                     last_accepted = target_at_last
                     last_hidden_pre = chunk_hidden[0, 0]
                     mtp_pos = pos_before
                     host_pos = pos_before + 1  # snapshot restore + one re-feed
+                if seg is not None:
+                    seg.add_loop_wall((time.perf_counter() - _iter_t0) * 1000.0)
+            if seg is not None and segment_profile is not None:
+                seg.finish_into(segment_profile, int(stats["cycles"]))
             gen_t = torch.tensor([generated], dtype=out.dtype, device=out.device)
             out = torch.cat([out, gen_t], dim=1)
             if timer is not None and profile is not None:

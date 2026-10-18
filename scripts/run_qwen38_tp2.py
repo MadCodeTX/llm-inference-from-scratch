@@ -291,7 +291,7 @@ def greedy_generate_graph_tp(model, prompt_ids, max_new_tokens, *,
 
 
 def greedy_generate_speculative_tp(model, prompt_ids, max_new_tokens,
-                                   mode: str = "mtp1"):
+                                   mode: str = "mtp1", segment_profile=None):
     """Greedy MTP speculative generation (gamma=1).
 
     ``mtp1`` runs the eager static loop; ``mtp1-graph`` captures the
