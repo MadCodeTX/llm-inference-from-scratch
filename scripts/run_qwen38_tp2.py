@@ -64,7 +64,8 @@ LM_HEAD_MODES = ("replicated", "vocab")
 SCALE_CACHE_MODES = ("off", "on")
 DECODE_MODES = ("eager", "graph")
 FP8_CONFIG_MODES = ("old", "new")
-SPECULATIVE_MODES = ("off", "mtp1", "mtp1-graph")
+SPECULATIVE_MODES = ("off", "mtp1", "mtp1-graph", "mtp1-graph2")
+DELTA_MODES = ("ref", "fused")
 
 
 def validate_fp8_config(mode: str) -> str:
@@ -83,10 +84,10 @@ def validate_decode_mode(mode: str) -> str:
 def validate_speculative_mode(mode: str, decode_mode: str = "eager") -> str:
     if mode not in SPECULATIVE_MODES:
         raise ValueError(f"unknown speculative mode {mode!r}, expected {SPECULATIVE_MODES}")
-    if mode in ("mtp1", "mtp1-graph") and decode_mode != "eager":
+    if mode in ("mtp1", "mtp1-graph", "mtp1-graph2") and decode_mode != "eager":
         raise ValueError(f"--speculative {mode} requires --decode-mode eager "
-                         "(speculation owns its static path; mtp1-graph captures "
-                         "its own chunk/draft graphs)")
+                         "(speculation owns its static path; graph modes capture "
+                         "their own graphs)")
     return mode
 
 
@@ -121,6 +122,25 @@ def apply_norm_mode(model, mode: str) -> int:
     for mod in model.modules():
         if isinstance(mod, QwenRMSNorm):
             mod.use_fused_rmsnorm = mode == "fused"
+            n += 1
+    return n
+
+
+def apply_delta_mode(model, mode: str) -> int:
+    """Set the gated-delta recurrence on every distributed linear layer.
+
+    ``fused`` runs the decay/delta/update/read recurrence as one
+    Triton kernel per layer (fp32 CUDA only; reference fallback
+    otherwise); ``ref`` (default) keeps the multi-op path. Returns
+    the number of layers switched.
+    """
+    if mode not in DELTA_MODES:
+        raise ValueError(f"unknown delta mode {mode!r}, expected {DELTA_MODES}")
+    from inference_from_scratch.tp_distributed import DistributedGatedDeltaNet
+    n = 0
+    for mod in model.modules():
+        if isinstance(mod, DistributedGatedDeltaNet):
+            mod.use_fused_delta = mode == "fused"
             n += 1
     return n
 
@@ -320,7 +340,8 @@ def greedy_generate_speculative_tp(model, prompt_ids, max_new_tokens,
         embedding=model.embed_tokens, lm_head=model._lm_head_logits,
         graph_verify=(mode == "mtp1-graph"),
         graph_draft=(mode == "mtp1-graph"),
-        profile=profile)
+        graph2=(mode == "mtp1-graph2"),
+        profile=profile, segment_profile=segment_profile)
     torch.cuda.synchronize(dev)
     wall_s = time.perf_counter() - t0
     gen_ids = [int(v) for v in out[0, len(prompt_ids):].tolist()]
@@ -413,14 +434,15 @@ def main() -> int:
         snapshot, config=config, rank=rank, world=ctx.world_size, device=dev,
         fp8_mode="resident", ctx=ctx, use_triton=use_triton_for_path(args.fp8_path),
         manifest=manifest, lm_head_mode=args.lm_head,
-        include_mtp=(args.speculative in ("mtp1", "mtp1-graph")),
+        include_mtp=(args.speculative in ("mtp1", "mtp1-graph", "mtp1-graph2")),
         use_scale_cache=(args.scale_cache == "on"))
     torch.cuda.synchronize(dev)
     load_s = time.perf_counter() - t0
     n_norms = apply_norm_mode(model, args.norm)
+    n_delta = apply_delta_mode(model, args.delta)
     n_scale = apply_scale_cache_mode(model, args.scale_cache) if args.scale_cache != "on" else report.get("scale_cache_modules", 0)
     if rank == 0:
-        print(f"norm_mode={args.norm} norms_switched={n_norms} lm_head={args.lm_head} "
+        print(f"norm_mode={args.norm} norms_switched={n_norms} delta={args.delta} delta_switched={n_delta} lm_head={args.lm_head} "
               f"scale_cache={args.scale_cache} scale_modules={n_scale}", flush=True)
     resident_gib = report["resident_bytes"] / (1024 ** 3)
     print(f"[rank {rank}] load {load_s:.1f}s loaded={report['loaded_count']} "
@@ -438,7 +460,7 @@ def main() -> int:
             ref_arm = probe["output_token_ids"]
             ref_bridge = bridge_probes[probe["id"]]["generated_token_ids"]
             validate_decode_mode(args.decode_mode)
-            if args.speculative in ("mtp1", "mtp1-graph"):
+            if args.speculative in ("mtp1", "mtp1-graph", "mtp1-graph2"):
                 gen = greedy_generate_speculative_tp(
                     model, prompt_ids[probe["id"]], args.max_new_tokens,
                     mode=args.speculative)

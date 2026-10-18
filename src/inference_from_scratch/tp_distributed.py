@@ -1221,6 +1221,39 @@ class TPStaticState:
 
     clone = snapshot
 
+    def alloc_snapshot(self) -> "TPStaticState":
+        """Preallocated snapshot buffers (same shapes/ptrs each cycle)."""
+        return self.snapshot()
+
+    def snapshot_into(self, dst: "TPStaticState") -> None:
+        """Copy only rollback-relevant state into preallocated ``dst``.
+
+        Linear recurrent (``linear_S``) + conv buffers and ``position``
+        are copied with ``copy_`` (no allocation, CUDA-graph capturable).
+        Full-attention KV is deliberately skipped: rewinding
+        ``position`` makes the next chunk overwrite the stale KV slots
+        before they can be read, so copying KV is wasted work.
+        """
+        if dst.batch_size != self.batch_size or dst.max_seq_len != self.max_seq_len:
+            raise ValueError("snapshot shape (batch/max_seq_len) does not match this state")
+        if len(dst.layer_types) != len(self.layer_types):
+            raise ValueError("snapshot layer count does not match this state")
+        for d, s in zip(dst.linear_S, self.linear_S):
+            if (d is None) != (s is None):
+                raise ValueError("snapshot linear_S layout does not match this state")
+            if d is not None:
+                d.copy_(s)
+        for d, s in zip(dst.linear_conv_buffers, self.linear_conv_buffers):
+            if (d is None) != (s is None):
+                raise ValueError("snapshot linear_conv layout does not match this state")
+            if d is not None:
+                d.copy_(s)
+        dst.position.copy_(self.position)
+
+    def restore_linear_from(self, src: "TPStaticState") -> None:
+        """Restore linear/conv/position from ``src`` (KV left as-is)."""
+        src.snapshot_into(self)
+
     def copy_from(self, snapshot: "TPStaticState") -> None:
         """Copy ``snapshot`` back into this state in place (ptrs stable)."""
         if snapshot.batch_size != self.batch_size or snapshot.max_seq_len != self.max_seq_len:

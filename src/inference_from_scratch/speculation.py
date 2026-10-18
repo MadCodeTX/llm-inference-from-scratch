@@ -605,11 +605,149 @@ class _DraftGraph:
         torch.cuda.synchronize(dev)
 
 
+class _MergedSpecGraph:
+    """graph2: ONE captured graph per cycle (snapshot+draft+verify).
+
+    Captured body, in order: (1) ``snapshot_into`` copies of the target
+    linear/conv/position and MTP position into preallocated buffers;
+    (2) MTP draft step writing draft logits, advancing MTP position;
+    (3) GPU-side handoff: draft argmax ``copy_`` into slot 1 of the
+    verify chunk input (slot 0 from ``token_in``) -- no host read of
+    the draft token; (4) 2-token verify chunk; (5) packed result
+    ``[draft, target_at_last, bonus]`` written to ``result_gpu``.
+    The host reads only that triple via one pinned async copy + one
+    sync per cycle. Rollback (restore + refeed) stays outside, reject
+    cycles only.
+    """
+
+    def __init__(self, model, state, mtp, mtp_state, embedding, lm_head,
+                 warmup_steps: int = 3):
+        dev = model.ctx.device
+        if torch.device(dev).type != "cuda":
+            raise ValueError("CUDA-graph verification requires a CUDA device")
+        self.model, self.state, self.mtp, self.mtp_state = model, state, mtp, mtp_state
+        self.embedding, self.lm_head = embedding, lm_head
+        vocab = int(model.config.vocab_size)
+        hidden = int(model.config.hidden_size)
+        dtype = model.embed_tokens.weight.dtype
+        self.hidden_in = torch.zeros(1, hidden, device=dev, dtype=dtype)
+        self.token_in = torch.zeros(1, dtype=torch.long, device=dev)
+        self.rope_pos = torch.zeros((), dtype=torch.long, device=dev)
+        self.chunk_input = torch.zeros(1, 2, dtype=torch.long, device=dev)
+        self.draft_logits = torch.empty(1, vocab, device=dev, dtype=dtype)
+        self.logits = torch.empty(1, 2, vocab, device=dev, dtype=dtype)
+        self.hidden = torch.empty(1, 2, hidden, device=dev, dtype=dtype)
+        self.result_gpu = torch.zeros(3, dtype=torch.long, device=dev)
+        self.result_pin = torch.empty(3, dtype=torch.long, pin_memory=True)
+        self.snap_state = state.alloc_snapshot()
+        self.snap_mtp_pos = torch.zeros((), dtype=torch.long, device=dev)
+        # Warmup on scratch states (side stream), then capture on live.
+        scratch = model.static_state(batch_size=1, max_seq_len=state.max_seq_len)
+        scratch_mtp = mtp.initial_static_state(
+            batch_size=1, max_seq_len=mtp_state.max_seq_len)
+        scratch_snap = scratch.alloc_snapshot()
+        scratch_mtp_pos = torch.zeros((), dtype=torch.long, device=dev)
+        side = torch.cuda.Stream(device=dev)
+        side.wait_stream(torch.cuda.current_stream(dev))
+        with torch.cuda.stream(side):
+            for _ in range(int(warmup_steps)):
+                self._body(scratch, scratch_mtp, scratch_snap, scratch_mtp_pos)
+        torch.cuda.current_stream(dev).wait_stream(side)
+        del scratch, scratch_mtp, scratch_snap, scratch_mtp_pos
+        _barrier(model)
+        torch.cuda.synchronize(dev)
+        self.graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(self.graph):
+            self._body(state, mtp_state, self.snap_state, self.snap_mtp_pos)
+        torch.cuda.synchronize(dev)
+        _barrier(model)
+
+    def _body(self, state, mtp_state, snap_state, snap_mtp_pos):
+        state.snapshot_into(snap_state)
+        snap_mtp_pos.copy_(mtp_state.position)
+        draft_id, _ = self.mtp.draft_token_static(
+            self.hidden_in, self.token_in, mtp_state,
+            rope_position=self.rope_pos, embedding=self.embedding,
+            lm_head=self.lm_head, out=self.draft_logits)
+        mtp_state.position.add_(1)
+        flat = self.chunk_input.view(-1)
+        flat[0].copy_(self.token_in.reshape(-1)[0])
+        flat[1].copy_(torch.as_tensor(draft_id).reshape(-1)[0])
+        self.model.decode_chunk_static(
+            self.chunk_input, state, return_hidden=True,
+            out=self.logits, hidden_out=self.hidden)
+        pair = torch.argmax(self.logits, dim=-1).reshape(-1)
+        self.result_gpu[0].copy_(torch.as_tensor(draft_id).reshape(-1)[0])
+        self.result_gpu[1].copy_(pair[0])
+        self.result_gpu[2].copy_(pair[1])
+
+    def run(self, hidden_t, token_id: int, rope_pos: int):
+        """Fill static inputs, replay once, read packed triple (1 sync)."""
+        self.hidden_in.copy_(hidden_t.reshape(1, -1).to(self.hidden_in.dtype))
+        self.token_in.fill_(int(token_id))
+        self.rope_pos.fill_(int(rope_pos))
+        self.graph.replay()
+        self.result_pin.copy_(self.result_gpu, non_blocking=True)
+        torch.cuda.synchronize(self.model.ctx.device)
+        return decode_acceptance_triple(
+            [int(x) for x in self.result_pin.tolist()])
+
+    def restore_on_reject(self, committed_slot: int) -> None:
+        self.state.restore_linear_from(self.snap_state)
+        self.mtp_state.position.fill_(int(committed_slot))
+
+    def close(self) -> None:
+        dev = self.model.ctx.device
+        torch.cuda.synchronize(dev)
+        del self.graph
+        torch.cuda.synchronize(dev)
+
+
+class _RefeedGraph:
+    """Captured single-token refeed (reject cycles only)."""
+
+    def __init__(self, model, state, warmup_steps: int = 3):
+        dev = model.ctx.device
+        vocab = int(model.config.vocab_size)
+        dtype = model.embed_tokens.weight.dtype
+        self.model, self.state = model, state
+        self.input = torch.zeros(1, dtype=torch.long, device=dev)
+        self.out = torch.empty(1, vocab, device=dev, dtype=dtype)
+        scratch = model.static_state(batch_size=1, max_seq_len=state.max_seq_len)
+        side = torch.cuda.Stream(device=dev)
+        side.wait_stream(torch.cuda.current_stream(dev))
+        with torch.cuda.stream(side):
+            for _ in range(int(warmup_steps)):
+                model.decode_token_static(self.input, scratch, out=self.out)
+        torch.cuda.current_stream(dev).wait_stream(side)
+        del scratch
+        _barrier(model)
+        torch.cuda.synchronize(dev)
+        self.graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(self.graph):
+            model.decode_token_static(self.input, state, out=self.out)
+        torch.cuda.synchronize(dev)
+        _barrier(model)
+
+    def run(self, token_id: int):
+        self.input.fill_(int(token_id))
+        self.graph.replay()
+        return self.out
+
+    def close(self) -> None:
+        dev = self.model.ctx.device
+        torch.cuda.synchronize(dev)
+        del self.graph
+        torch.cuda.synchronize(dev)
+
+
 def speculative_generate_tp(model, mtp, idx, max_new_tokens, *,
                             state_factory=None, embedding=None, lm_head=None,
                             graph_verify: bool = False,
                             graph_draft: bool = False,
-                            profile: dict | None = None):
+                            graph2: bool = False,
+                            profile: dict | None = None,
+                            segment_profile: dict | None = None):
     """Greedy MTP speculative generation on the TP static path.
 
     ``model`` is a ``DistributedHybridLM`` (eager static decode);
@@ -681,11 +819,13 @@ def speculative_generate_tp(model, mtp, idx, max_new_tokens, *,
             mtp_static = None
             committed_slot = 0
             host_pos = prompt_len  # state.position tracked on host (no per-cycle .item())
-            if graph_verify or graph_draft:
+            if graph2 and (graph_verify or graph_draft):
+                raise ValueError("graph2 is exclusive with graph_verify/graph_draft")
+            if graph_verify or graph_draft or graph2:
                 if torch.device(dev).type != "cuda":
                     raise ValueError("graph speculative modes require CUDA")
-                if graph_draft and not hasattr(mtp, "draft_token_static"):
-                    raise ValueError("graph_draft requires a draft module with "
+                if (graph_draft or graph2) and not hasattr(mtp, "draft_token_static"):
+                    raise ValueError("graph modes require a draft module with "
                                      "draft_token_static (TPMTPDraftModule)")
             if graph_verify:
                 chunk_graph = _ChunkGraph(model, state)
@@ -701,9 +841,71 @@ def speculative_generate_tp(model, mtp, idx, max_new_tokens, *,
                 stats["graph_draft"] = True
             if graph_verify:
                 stats["graph_verify"] = True
+            if graph2:
+                from .mtp import _POSITION_OFFSET as _PO2  # noqa: F401
+                mtp_static = mtp.initial_static_state(
+                    batch_size=1,
+                    max_seq_len=prompt_len + int(max_new_tokens) + 2)
+                merged_graph = _MergedSpecGraph(
+                    model, state, mtp, mtp_static,
+                    embedding if embedding is not None else getattr(mtp, "_embedding", None),
+                    lm_head if lm_head is not None else getattr(mtp, "_lm_head", None))
+                refeed_graph = _RefeedGraph(model, state)
+                stats["graph2"] = True
+                stats["host_syncs"] = 0
             while len(generated) < int(max_new_tokens):
+                _iter_t0 = time.perf_counter() if seg is not None else 0.0
                 hidden_t = (last_hidden_pre if hidden_source == "pre_final_norm"
                             else model.norm(last_hidden_pre))
+                if merged_graph is not None:
+                    from .mtp import _POSITION_OFFSET
+                    abs_pos = int(mtp_pos) + _POSITION_OFFSET[
+                        wiring.get("position_rule", "hidden_pos")]
+                    pos_before = host_pos
+                    tok_t = timer.start("verify_ms") if timer else None
+                    triple = merged_graph.run(hidden_t, last_accepted, abs_pos)
+                    if timer:
+                        timer.stop(tok_t)
+                    stats["host_syncs"] = int(stats.get("host_syncs", 0)) + 1
+                    stats["mtp_forwards"] += 1
+                    stats["proposed"] += 1
+                    stats["target_forwards"] += 1
+                    stats["cycles"] += 1
+                    draft_int = triple["draft_token"]
+                    target_at_last = triple["correction_token"]
+                    bonus_or_next = triple["bonus_token"]
+                    if triple["accepted"]:
+                        stats["accepted"] += 1
+                        committed_slot += 1
+                        generated.append(draft_int)
+                        if len(generated) < int(max_new_tokens):
+                            generated.append(bonus_or_next)
+                            last_accepted = bonus_or_next
+                        else:
+                            last_accepted = draft_int
+                        last_hidden_pre = merged_graph.hidden[0, 1]
+                        mtp_pos = pos_before + 1
+                        host_pos = pos_before + 2
+                    else:
+                        stats["rollbacks"] += 1
+                        tok_t = timer.start("rollback_copy_ms") if timer else None
+                        merged_graph.restore_on_reject(committed_slot)
+                        if timer:
+                            timer.stop(tok_t)
+                        tok_t = timer.start("refeed_ms") if timer else None
+                        assert refeed_graph is not None
+                        refeed_graph.run(last_accepted)
+                        if timer:
+                            timer.stop(tok_t)
+                        stats["target_forwards"] += 1
+                        generated.append(target_at_last)
+                        last_accepted = target_at_last
+                        last_hidden_pre = merged_graph.hidden[0, 0]
+                        mtp_pos = pos_before
+                        host_pos = pos_before + 1
+                    if seg is not None:
+                        seg.add_loop_wall((time.perf_counter() - _iter_t0) * 1000.0)
+                    continue
                 draft_kwargs = {}
                 if embedding is not None:
                     draft_kwargs["embedding"] = embedding
@@ -826,6 +1028,10 @@ def speculative_generate_tp(model, mtp, idx, max_new_tokens, *,
             chunk_graph.close()
         if draft_graph is not None:
             draft_graph.close()
+        if refeed_graph is not None:
+            refeed_graph.close()
+        if merged_graph is not None:
+            merged_graph.close()
         if was_training:
             model.train()
     return out, stats
