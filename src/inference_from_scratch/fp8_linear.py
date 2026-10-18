@@ -53,6 +53,7 @@ __all__ = [
     "BlockFP8Linear",
     "replace_linears_with_fp8",
     "scaled_mm_block_supported",
+    "shard_fp8_pair",
     "TRITON_MAX_M",
 ]
 
@@ -168,6 +169,44 @@ class BlockFP8Linear(nn.Module):
             )
         else:
             self.register_parameter("bias", None)
+
+    @classmethod
+    def from_pre_sliced(
+        cls,
+        weight: torch.Tensor,
+        weight_scale_inv: torch.Tensor,
+        bias: torch.Tensor | None = None,
+        block: tuple[int, int] = (128, 128),
+        *,
+        use_fast_path: bool = False,
+        use_triton: bool | None = None,
+    ) -> "BlockFP8Linear":
+        """Build from pre-sliced FP8 ``weight`` + ``weight_scale_inv``.
+
+        For TP shards: ``weight`` is this rank's row/column slice of a
+        dense FP8 matrix and ``weight_scale_inv`` the matching block-grid
+        slice (see :func:`shard_fp8_pair`). Shapes are validated against
+        the block grid exactly as the reference dequantiser requires.
+        """
+        if weight.dtype != torch.float8_e4m3fn or weight.dim() != 2:
+            raise ValueError(
+                f"weight must be float8_e4m3fn [out, in], got {weight.dtype} {tuple(weight.shape)}")
+        out_f, in_f = int(weight.shape[0]), int(weight.shape[1])
+        gr, gc = -(-out_f // int(block[0])), -(-in_f // int(block[1]))
+        if tuple(weight_scale_inv.shape) != (gr, gc):
+            raise ValueError(
+                f"weight_scale_inv {tuple(weight_scale_inv.shape)} != block grid {(gr, gc)} "
+                f"for weight {(out_f, in_f)} block {tuple(block)}")
+        module = cls(in_f, out_f, bias=bias is not None, block=block,
+                     device=weight.device, use_fast_path=use_fast_path,
+                     use_triton=use_triton)
+        with torch.no_grad():
+            module.weight.copy_(weight.to(module.weight.device))
+            module.weight_scale_inv.copy_(
+                weight_scale_inv.to(dtype=torch.bfloat16, device=module.weight.device))
+            if module.bias is not None and bias is not None:
+                module.bias.copy_(bias.detach().to(module.bias.dtype))
+        return module
 
     @classmethod
     def from_linear(
@@ -301,6 +340,57 @@ class BlockFP8Linear(nn.Module):
             f"out_features={self.out_features}, "
             f"bias={self.bias is not None}, block={self.block}"
         )
+
+
+def shard_fp8_pair(
+    name: str,
+    weight: torch.Tensor,
+    weight_scale_inv: torch.Tensor,
+    rank: int,
+    world: int,
+    config=None,
+    block: tuple[int, int] = (128, 128),
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """This rank's ``(weight, weight_scale_inv)`` shard of an FP8 matrix.
+
+    The weight is sliced at the ``tensor_parallel.shard_spec_for``
+    indices for ``name`` (head pairs, KV/value heads, segmented qkv
+    groups, intermediate rows/columns). The scale grid is sliced by the
+    *block* indices those weight indices fall in
+    (``sorted(unique(idx // block))`` on the sharded axis), which is
+    exactly the spec's scale rule (``weight_scale_inv`` follows its
+    weight's axis, one scale per [128, 128] block) expressed on the
+    grid -- including the segmented-qkv case, whose grid rows are the
+    non-contiguous q/k/v block rows of this rank's weight rows. Raises
+    ``ValueError`` when a shard boundary cuts a [128, 128] block (the
+    sliced grid would not be the local block grid); every spec unit in
+    the real checkpoint (head 256, head-pair 512, value-head groups,
+    8704-row intermediate halves) is block-aligned, and a sub-block
+    tiny tensor keeps the single shared block.
+    """
+    from .tensor_parallel import shard_spec_for
+
+    if weight.dim() != 2 or weight_scale_inv.dim() != 2:
+        raise ValueError("FP8 weight and scale must both be 2D")
+    spec = shard_spec_for(name, tuple(weight.shape), config)
+    if not spec.is_sharded or spec.dim is None:
+        return weight.clone(), weight_scale_inv.clone()
+    idx = spec.indices_for_rank(rank, world)
+    w_shard = weight.index_select(
+        spec.dim, torch.tensor(idx, dtype=torch.long, device=weight.device)).clone()
+    blk = int(block[spec.dim])
+    block_idx = sorted({int(i) // blk for i in idx})
+    s_shard = weight_scale_inv.index_select(
+        spec.dim, torch.tensor(block_idx, dtype=torch.long,
+                               device=weight_scale_inv.device)).clone()
+    gr = -(-int(w_shard.shape[0]) // int(block[0]))
+    gc = -(-int(w_shard.shape[1]) // int(block[1]))
+    if tuple(s_shard.shape) != (gr, gc):
+        raise ValueError(
+            f"{name}: shard boundary cuts a {tuple(block)} FP8 block "
+            f"(sliced scale {tuple(s_shard.shape)} != local grid {(gr, gc)}); "
+            "TP shard units must be block-aligned for resident FP8")
+    return w_shard, s_shard
 
 
 def replace_linears_with_fp8(
