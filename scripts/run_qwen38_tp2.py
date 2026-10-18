@@ -64,6 +64,7 @@ LM_HEAD_MODES = ("replicated", "vocab")
 SCALE_CACHE_MODES = ("off", "on")
 DECODE_MODES = ("eager", "graph")
 FP8_CONFIG_MODES = ("old", "new")
+SPECULATIVE_MODES = ("off", "mtp1", "mtp1-graph")
 
 
 def validate_fp8_config(mode: str) -> str:
@@ -76,6 +77,16 @@ def validate_fp8_config(mode: str) -> str:
 def validate_decode_mode(mode: str) -> str:
     if mode not in DECODE_MODES:
         raise ValueError(f"unknown decode mode {mode!r}, expected {DECODE_MODES}")
+    return mode
+
+
+def validate_speculative_mode(mode: str, decode_mode: str = "eager") -> str:
+    if mode not in SPECULATIVE_MODES:
+        raise ValueError(f"unknown speculative mode {mode!r}, expected {SPECULATIVE_MODES}")
+    if mode in ("mtp1", "mtp1-graph") and decode_mode != "eager":
+        raise ValueError(f"--speculative {mode} requires --decode-mode eager "
+                         "(speculation owns its static path; mtp1-graph captures "
+                         "its own chunk/draft graphs)")
     return mode
 
 
@@ -279,6 +290,49 @@ def greedy_generate_graph_tp(model, prompt_ids, max_new_tokens, *,
             "max_seq_len": plan["max_seq_len"]}
 
 
+def greedy_generate_speculative_tp(model, prompt_ids, max_new_tokens,
+                                   mode: str = "mtp1"):
+    """Greedy MTP speculative generation (gamma=1).
+
+    ``mtp1`` runs the eager static loop; ``mtp1-graph`` captures the
+    verification chunk (and the MTP draft step) as CUDA graphs.
+    Wraps ``speculative_generate_tp``; wall time is the combined
+    prefill+speculative-decode time (the loop owns its prefill), so
+    callers report an *effective* TPOT over all generated tokens.
+    Finite-logit checking is inherited from the caller's comparison
+    against the bridge/Arm-A references (exact ids imply finite).
+    The per-phase profile (CUDA events) is returned under
+    ``profile``.
+    """
+    validate_speculative_mode(mode, "eager")
+    from inference_from_scratch.speculation import speculative_generate_tp
+    dev = model.ctx.device
+    mtp = getattr(model, "mtp_draft", None)
+    if mtp is None:
+        raise ValueError("speculative mtp1 needs model.mtp_draft "
+                         "(load with include_mtp=True)")
+    idx = torch.tensor([list(prompt_ids)], dtype=torch.long, device=dev)
+    profile: dict = {}
+    torch.cuda.synchronize(dev)
+    t0 = time.perf_counter()
+    out, stats = speculative_generate_tp(
+        model, mtp, idx, int(max_new_tokens),
+        embedding=model.embed_tokens, lm_head=model._lm_head_logits,
+        graph_verify=(mode == "mtp1-graph"),
+        graph_draft=(mode == "mtp1-graph"),
+        profile=profile)
+    torch.cuda.synchronize(dev)
+    wall_s = time.perf_counter() - t0
+    gen_ids = [int(v) for v in out[0, len(prompt_ids):].tolist()]
+    acceptance = (float(stats["accepted"]) / float(stats["proposed"])
+                  if stats["proposed"] else 0.0)
+    return {"gen_ids": gen_ids, "logits_finite": True,
+            "prefill_s": 0.0, "decode_s": wall_s, "speculative": stats,
+            "profile": profile,
+            "acceptance": acceptance, "cycles": int(stats["cycles"]),
+            "tpot_effective_ms": (1000.0 * wall_s / len(gen_ids)) if gen_ids else None}
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--snapshot", default=DEFAULT_SNAPSHOT)
@@ -302,6 +356,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--decode-mode", choices=list(DECODE_MODES), default="eager",
                     help="decode: eager (default until graph is measured) or graph "
                          "(one captured decode_token_static step replayed per token)")
+    ap.add_argument("--speculative", choices=list(SPECULATIVE_MODES), default="off",
+                    help="speculative: off (default), mtp1 (native MTP gamma=1 "
+                         "greedy speculation on the eager static path) or "
+                         "mtp1-graph (chunk+draft CUDA-graph speculation); loads mtp.*")
     ap.add_argument("--probe", default=None,
                     help="only run the probe with this id (e.g. capital)")
     ap.add_argument("--debug-token-sync", action="store_true",
@@ -313,6 +371,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
     validate_fp8_config(args.fp8_config)
+    validate_speculative_mode(args.speculative, args.decode_mode)
     ctx = DistributedTPContext.from_env(backend="nccl", device_type="cuda")
     rank, dev = ctx.rank, ctx.device
     snapshot = Path(args.snapshot)
@@ -354,6 +413,7 @@ def main() -> int:
         snapshot, config=config, rank=rank, world=ctx.world_size, device=dev,
         fp8_mode="resident", ctx=ctx, use_triton=use_triton_for_path(args.fp8_path),
         manifest=manifest, lm_head_mode=args.lm_head,
+        include_mtp=(args.speculative in ("mtp1", "mtp1-graph")),
         use_scale_cache=(args.scale_cache == "on"))
     torch.cuda.synchronize(dev)
     load_s = time.perf_counter() - t0
@@ -378,7 +438,11 @@ def main() -> int:
             ref_arm = probe["output_token_ids"]
             ref_bridge = bridge_probes[probe["id"]]["generated_token_ids"]
             validate_decode_mode(args.decode_mode)
-            if args.decode_mode == "graph":
+            if args.speculative in ("mtp1", "mtp1-graph"):
+                gen = greedy_generate_speculative_tp(
+                    model, prompt_ids[probe["id"]], args.max_new_tokens,
+                    mode=args.speculative)
+            elif args.decode_mode == "graph":
                 gen = greedy_generate_graph_tp(model, prompt_ids[probe["id"]],
                                                args.max_new_tokens)
             else:
@@ -400,6 +464,12 @@ def main() -> int:
                 "graph_replays": gen.get("graph_replays"),
                 "max_seq_len": gen.get("max_seq_len"),
                 "decode_mode": args.decode_mode,
+                "speculative": args.speculative,
+                "speculative_stats": gen.get("speculative"),
+                "profile": gen.get("profile"),
+                "acceptance": gen.get("acceptance"),
+                "cycles": gen.get("cycles"),
+                "tpot_effective_ms": gen.get("tpot_effective_ms"),
                 "fp8_config": args.fp8_config,
                 "decode_tok_per_s": decode_tok_s,
                 "tpot_ms": (1000.0 * gen["decode_s"] / (n - 1)) if n > 1 else None,
@@ -434,6 +504,7 @@ def main() -> int:
             "lm_head_mode": args.lm_head,
             "scale_cache": args.scale_cache,
             "decode_mode": args.decode_mode,
+            "speculative": args.speculative,
             "fp8_config": args.fp8_config,
             "tokenizer_choice": "all ranks encode identically (deterministic, zero comms)",
             "token_agreement": ("replicated logits + local argmax, batched host "

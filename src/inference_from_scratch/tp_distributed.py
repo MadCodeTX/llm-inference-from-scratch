@@ -595,7 +595,8 @@ class DistributedFullAttention(nn.Module):
         return cache[key]
 
     def step_static(self, x: torch.Tensor, k_buf: torch.Tensor,
-                    v_buf: torch.Tensor, position: torch.Tensor) -> torch.Tensor:
+                    v_buf: torch.Tensor, position: torch.Tensor,
+                    rope_position: torch.Tensor | None = None) -> torch.Tensor:
         """One static decode token: ``x [B,1,D]`` -> ``[B,1,D]``.
 
         Mirrors :meth:`forward_with_state` at ``T=1`` step-for-step, but
@@ -606,6 +607,13 @@ class DistributedFullAttention(nn.Module):
         full fixed-shape buffers with positions past ``position``
         masked on-device. No ``.item()``, ``torch.cat`` or shape change
         on the state. Exactly one all-reduce, as in the legacy step.
+
+        ``rope_position`` (0-dim tensor) optionally decouples the RoPE
+        row from the KV slot: K/V still land at ``position`` and the
+        mask still keys on ``position``, but Q/K are rotated at
+        ``rope_position``. The MTP draft needs this: its KV slots are
+        sequential (one per committed draft) while its RoPE position
+        is the target's absolute hidden position.
         """
         from .attention import repeat_kv
         from .hybrid import _apply_rope_with_tables
@@ -627,8 +635,9 @@ class DistributedFullAttention(nn.Module):
         v = v.transpose(1, 2)
         cos, sin = self._static_rope_tables(int(k_buf.shape[2]), x.device, x.dtype)
         pos1 = position.reshape(1)
-        row_cos = cos.index_select(0, pos1)
-        row_sin = sin.index_select(0, pos1)
+        rope1 = pos1 if rope_position is None else rope_position.reshape(1)
+        row_cos = cos.index_select(0, rope1)
+        row_sin = sin.index_select(0, rope1)
         q = _apply_rope_with_tables(q, row_cos, row_sin, self.rotary_dim)
         k = _apply_rope_with_tables(k, row_cos, row_sin, self.rotary_dim)
         k_buf.index_copy_(2, pos1, k)
@@ -650,6 +659,64 @@ class DistributedFullAttention(nn.Module):
                 (k_pos > position).view(1, 1, 1, t_k), float("-inf"))
             attn = torch.matmul(torch.softmax(scores, dim=-1), v_rep)
         merged = attn.transpose(1, 2).contiguous().view(B, 1, -1)
+        if self.gate_activation == "sigmoid":
+            merged = merged * torch.sigmoid(gate)
+        elif self.gate_activation == "silu":
+            merged = merged * F.silu(gate)
+        partial = self._linear(merged, self.o_weight, None, self.o_fp8)
+        return self.ctx.all_reduce_sum(partial)
+
+    def step_chunk_static(self, x: torch.Tensor, k_buf: torch.Tensor,
+                          v_buf: torch.Tensor, position: torch.Tensor) -> torch.Tensor:
+        """Two-token chunk twin of :meth:`step_static`: ``x [B,2,D]``.
+
+        Q/K/V/gate projections run ONCE over both tokens (one matmul
+        each, M=2); K/V are written at ``position`` and ``position+1``;
+        attention is causal per query (query 0 sees keys <= position,
+        query 1 sees keys <= position+1, buffer tail masked). Exactly
+        one all-reduce, as in the single-token step.
+        """
+        from .attention import repeat_kv
+        from .hybrid import _apply_rope_with_tables
+        if x.dim() != 3 or x.shape[1] != 2:
+            raise ValueError(f"x must be [B, 2, D], got {tuple(x.shape)}")
+        if not isinstance(position, torch.Tensor) or position.dim() != 0:
+            raise ValueError("position must be a 0-dim tensor")
+        B, T, _ = x.shape
+        Dh = self.head_dim
+        hs, kvs = self.q_heads_local, self.kv_heads_local
+        qg = self._linear(x, self.q_weight, self.q_bias, self.q_fp8).view(B, T, len(hs), 2 * Dh)
+        q = self.q_norm(qg[..., :Dh]).transpose(1, 2)
+        gate = qg[..., Dh:].reshape(B, T, len(hs) * Dh)
+        k = self._linear(x, self.k_weight, self.k_bias, self.k_fp8).view(B, T, len(kvs), Dh)
+        v = self._linear(x, self.v_weight, self.v_bias, self.v_fp8).view(B, T, len(kvs), Dh)
+        k = self.k_norm(k).transpose(1, 2)
+        v = v.transpose(1, 2)
+        cos, sin = self._static_rope_tables(int(k_buf.shape[2]), x.device, x.dtype)
+        pos2 = torch.stack([position, position + 1])  # [2] absolute rows
+        row_cos = cos.index_select(0, pos2)
+        row_sin = sin.index_select(0, pos2)
+        q = _apply_rope_with_tables(q, row_cos, row_sin, self.rotary_dim)
+        k = _apply_rope_with_tables(k, row_cos, row_sin, self.rotary_dim)
+        k_buf.index_copy_(2, pos2, k)
+        v_buf.index_copy_(2, pos2, v)
+        k_rep = repeat_kv(k_buf, self.n_rep)
+        v_rep = repeat_kv(v_buf, self.n_rep)
+        t_k = int(k_buf.shape[2])
+        k_pos = torch.arange(t_k, device=q.device)
+        q_pos = pos2  # [2] absolute query positions
+        future = k_pos.unsqueeze(0) > q_pos.unsqueeze(1)  # [2, T_k]
+        if self.attn_implementation == "sdpa":
+            mask = torch.zeros(T, t_k, device=q.device, dtype=q.dtype)
+            mask = mask.masked_fill(future, float("-inf"))
+            attn = F.scaled_dot_product_attention(
+                q, k_rep, v_rep, attn_mask=mask.view(1, 1, T, t_k),
+                is_causal=False, scale=self.scaling)
+        else:
+            scores = torch.matmul(q, k_rep.transpose(-2, -1)) / (Dh ** 0.5)
+            scores = scores.masked_fill(future.view(1, 1, T, t_k), float("-inf"))
+            attn = torch.matmul(torch.softmax(scores, dim=-1), v_rep)
+        merged = attn.transpose(1, 2).contiguous().view(B, T, -1)
         if self.gate_activation == "sigmoid":
             merged = merged * torch.sigmoid(gate)
         elif self.gate_activation == "silu":
@@ -899,6 +966,77 @@ class DistributedGatedDeltaNet(nn.Module):
             out = out.unsqueeze(1)
         return out
 
+    def step_chunk_inplace_static(self, x: torch.Tensor, S: torch.Tensor,
+                                  conv_buf: torch.Tensor) -> torch.Tensor:
+        """Two-token chunk twin of :meth:`step_inplace_static`.
+
+        ``x [B, 2, D]`` -> ``[B, 2, D]``. Every projection weight
+        (``in_proj_qkv/z/a/b`` and ``out_proj``) is read ONCE for both
+        tokens: the input projections run as single M=2 matmuls and
+        the output projection as one M=2 matmul over the stacked
+        per-token cores (one all-reduce total). Only the conv ring and
+        the gated-delta recurrence -- inherently sequential -- step
+        token by token over the precomputed projections, mutating
+        ``S`` / ``conv_buf`` in place exactly as two single steps.
+        """
+        from .linear_attention import _l2norm
+        if x.dim() != 3 or x.shape[1] != 2:
+            raise ValueError(f"x must be [B, 2, D], got {tuple(x.shape)}")
+        B, T, _ = x.shape
+        Dk, Dv = self.key_dim, self.value_dim
+        if tuple(S.shape) != (B, self.vh_per, Dk, Dv):
+            raise ValueError(f"S must be {(B, self.vh_per, Dk, Dv)}, got {tuple(S.shape)}")
+        # One M=2 matmul per input projection (weights read once).
+        mixed = self._linear(x, self.in_proj_qkv_w, self.in_proj_qkv_fp8)  # [B,2,C]
+        z = self._linear(x, self.in_proj_z_w, self.in_proj_z_fp8).reshape(B, T, self.vh_per, Dv)
+        beta = torch.sigmoid(F.linear(x, self.in_proj_b_w))  # [B,2,vh]
+        a = F.linear(x, self.in_proj_a_w)
+        g = -self.A_log_r.float().exp() * F.softplus(a.float() + self.dt_bias_r.float())
+        w = self.conv_weight[:, 0, :]
+        kh_per = self.vh_per // self.n_rep
+        q_sz, v_sz = kh_per * Dk, self.vh_per * Dv
+        cores: list[torch.Tensor] = []
+        for t in range(T):
+            mixed_t = mixed[:, t, :]
+            if self.conv_kernel == 1:
+                mixed_act = F.silu(mixed_t * w[:, 0].to(dtype=mixed.dtype).unsqueeze(0))
+            else:
+                if tuple(conv_buf.shape) != (B, int(mixed.shape[-1]), self.conv_kernel - 1):
+                    raise ValueError(
+                        f"conv_buf must be {(B, int(mixed.shape[-1]), self.conv_kernel - 1)}, "
+                        f"got {tuple(conv_buf.shape)}")
+                window = torch.empty(B, int(mixed.shape[-1]), self.conv_kernel,
+                                     device=mixed.device, dtype=mixed.dtype)
+                window[:, :, :-1].copy_(conv_buf.to(dtype=mixed.dtype))
+                window[:, :, -1].copy_(mixed_t)
+                mixed_act = F.silu(
+                    (window * w.to(dtype=mixed.dtype).unsqueeze(0)).sum(dim=-1))
+                for i in range(conv_buf.shape[-1] - 1):
+                    conv_buf[:, :, i].copy_(conv_buf[:, :, i + 1])
+                if conv_buf.shape[-1] > 0:
+                    conv_buf[:, :, -1].copy_(mixed_t.to(dtype=conv_buf.dtype))
+            q_raw, k_raw, v = torch.split(mixed_act, [q_sz, q_sz, v_sz], dim=-1)
+            q = q_raw.reshape(B, kh_per, Dk)
+            k = k_raw.reshape(B, kh_per, Dk)
+            v = v.reshape(B, self.vh_per, Dv).float()
+            if self.n_rep > 1:
+                q = q.repeat_interleave(self.n_rep, dim=1)
+                k = k.repeat_interleave(self.n_rep, dim=1)
+            q = _l2norm(q) * (Dk ** -0.5)
+            k = _l2norm(k)
+            S.mul_(torch.exp(g[:, t].float())[:, :, None, None].to(dtype=S.dtype))
+            kv_mem = (S.float() * k.unsqueeze(-1)).sum(dim=-2)
+            delta = (v - kv_mem) * beta[:, t].float().unsqueeze(-1)
+            S.add_((k.unsqueeze(-1) * delta.unsqueeze(-2)).to(dtype=S.dtype))
+            core = (S.float() * q.unsqueeze(-1)).sum(dim=-2)
+            core = self.norm(core.reshape(B * self.vh_per, Dv),
+                             z[:, t].reshape(B * self.vh_per, Dv))
+            cores.append(core.reshape(B, v_sz))
+        stacked = torch.stack(cores, dim=1)  # [B, 2, v_sz]
+        partial = (self.out_proj_fp8(stacked) if self.out_proj_fp8 is not None
+                   else F.linear(stacked.to(self.out_proj_w.dtype), self.out_proj_w))
+        return self.ctx.all_reduce_sum(partial).to(x.dtype)
+
     def forward_prefill_v1(
         self, x: torch.Tensor,
         state: tuple[torch.Tensor, torch.Tensor] | None = None,
@@ -1056,6 +1194,52 @@ class TPStaticState:
             if t is not None:
                 t.zero_()
         self.position.zero_()
+
+    def snapshot(self) -> "TPStaticState":
+        """Independent deep copy (cloned buffers; the only copy path).
+
+        Used by speculative verification: the pre-cycle snapshot is
+        restored with :meth:`copy_from` when a draft is rejected, so
+        the linear recurrent/conv state that cannot be truncated by
+        position is rewound exactly (full-attention KV in the snapshot
+        is copied too, keeping one uniform restore).
+        """
+        out = object.__new__(TPStaticState)
+        out.config, out.batch_size, out.batch = self.config, self.batch_size, self.batch
+        out.max_seq_len, out.device, out.dtype = self.max_seq_len, self.device, self.dtype
+        out.ctx, out.layer_types = self.ctx, list(self.layer_types)
+        out.hkv_local, out.vh_per = self.hkv_local, self.vh_per
+        out.conv_dim_local = self.conv_dim_local
+        out.kv_k = [t.clone() if t is not None else None for t in self.kv_k]
+        out.kv_v = [t.clone() if t is not None else None for t in self.kv_v]
+        out.linear_S = [t.clone() if t is not None else None for t in self.linear_S]
+        out.linear_conv_buffers = [
+            t.clone() if t is not None else None for t in self.linear_conv_buffers]
+        out.position = self.position.clone()
+        out.position_tensor = out.position
+        return out
+
+    clone = snapshot
+
+    def copy_from(self, snapshot: "TPStaticState") -> None:
+        """Copy ``snapshot`` back into this state in place (ptrs stable)."""
+        if snapshot.batch_size != self.batch_size or snapshot.max_seq_len != self.max_seq_len:
+            raise ValueError("snapshot shape (batch/max_seq_len) does not match this state")
+        for dst, src in zip(self.kv_k, snapshot.kv_k):
+            if dst is not None and src is not None:
+                dst.copy_(src)
+        for dst, src in zip(self.kv_v, snapshot.kv_v):
+            if dst is not None and src is not None:
+                dst.copy_(src)
+        for dst, src in zip(self.linear_S, snapshot.linear_S):
+            if dst is not None and src is not None:
+                dst.copy_(src)
+        for dst, src in zip(self.linear_conv_buffers, snapshot.linear_conv_buffers):
+            if dst is not None and src is not None:
+                dst.copy_(src)
+        self.position.copy_(snapshot.position)
+
+    restore_from = copy_from
 
     def data_ptrs(self) -> dict[str, list[int]]:
         ptrs: dict[str, list[int]] = {"kv_k": [], "kv_v": [], "linear_S": [],
@@ -1224,24 +1408,51 @@ class DistributedHybridBlock(nn.Module):
         return self.forward_prefill(x, layer_state=layer_state, start_pos=start_pos,
                                     position_ids=position_ids)
 
-    def step_static(self, x: torch.Tensor, state: "TPStaticState") -> torch.Tensor:
+    def step_static(self, x: torch.Tensor, state: "TPStaticState",
+                    rope_position: torch.Tensor | None = None) -> torch.Tensor:
         """Static decode: hidden ``x [B,1,D]`` over preallocated state.
 
         Same norms/residuals/MLP as :meth:`step`; the mixer writes
         into ``state`` in place at ``state.position`` (not advanced
         here -- the LM advances it once after all blocks).
+        ``rope_position`` is forwarded to the full-attention mixer
+        (see :meth:`DistributedFullAttention.step_static`).
         """
         h = self.input_layernorm(x)
         if self.layer_type == "full_attention":
             assert self.self_attn is not None
             k_buf, v_buf = state.kv_k[self.layer_idx], state.kv_v[self.layer_idx]
             assert k_buf is not None and v_buf is not None
-            mixed = self.self_attn.step_static(h, k_buf, v_buf, state.position)
+            mixed = self.self_attn.step_static(h, k_buf, v_buf, state.position,
+                                               rope_position=rope_position)
         else:
             assert self.linear_attn is not None
             S, conv = state.linear_S[self.layer_idx], state.linear_conv_buffers[self.layer_idx]
             assert S is not None and conv is not None
             mixed = self.linear_attn.step_inplace_static(h, S, conv)
+        x = x + mixed
+        x = x + self.mlp(self.post_attention_layernorm(x))
+        return x
+
+    def step_chunk_static(self, x: torch.Tensor, state: "TPStaticState") -> torch.Tensor:
+        """Static 2-token chunk: hidden ``x [B,2,D]`` over preallocated state.
+
+        Chunk twin of :meth:`step_static` (position not advanced here):
+        full layers write both K/V and attend causally, linear layers
+        read each projection weight once over M=2 and step only the
+        conv/recurrence sequentially, the MLP runs once over M=2.
+        """
+        h = self.input_layernorm(x)
+        if self.layer_type == "full_attention":
+            assert self.self_attn is not None
+            k_buf, v_buf = state.kv_k[self.layer_idx], state.kv_v[self.layer_idx]
+            assert k_buf is not None and v_buf is not None
+            mixed = self.self_attn.step_chunk_static(h, k_buf, v_buf, state.position)
+        else:
+            assert self.linear_attn is not None
+            S, conv = state.linear_S[self.layer_idx], state.linear_conv_buffers[self.layer_idx]
+            assert S is not None and conv is not None
+            mixed = self.linear_attn.step_chunk_inplace_static(h, S, conv)
         x = x + mixed
         x = x + self.mlp(self.post_attention_layernorm(x))
         return x
@@ -1329,10 +1540,12 @@ class DistributedHybridLM(nn.Module):
                 else:
                     self.lm_head.weight.copy_(dense.lm_head.weight.data.to(dev))
             self.lm_head = self.lm_head.to(dev) if not cfg.tie_word_embeddings else self.lm_head
+        self.mtp_draft = None  # attached by empty(include_mtp=True) / loader
 
     @classmethod
     def empty(cls, config: Any, rank: int, world: int, fp8_mode: str = "resident",
-              use_triton: bool | None = None, lm_head_mode: str = "replicated") -> "DistributedHybridLM":
+              use_triton: bool | None = None, lm_head_mode: str = "replicated",
+              include_mtp: bool = False) -> "DistributedHybridLM":
         """Shard-shaped empty LM on meta for rank ``rank`` (loader fills it).
 
         ``fp8_mode="resident"`` builds resident-FP8 projections
@@ -1375,6 +1588,13 @@ class DistributedHybridLM(nn.Module):
                 torch.empty((int(config.vocab_size), int(config.hidden_size)), device=meta))
             if config.tie_word_embeddings:
                 obj.lm_head.weight = obj.embed_tokens.weight
+        obj.mtp_draft = None
+        if include_mtp:
+            if int(getattr(config, "mtp_num_hidden_layers", 0)) <= 0:
+                raise ValueError("include_mtp=True but config has no MTP layers")
+            from .mtp import MTPConfig, TPMTPDraftModule
+            obj.mtp_draft = TPMTPDraftModule.empty(
+                ctx, MTPConfig.from_config(config), fp8=fp8)
         return obj
 
     def set_ctx(self, ctx: Any) -> "DistributedHybridLM":
@@ -1493,9 +1713,14 @@ class DistributedHybridLM(nn.Module):
         return TPState.empty(list(self.config.layer_types), seq_len=0)
 
     def prefill(self, idx: torch.Tensor, position_ids: torch.Tensor | None = None,
-                state: TPState | None = None,
-                ) -> tuple[torch.Tensor, TPState]:
-        """Prefill ``idx [B,T]`` -> ``(logits [B,T,V], TPState)``."""
+                state: TPState | None = None, return_hidden: bool = False,
+                ) -> tuple[torch.Tensor, TPState] | tuple[torch.Tensor, TPState, torch.Tensor]:
+        """Prefill ``idx [B,T]`` -> ``(logits [B,T,V], TPState)``.
+
+        With ``return_hidden=True`` the pre-final-norm hidden
+        ``[B, T, D]`` (the final norm's input) is appended; default
+        off returns exactly the 2-tuple.
+        """
         if idx.dim() == 1:
             idx = idx.unsqueeze(0)
         B, T = idx.shape
@@ -1519,11 +1744,36 @@ class DistributedHybridLM(nn.Module):
         new_state = TPState(entries=new_entries, seq_len=start_pos + T,
                             layer_types=list(self.config.layer_types))
         logits = self._lm_head_logits(self.norm(x))
+        if return_hidden:
+            return logits, new_state, x
         return logits, new_state
 
+    def forward_with_hidden(self, idx: torch.Tensor,
+                            state: TPState | None = None,
+                            position_ids: torch.Tensor | None = None,
+                            ) -> tuple[torch.Tensor, TPState, torch.Tensor, torch.Tensor]:
+        """``(logits, state, hidden_pre_norm, hidden_post_norm)``.
+
+        Hook-free target-hidden capture mirroring
+        ``TinyHybridLM.forward_with_hidden``: prefill (or one step
+        when ``state`` is given and ``idx`` has one column) plus the
+        final norm's input and its output.
+        """
+        if state is not None and (idx.dim() == 1 or (idx.dim() == 2 and idx.shape[1] == 1)):
+            logits, new_state, hidden_pre = self.step(idx, state, return_hidden=True)
+        else:
+            logits, new_state, hidden_pre = self.prefill(
+                idx, position_ids=position_ids, state=state, return_hidden=True)
+        return logits, new_state, hidden_pre, self.norm(hidden_pre)
+
     def step(self, token: torch.Tensor, state: TPState,
-             ) -> tuple[torch.Tensor, TPState]:
-        """Decode one token: ``token [B]`` or ``[B,1]`` -> ``(logits [B,1,V], state)``."""
+             return_hidden: bool = False,
+             ) -> tuple[torch.Tensor, TPState] | tuple[torch.Tensor, TPState, torch.Tensor]:
+        """Decode one token: ``token [B]`` or ``[B,1]`` -> ``(logits [B,1,V], state)``.
+
+        With ``return_hidden=True`` the pre-final-norm hidden
+        ``[B, 1, D]`` is appended as a third value.
+        """
         if token.dim() == 1:
             token = token.unsqueeze(1)
         if token.dim() != 2 or token.shape[1] != 1:
@@ -1540,6 +1790,8 @@ class DistributedHybridLM(nn.Module):
         new_state = TPState(entries=new_entries, seq_len=start_pos + 1,
                             layer_types=list(self.config.layer_types))
         logits = self._lm_head_logits(self.norm(x))
+        if return_hidden:
+            return logits, new_state, x
         return logits, new_state
 
     # TinyHybridLM spelling for the decode step.
@@ -1629,7 +1881,8 @@ class DistributedHybridLM(nn.Module):
     initial_static_state = static_state
 
     def decode_token_static(self, token_ids: torch.Tensor, state: TPStaticState,
-                            out: torch.Tensor | None = None) -> torch.Tensor:
+                            out: torch.Tensor | None = None,
+                            return_hidden: bool = False):
         """Decode one token in place over a :class:`TPStaticState`.
 
         ``token_ids`` is ``[B]`` or ``[B, 1]``; returns logits
@@ -1681,13 +1934,78 @@ class DistributedHybridLM(nn.Module):
             x = block.step_static(x, state)
         logits = self._lm_head_logits(self.norm(x))[:, 0, :]
         state.position.add_(1)
+        if return_hidden:
+            return logits, x  # x is pre-final-norm hidden [B, 1, D]
         if out is not None:
             out.copy_(logits)
             return out
         return logits
 
+    def decode_chunk_static(self, token_ids: torch.Tensor, state: TPStaticState,
+                            return_hidden: bool = False,
+                            out: torch.Tensor | None = None,
+                            hidden_out: torch.Tensor | None = None):
+        """Decode a 2-token chunk in place: ``token_ids [B, 2]``.
+
+        Verification forward for speculative decoding: returns logits
+        ``[B, 2, V]`` (position 0 predicts the token after
+        ``token_ids[:, 0]``, position 1 the token after
+        ``token_ids[:, 1]``) and advances ``state.position`` by 2.
+        With ``return_hidden=True`` also returns the pre-final-norm
+        hidden ``[B, 2, D]``. Overflow raises before any mutation.
+        Every block reads each projection weight once over M=2 (see
+        ``step_chunk_static``); no module is left at T=1 only.
+
+        ``out`` / ``hidden_out`` are preallocated buffers the logits /
+        hidden are copied into (and returned), mirroring
+        :meth:`decode_token_static`'s ``out`` -- the form a CUDA-graph
+        capture replays into. Default ``None`` keeps fresh returns.
+        """
+        if not isinstance(state, TPStaticState):
+            raise ValueError(
+                f"decode_chunk_static requires a TPStaticState, got {type(state).__name__}")
+        if token_ids.dim() != 2 or token_ids.shape[1] != 2:
+            raise ValueError(f"token_ids must be [B, 2], got {tuple(token_ids.shape)}")
+        if int(token_ids.shape[0]) != state.batch_size:
+            raise ValueError(
+                f"token batch {int(token_ids.shape[0])} does not match state batch_size={state.batch_size}")
+        if len(state) != len(self.layers):
+            raise ValueError(f"state has {len(state)} layers, model has {len(self.layers)}")
+        from .hybrid import _is_capturing
+        if not _is_capturing(state.position):
+            pos = int(state.position.item())
+            if pos + 2 > state.max_seq_len:
+                raise ValueError(
+                    f"TPStaticState overflow: chunk of 2 at position {pos} would exceed "
+                    f"max_seq_len={state.max_seq_len}; allocate a larger TPStaticState "
+                    "or reset() it first")
+        if out is not None and tuple(out.shape) != (
+                state.batch_size, 2, int(self.config.vocab_size)):
+            raise ValueError(
+                f"out must be {(state.batch_size, 2, int(self.config.vocab_size))}, "
+                f"got {tuple(out.shape)}")
+        if hidden_out is not None and tuple(hidden_out.shape) != (
+                state.batch_size, 2, int(self.config.hidden_size)):
+            raise ValueError(
+                f"hidden_out must be {(state.batch_size, 2, int(self.config.hidden_size))}, "
+                f"got {tuple(hidden_out.shape)}")
+        x = self.embed_tokens(token_ids.to(self.ctx.device))
+        for block in self.layers:
+            x = block.step_chunk_static(x, state)
+        logits = self._lm_head_logits(self.norm(x))
+        state.position.add_(2)
+        if out is not None:
+            out.copy_(logits)
+            logits = out
+        if hidden_out is not None:
+            hidden_out.copy_(x)
+            x = hidden_out
+        if return_hidden:
+            return logits, x
+        return logits
+
     def prefill_static(self, idx: torch.Tensor, state: TPStaticState,
-                       ) -> torch.Tensor:
+                       return_hidden: bool = False):
         """Prefill into static state (v1: token-by-token decode loop).
 
         ``idx [B, T]`` -> stacked logits ``[B, T, V]``. Chunkwise TP
@@ -1715,18 +2033,33 @@ class DistributedHybridLM(nn.Module):
                     f"position {pos} would exceed max_seq_len={state.max_seq_len}; "
                     "allocate a larger TPStaticState or reset() it first")
         outs: list[torch.Tensor] = []
+        hids: list[torch.Tensor] = []
         for t in range(int(idx.shape[1])):
-            outs.append(self.decode_token_static(idx[:, t], state))
+            if return_hidden:
+                lg, hd = self.decode_token_static(idx[:, t], state, return_hidden=True)
+                outs.append(lg)
+                hids.append(hd)
+            else:
+                outs.append(self.decode_token_static(idx[:, t], state))
         if not outs:
-            return torch.empty(int(idx.shape[0]), 0, int(self.config.vocab_size),
-                               device=self.ctx.device)
-        return torch.stack(outs, dim=1)
+            empty = torch.empty(int(idx.shape[0]), 0, int(self.config.vocab_size),
+                                device=self.ctx.device)
+            if return_hidden:
+                return empty, torch.empty(int(idx.shape[0]), 0,
+                                          int(self.config.hidden_size), device=self.ctx.device)
+            return empty
+        logits = torch.stack(outs, dim=1)
+        if return_hidden:
+            return logits, torch.cat(hids, dim=1)
+        return logits
 
     def forward(self, idx: torch.Tensor, state: TPState | None = None,
                 position_ids: torch.Tensor | None = None,
-                ) -> tuple[torch.Tensor, TPState]:
+                return_hidden: bool = False,
+                ) -> tuple[torch.Tensor, TPState] | tuple[torch.Tensor, TPState, torch.Tensor]:
         if state is None:
-            return self.prefill(idx, position_ids=position_ids)
+            return self.prefill(idx, position_ids=position_ids, return_hidden=return_hidden)
         if idx.dim() == 2 and idx.shape[1] == 1 or idx.dim() == 1:
-            return self.step(idx, state)
-        return self.prefill(idx, position_ids=position_ids, state=state)
+            return self.step(idx, state, return_hidden=return_hidden)
+        return self.prefill(idx, position_ids=position_ids, state=state,
+                            return_hidden=return_hidden)
