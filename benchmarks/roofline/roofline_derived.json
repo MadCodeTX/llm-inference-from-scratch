@@ -1,0 +1,55 @@
+{
+ "seq_len": 2048,
+ "peaks": {
+  "bandwidth_effective_gbytes_s": 920.005259729603,
+  "gemm_bf16_tflops": 149.4159746631039,
+  "gemm_fp8_tflops": 320.6077787225174,
+  "allreduce_latency_s": 8.670336136372761e-06,
+  "allreduce_bus_gbytes_s": 6.808428449445519
+ },
+ "ridge_bf16_ops_per_byte": 162.40773961120448,
+ "ridge_fp8_ops_per_byte": 348.48472368163056,
+ "flops_per_token": 52612300800.0,
+ "byte_model": {
+  "fp8_weight_bytes_total": 24699207680,
+  "bf16_language_bytes": 5242980352,
+  "scale_inv_bytes_total": 3015040,
+  "single_device_bytes": 29945203072,
+  "per_rank_bytes": 17570642112,
+  "per_rank_detail": {
+   "fp8_weight_bytes": 12349603840,
+   "bf16_sharded_bytes": 23592960,
+   "bf16_replicated_bytes": 5195784192,
+   "scale_inv_bytes": 1661120,
+   "total_bytes": 17570642112
+  }
+ },
+ "layouts": {
+  "tp2_per_rank": {
+   "seconds_per_token": 0.019171358847648194,
+   "tokens_per_s": 52.16114350301637,
+   "weight_bytes": 17570642112,
+   "kv_read_bytes": 67108864,
+   "bytes_per_token": 17637750976.0,
+   "intensity": 2.9829370463156266,
+   "bound_bf16": "memory",
+   "roofline_lower_bound_s": 0.019171358847648194
+  },
+  "single_device_hypothetical": {
+   "seconds_per_token": 0.032621891688772366,
+   "tokens_per_s": 30.654261547443458,
+   "weight_bytes": 29945203072,
+   "kv_read_bytes": 67108864,
+   "bytes_per_token": 30012311936.0,
+   "intensity": 1.7530239227218993,
+   "bound_bf16": "memory",
+   "roofline_lower_bound_s": 0.032621891688772366
+  }
+ },
+ "allreduce_per_token_note": {
+  "collectives_per_token": 128,
+  "payload_bytes_each_bf16": 20480,
+  "fitted_latency_s_each": 8.670336136372761e-06,
+  "fitted_latency_total_s": 0.0011098030254557134
+ }
+}

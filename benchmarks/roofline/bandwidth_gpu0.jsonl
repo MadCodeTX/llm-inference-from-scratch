@@ -1,0 +1,5 @@
+{"event": "start", "subcommand": "bandwidth", "device": "cuda:0", "device_name": "NVIDIA GeForce RTX 4090"}
+{"event": "result", "subcommand": "bandwidth", "size_mib": 64, "bytes": 67108864, "seconds": 0.00014739200472831725, "gbytes_per_s": 455.3087131401701, "effective_gbytes_per_s": 910.6174262803402}
+{"event": "result", "subcommand": "bandwidth", "size_mib": 256, "bytes": 268435456, "seconds": 0.0005836799740791321, "gbytes_per_s": 459.9017748099184, "effective_gbytes_per_s": 919.8035496198368}
+{"event": "result", "subcommand": "bandwidth", "size_mib": 1024, "bytes": 1073741824, "seconds": 0.002335520029067993, "gbytes_per_s": 459.74421569336096, "effective_gbytes_per_s": 919.4884313867219}
+{"event": "done", "subcommand": "bandwidth"}

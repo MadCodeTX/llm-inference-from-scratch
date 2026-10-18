@@ -1,0 +1,18 @@
+{"event": "start", "subcommand": "gemm", "device": "cuda:0", "device_name": "NVIDIA GeForce RTX 4090", "scaled_mm_available": true}
+{"event": "result", "subcommand": "gemm", "label": "mlp_gate_up_decode", "dtype": "bf16", "m": 1, "k": 5120, "n": 17408, "seconds": 0.00017919999361038207, "tflops": 0.994742892611758}
+{"event": "result", "subcommand": "gemm", "label": "mlp_gate_up_decode", "dtype": "fp8", "m": 1, "k": 5120, "n": 17408, "available": true, "seconds": 0.00011059200018644332, "tflops": 1.611851849134485}
+{"event": "result", "subcommand": "gemm", "label": "mlp_gate_up_small", "dtype": "bf16", "m": 16, "k": 5120, "n": 17408, "seconds": 0.00021913599967956544, "tflops": 13.015327121835575}
+{"event": "result", "subcommand": "gemm", "label": "mlp_gate_up_small", "dtype": "fp8", "m": 16, "k": 5120, "n": 17408, "available": true, "seconds": 0.00011964800208806991, "tflops": 23.83764601351739}
+{"event": "result", "subcommand": "gemm", "label": "mlp_gate_up_prefill", "dtype": "bf16", "m": 128, "k": 5120, "n": 17408, "seconds": 0.00022323200106620788, "tflops": 102.21210960355434}
+{"event": "result", "subcommand": "gemm", "label": "mlp_gate_up_prefill", "dtype": "fp8", "m": 128, "k": 5120, "n": 17408, "available": true, "seconds": 0.00013823999464511873, "tflops": 165.05363602316712}
+{"event": "result", "subcommand": "gemm", "label": "mlp_gate_up_large", "dtype": "bf16", "m": 1024, "k": 5120, "n": 17408, "seconds": 0.0012216639518737792, "tflops": 149.4159746631039}
+{"event": "result", "subcommand": "gemm", "label": "mlp_gate_up_large", "dtype": "fp8", "m": 1024, "k": 5120, "n": 17408, "available": true, "seconds": 0.0005693439841270447, "tflops": 320.6077787225174}
+{"event": "result", "subcommand": "gemm", "label": "mlp_down_prefill", "dtype": "bf16", "m": 128, "k": 17408, "n": 5120, "seconds": 0.00024166400730609895, "tflops": 94.41626833200395}
+{"event": "result", "subcommand": "gemm", "label": "mlp_down_prefill", "dtype": "fp8", "m": 128, "k": 17408, "n": 5120, "available": true, "seconds": 0.00014022399485111235, "tflops": 162.7183263765003}
+{"event": "result", "subcommand": "gemm", "label": "qkv_prefill", "dtype": "bf16", "m": 128, "k": 5120, "n": 12288, "seconds": 0.00016486400365829467, "tflops": 97.6934139812737}
+{"event": "result", "subcommand": "gemm", "label": "qkv_prefill", "dtype": "fp8", "m": 128, "k": 5120, "n": 12288, "available": true, "seconds": 8.057600259780883e-05, "tflops": 199.8873962560906}
+{"event": "result", "subcommand": "gemm", "label": "lm_head_decode", "dtype": "bf16", "m": 1, "k": 5120, "n": 248320, "seconds": 0.0026951360702514647, "tflops": 0.9434762229881585}
+{"event": "result", "subcommand": "gemm", "label": "lm_head_decode", "dtype": "fp8", "m": 1, "k": 5120, "n": 248320, "available": true, "seconds": 0.0013995200395584106, "tflops": 1.8169063165414385}
+{"event": "result", "subcommand": "gemm", "label": "lm_head_prefill", "dtype": "bf16", "m": 128, "k": 5120, "n": 248320, "seconds": 0.0030645759105682375, "tflops": 106.20653555279348}
+{"event": "result", "subcommand": "gemm", "label": "lm_head_prefill", "dtype": "fp8", "m": 128, "k": 5120, "n": 248320, "available": true, "seconds": 0.0016926720142364502, "tflops": 192.28650775963843}
+{"event": "done", "subcommand": "gemm"}

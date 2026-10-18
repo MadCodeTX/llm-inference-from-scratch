@@ -1,0 +1,6 @@
+{"event": "start", "subcommand": "allreduce", "backend": "nccl", "world_size": 2, "device_name": "NVIDIA GeForce RTX 4090"}
+{"event": "result", "subcommand": "allreduce", "size_mib": 1, "bytes": 1048576, "seconds": 0.0001783359944820404, "world_size": 2, "gbytes_per_s": 5.879777680582585, "bus_gbytes_per_s": 5.879777680582585}
+{"event": "result", "subcommand": "allreduce", "size_mib": 16, "bytes": 16777216, "seconds": 0.0024596478939056397, "world_size": 2, "gbytes_per_s": 6.820982808787195, "bus_gbytes_per_s": 6.820982808787195}
+{"event": "result", "subcommand": "allreduce", "size_mib": 64, "bytes": 67108864, "seconds": 0.009861120223999023, "world_size": 2, "gbytes_per_s": 6.805399637728486, "bus_gbytes_per_s": 6.805399637728486}
+{"event": "result", "subcommand": "allreduce", "size_mib": 256, "bytes": 268435456, "seconds": 0.03943743896484375, "world_size": 2, "gbytes_per_s": 6.8066148067904475, "bus_gbytes_per_s": 6.8066148067904475}
+{"event": "done", "subcommand": "allreduce", "world_size": 2}
