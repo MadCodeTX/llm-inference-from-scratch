@@ -11,7 +11,12 @@ reference ``forward`` dequantises with
 :func:`inference_from_scratch.quantization.dequantize_block_fp8` to
 the input dtype and applies :func:`torch.nn.functional.linear`. The
 dequantised matrix is materialised per forward -- simple and exact
-against the reference, not fast; a fused kernel is future work.
+against the reference, not fast. The opt-in Triton path
+(``use_triton`` / ``INFERENCE_FP8_TRITON=1``) instead calls
+:mod:`inference_from_scratch.fp8_triton`, which streams FP8 tiles
+and applies block scales in-kernel; bench data in
+``benchmarks/fp8_linear_bench.py`` shows it winning at every
+measured M (see ``TRITON_MAX_M``).
 
 Scaled-mm fast path (probed, not usable as-is)
 ----------------------------------------------
@@ -32,17 +37,48 @@ path exercised by the tests and the GPU proof.
 
 from __future__ import annotations
 
+import logging
+import os
+
 import torch
 import torch.nn.functional as F
 from torch import nn
 
+from . import fp8_triton as _fp8_triton_mod
 from .quantization import dequantize_block_fp8, quantize_block_fp8
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "BlockFP8Linear",
     "replace_linears_with_fp8",
     "scaled_mm_block_supported",
+    "TRITON_MAX_M",
 ]
+
+# From benchmarks/fp8_linear_bench.py (RTX 4090, 2026-10-17): the
+# Triton kernel beat the dequant reference at every measured shape
+# and M in 1..128 (6.0x-27.0x). Above 128 rows is unmeasured, so the
+# reference (cuBLAS on a materialised BF16 weight) is kept there.
+TRITON_MAX_M = 128
+
+
+def _triton_available() -> bool:
+    """Monkeypatch seam for dispatch tests."""
+    return _fp8_triton_mod.triton_available()
+
+
+def _run_triton(x, weight, scale_inv, bias, block):
+    """Monkeypatch seam for dispatch tests."""
+    return _fp8_triton_mod.fp8_triton_linear(
+        x, weight, scale_inv, bias=bias, block=block
+    )
+
+
+def _env_use_triton() -> bool:
+    return os.environ.get("INFERENCE_FP8_TRITON", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
 
 
 def scaled_mm_block_supported(
@@ -99,6 +135,7 @@ class BlockFP8Linear(nn.Module):
         *,
         device: torch.device | str | None = None,
         use_fast_path: bool = False,
+        use_triton: bool | None = None,
     ):
         super().__init__()
         if int(in_features) <= 0 or int(out_features) <= 0:
@@ -109,6 +146,9 @@ class BlockFP8Linear(nn.Module):
         self.out_features = int(out_features)
         self.block: tuple[int, int] = (int(block[0]), int(block[1]))
         self.use_fast_path = bool(use_fast_path)
+        # Explicit flag wins; None falls back to INFERENCE_FP8_TRITON env.
+        self.use_triton = _env_use_triton() if use_triton is None else bool(use_triton)
+        self._triton_fallback_reason: str | None = None
         gr = -(-self.out_features // self.block[0])
         gc = -(-self.in_features // self.block[1])
         self.register_buffer(
@@ -136,6 +176,7 @@ class BlockFP8Linear(nn.Module):
         block: tuple[int, int] = (128, 128),
         *,
         use_fast_path: bool = False,
+        use_triton: bool | None = None,
     ) -> "BlockFP8Linear":
         """Quantise a dense ``nn.Linear`` into a resident FP8 module."""
         if not isinstance(linear, nn.Linear):
@@ -146,6 +187,7 @@ class BlockFP8Linear(nn.Module):
             linear.in_features, linear.out_features,
             bias=linear.bias is not None, block=block,
             device=w.device, use_fast_path=use_fast_path,
+            use_triton=use_triton,
         )
         with torch.no_grad():
             module.weight.copy_(q.to(module.weight.device))
@@ -197,7 +239,50 @@ class BlockFP8Linear(nn.Module):
         except Exception:
             return None
 
+    def _try_triton(self, x: torch.Tensor) -> torch.Tensor | None:
+        """Triton fused path; ``None`` means use the reference.
+
+        Only attempted for CUDA inputs with flattened M in
+        ``1..TRITON_MAX_M`` (bench-measured winning range) and the
+        checkpoint (128, 128) block. Any import/launch failure is
+        logged (never silent) and recorded on
+        ``_triton_fallback_reason`` before falling back.
+        """
+        if not self.use_triton or not x.is_cuda:
+            return None
+        if self.block != (128, 128) or x.dim() < 1:
+            return None
+        flat_m = x.numel() // x.shape[-1] if x.dim() >= 1 else 0
+        if not (1 <= flat_m <= TRITON_MAX_M):
+            return None
+        if not _triton_available():
+            self._triton_fallback_reason = "triton unavailable"
+            logger.warning(
+                "BlockFP8Linear: use_triton set but Triton unavailable; "
+                "falling back to reference dequant path"
+            )
+            return None
+        try:
+            lead_shape = x.shape[:-1]
+            x2 = x.reshape(flat_m, x.shape[-1])
+            bias = self.bias.to(torch.bfloat16) if self.bias is not None else None
+            out = _run_triton(
+                x2, self.weight, self.weight_scale_inv, bias, self.block
+            )
+            return out.reshape(*lead_shape, self.out_features)
+        except Exception as exc:  # Logged fallback, not silent.
+            self._triton_fallback_reason = f"{type(exc).__name__}: {exc}"
+            logger.warning(
+                "BlockFP8Linear: Triton path failed (%s); "
+                "falling back to reference dequant path", exc,
+            )
+            return None
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.use_triton:
+            triton_out = self._try_triton(x)
+            if triton_out is not None:
+                return triton_out
         if self.use_fast_path:
             fast = self._try_scaled_mm(x)
             if fast is not None:
@@ -224,6 +309,7 @@ def replace_linears_with_fp8(
     block: tuple[int, int] = (128, 128),
     *,
     use_fast_path: bool = False,
+    use_triton: bool | None = None,
 ) -> nn.Module:
     """Convert named ``nn.Linear`` modules of ``model`` in place.
 
@@ -244,7 +330,8 @@ def replace_linears_with_fp8(
         if isinstance(module, BlockFP8Linear):
             continue
         replacement = BlockFP8Linear.from_linear(
-            module, block=block, use_fast_path=use_fast_path
+            module, block=block, use_fast_path=use_fast_path,
+            use_triton=use_triton,
         )
         if "." in name:
             parent_name, attr = name.rsplit(".", 1)

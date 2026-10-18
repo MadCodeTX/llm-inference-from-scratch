@@ -65,7 +65,28 @@ The real FP8 checkpoint does not use per-channel int8. Each large Linear weight 
 | `mlp.down_proj.weight` | `[5120, 17408]` | `[40, 136]` |
 | `self_attn.k_proj.weight` (layer 3) | `[1024, 5120]` | `[8, 40]` |
 
-Code: `dequantize_block_fp8(w_fp8, scale_inv, block=(128,128), out_dtype=bf16)` (reshape-multiply, edges padded then cropped), `quantize_block_fp8(w, block)` (per-block `amax/448` stored as `scale_inv`), and `fp8_block_matmul(x, w_fp8, scale_inv)` — a CPU reference (`x @ dequant.T`); the Phase-2 GPU fast path is `torch._scaled_mm` with block scales. Tests: [test_fp8_block.py](../tests/test_fp8_block.py). Small tensors (norms, `A_log`, `dt_bias`, conv1d) stay bf16 in the checkpoint; only the large projections are FP8.
+Code: `dequantize_block_fp8(w_fp8, scale_inv, block=(128,128), out_dtype=bf16)` (reshape-multiply, edges padded then cropped), `quantize_block_fp8(w, block)` (per-block `amax/448` stored as `scale_inv`), and `fp8_block_matmul(x, w_fp8, scale_inv)` — a CPU reference (`x @ dequant.T`). Tests: [test_fp8_block.py](../tests/test_fp8_block.py). Small tensors (norms, `A_log`, `dt_bias`, conv1d) stay bf16 in the checkpoint; only the large projections are FP8.
+
+## Fast path: Triton fused dequant matmul (measured)
+
+**`torch._scaled_mm` cannot express the checkpoint layout exactly** (probe: [probe_scaled_mm.py](../scripts/probe_scaled_mm.py), torch 2.11.0+cu128, RTX 4090 SM 8.9). Its 128×128 BlockWise mode requires float32 scales in a near-inner-dim-major, 16-byte-aligned blocked layout; plain, float32-cast, transposed, and padded variants of the checkpoint's contiguous BF16 `[ceil(N/128), ceil(K/128)]` grid all raise `Invalid scaling configuration` at 128- and 512-sized shapes. It would also require FP8 activations with matching block scales — dynamically quantising BF16 activations is lossy, so results would differ from the BF16-activation reference by activation FP8 rounding, not just weight rounding. No `_scaled_mm` path is implemented.
+
+The fast path is therefore [fp8_triton.py](../src/inference_from_scratch/fp8_triton.py): each Triton program streams FP8 tiles (`BLOCK_K=128` = one scale column, `BLOCK_N` divides 128 = one scale row), applies the block scale in-kernel, converts to BF16 (mirroring reference rounding), and accumulates in FP32 via `tl.dot`. Activations stay BF16. Autotune is off; `choose_config` picks fixed tiles by M. Enable via `BlockFP8Linear(..., use_triton=True)`, `from_linear(..., use_triton=True)`, or `INFERENCE_FP8_TRITON=1`. Dispatch uses Triton only for CUDA inputs with flattened `1 <= M <= 128` (`TRITON_MAX_M`, chosen from the bench below: Triton won at every measured M); any import/launch failure is logged with `falling back to reference dequant path` and recorded on `_triton_fallback_reason` — never silent.
+
+Measured with [fp8_linear_bench.py](../benchmarks/fp8_linear_bench.py) (`.venv-gpu`, RTX 4090, 20 reps after 5 warmup; effective GB/s = FP8 weight + scale + activation bytes / time, so repeated-rep L2 reuse can push small shapes above DRAM roofline; reference GB/s on the same byte count understates its real traffic, which also materialises FP32→BF16 dequant copies):
+
+| Shape (N×K) | M | Reference | Triton | Speedup | Max rel diff |
+|---|---|---|---|---|---|
+| gate_up 17408×5120 | 1 | 2.000 ms / 44.6 GB/s | 0.132 ms / 674 GB/s | 15.1× | 1.9e-3 |
+| gate_up 17408×5120 | 4 | 2.049 ms / 43.6 GB/s | 0.133 ms / 672 GB/s | 15.4× | 1.8e-3 |
+| gate_up 17408×5120 | 16 | 2.051 ms / 43.8 GB/s | 0.135 ms / 664 GB/s | 15.2× | 3.3e-3 |
+| gate_up 17408×5120 | 128 | 2.077 ms / 45.7 GB/s | 0.258 ms / 368 GB/s | 8.0× | 7.0e-3 |
+| down 5120×17408 | 1 | 2.004 ms / 44.5 GB/s | 0.136 ms / 657 GB/s | 14.8× | 2.6e-3 |
+| down 5120×17408 | 128 | 2.079 ms / 45.6 GB/s | 0.346 ms / 274 GB/s | 6.0× | 8.0e-3 |
+| qkv 10240×5120 | 1 | 1.162 ms / 45.1 GB/s | 0.043 ms / 1216 GB/s | 26.9× | 2.4e-3 |
+| qkv 10240×5120 | 128 | 1.212 ms / 46.5 GB/s | 0.155 ms / 363 GB/s | 7.8× | 3.6e-3 |
+
+Correctness: Triton vs dequant reference rel diff ≤ 8e-3 across all benched shapes (BF16 dot-order rounding). GPU tests: [test_fp8_triton_gpu.py](../tests/test_fp8_triton_gpu.py) (skip-gated); CPU dispatch/fallback tests: [test_fp8_triton_dispatch.py](../tests/test_fp8_triton_dispatch.py).
 
 ## How the big systems do it
 
