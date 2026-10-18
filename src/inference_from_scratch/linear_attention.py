@@ -19,7 +19,8 @@ Read directly in ``.venv`` (transformers 5.20.1):
   repeat-interleave of Q/K, output norm + gating),
   ``torch_recurrent_gated_delta_rule`` (the per-token recurrence this
   module mirrors step-for-step), ``torch_chunk_gated_delta_rule`` (the
-  chunkwise production form, *not* implemented here),
+  chunkwise production form, also implemented here as
+  :meth:`GatedDeltaNet.forward_prefill_chunkwise`),
   ``causal_conv1d_fn`` / ``causal_conv1d_update``, ``l2norm`` and
   ``Qwen3_5RMSNormGated``.
 * ``transformers/models/qwen3_5/configuration_qwen3_5.py`` --
@@ -56,7 +57,13 @@ FLA / vLLM evaluate the identical recurrence with chunkwise kernels
 updates are condensed via a triangular (UT) solve into matmuls, and only
 the chunk-boundary state is carried sequentially. Decode uses the fused
 recurrent kernel and updates the conv state in place. This module keeps
-the explicit scan so prefill-vs-decode equivalence is provable by eye.
+the explicit scan as the reference and adds the same chunkwise form
+(:meth:`GatedDeltaNet.forward_prefill_chunkwise`) so the two can be
+checked against each other. ``forward_prefill`` keeps
+``method="sequential"`` as its default for compatibility: existing
+callers get bit-for-bit the reference reduction order, and chunkwise
+(which re-associates the arithmetic, so only agrees to fp32 tolerance)
+is an explicit opt-in.
 """
 
 from __future__ import annotations
@@ -330,6 +337,145 @@ class GatedDeltaNet(nn.Module):
         g = -self.A_log.float().exp() * F.softplus(a.float() + self.dt_bias.float())
         return mixed, z, beta, g
 
+    # -- chunkwise pieces ----------------------------------------------------
+
+    def _causal_conv_sequence(
+        self, mixed_all: torch.Tensor, conv_buffer: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Causal depthwise conv over a whole sequence + SiLU.
+
+        ``mixed_all``: ``[B, T, C]`` raw projections; ``conv_buffer``:
+        ``[B, C, K-1]`` raw vectors preceding the sequence (chronological).
+        Returns ``(activated [B, T, C], new_buffer [B, C, K-1])`` where the
+        new buffer holds the last ``K-1`` raw vectors of the extended
+        (buffer + sequence) stream -- exactly the buffer the sequential
+        ``_conv_step`` loop ends with. One grouped ``F.conv1d`` over the
+        extended sequence, no per-token loop.
+        """
+        B, T, C = mixed_all.shape
+        K = self.conv_kernel
+        if T == 0:
+            return mixed_all.clone(), conv_buffer.clone()
+        mixed_t = mixed_all.transpose(1, 2)  # [B, C, T]
+        if K == 1:
+            extended = mixed_t
+            new_buffer = conv_buffer.clone()  # [B, C, 0]
+        else:
+            extended = torch.cat(
+                [conv_buffer.to(dtype=mixed_all.dtype), mixed_t], dim=-1
+            )  # [B, C, K-1+T]
+            new_buffer = extended[:, :, -(K - 1):].clone()
+        weight = self.conv1d.weight.to(dtype=mixed_all.dtype)  # [C, 1, K]
+        conv_out = F.conv1d(extended, weight, bias=None, padding=0, groups=C)
+        # conv_out length is T in both branches (K==1: T-K+1 == T).
+        return F.silu(conv_out.transpose(1, 2)), new_buffer
+
+    @staticmethod
+    def _chunk_gated_delta_core(
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        beta: torch.Tensor,
+        g: torch.Tensor,
+        S0: torch.Tensor,
+        chunk_size: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Chunkwise gated delta rule (HF ``torch_chunk_gated_delta_rule``).
+
+        ``q``/``k``: ``[B, T, Hv, Dk]`` fp32, already L2-normalised with
+        ``q`` scaled by ``Dk**-0.5`` and Q/K already expanded to value
+        heads; ``v``: ``[B, T, Hv, Dv]`` fp32; ``beta``/``g``:
+        ``[B, T, Hv]`` fp32 (``g <= 0``, log-decay); ``S0``:
+        ``[B, Hv, Dk, Dv]`` fp32. Returns ``(core [B, T, Hv, Dv], S_final)``.
+
+        Per chunk of ``C`` tokens the ``C`` sequential delta updates are
+        re-associated (all shapes below per batch/head/chunk):
+
+        * ``cum[i] = sum_{j<=i} g_j`` -- cumulative log-decay in the chunk;
+          ``pairwise[i, j] = exp(cum[i] - cum[j])`` for ``i >= j`` (strictly
+          upper masked to ``exp(-inf) = 0``) is the decay from ``j`` to ``i``.
+        * The intra-chunk delta interactions form a unit-lower-triangular
+          system ``A[i, j] = beta_i * (k_i . k_j) * pairwise[i, j]``.
+          Solving ``A u = beta * v`` (forward substitution via
+          ``solve_triangular(..., unitriangular=True)``; the diagonal of
+          ``A`` is ignored, the implied ``I`` is the write of a token that
+          no earlier chunk-mate predicted) condenses the chunk's writes
+          into ``u`` (HF ``new_values`` before the state correction), and
+          solving the same system against ``beta * k * exp(cum)`` gives the
+          decayed keys re-expressed in that condensed basis.
+        * Inter-chunk: with ``S`` the state at the chunk boundary,
+          ``v_new = u - k_cumdecay @ S`` subtracts what the old state
+          already predicts (the delta rule, once per chunk instead of
+          once per token), ``core = (q * exp(cum)) @ S + intra @ v_new``
+          adds the within-chunk reads ``intra[i, j] = (q_i . k_j) *
+          pairwise[i, j]``, and the boundary state advances as
+          ``S <- exp(cum[-1]) * S + (k * exp(cum[-1] - cum))^T @ v_new``.
+
+        The only Python loop is over chunks; everything inside a chunk is
+        a matmul / triangular solve over the ``C`` axis. Padding tokens
+        (zero ``q``/``k``/``v``/``beta``/``g``) contribute no write and no
+        read, so a padded tail chunk leaves ``S`` unchanged.
+        """
+        B, T, Hv, Dk = q.shape
+        Dv = v.shape[-1]
+        # [B, Hv, T, D] fp32 layout, as in the HF kernel.
+        qh = q.transpose(1, 2).to(torch.float32).contiguous()
+        kh = k.transpose(1, 2).to(torch.float32).contiguous()
+        vh = v.transpose(1, 2).to(torch.float32).contiguous()
+        beta_h = beta.transpose(1, 2).to(torch.float32).contiguous()  # [B, Hv, T]
+        decay_h = g.transpose(1, 2).to(torch.float32).contiguous()
+
+        pad_size = (chunk_size - T % chunk_size) % chunk_size
+        if pad_size:
+            qh, kh, vh = (F.pad(t, (0, 0, 0, pad_size)) for t in (qh, kh, vh))
+            beta_h, decay_h = (F.pad(t, (0, pad_size)) for t in (beta_h, decay_h))
+        T_pad = T + pad_size
+        n_chunks = T_pad // chunk_size
+        C = chunk_size
+
+        v_beta = vh * beta_h.unsqueeze(-1)
+        k_beta = kh * beta_h.unsqueeze(-1)
+
+        # Chunk axis: [B, Hv, n_chunks, C, D] / [B, Hv, n_chunks, C].
+        q_c, k_c, kb_c, vb_c = (
+            t.reshape(B, Hv, n_chunks, C, t.shape[-1]) for t in (qh, kh, k_beta, v_beta)
+        )
+        decay_c = decay_h.reshape(B, Hv, n_chunks, C)
+        cum = decay_c.cumsum(dim=3)  # cumulative log-decay within chunk
+
+        strictly_upper = torch.ones(C, C, dtype=torch.bool, device=q.device).triu(1)
+        pairwise = cum.unsqueeze(4) - cum.unsqueeze(3)  # [.., C_i, C_j]
+        pairwise = pairwise.masked_fill(strictly_upper, float("-inf")).exp()
+
+        # Intra-chunk triangular (UT) system and QK interactions.
+        ut_system = (kb_c @ k_c.transpose(-1, -2)) * pairwise
+        intra = (q_c @ k_c.transpose(-1, -2)) * pairwise
+        decayed_k_beta = kb_c * cum.exp().unsqueeze(-1)
+        new_values = torch.linalg.solve_triangular(
+            ut_system, vb_c, upper=False, unitriangular=True
+        )
+        k_cumdecay = torch.linalg.solve_triangular(
+            ut_system, decayed_k_beta, upper=False, unitriangular=True
+        )
+
+        # Decay-adjusted reads/writes against the boundary state.
+        q_decayed = q_c * cum.exp().unsqueeze(-1)
+        k_decayed = k_c * (cum[..., -1:] - cum).exp().unsqueeze(-1)
+        chunk_decay = cum[..., -1].exp()  # [B, Hv, n_chunks]
+
+        S = S0.to(torch.float32).clone()
+        core_c = torch.empty_like(new_values)
+        for i in range(n_chunks):
+            v_new = new_values[:, :, i] - k_cumdecay[:, :, i] @ S
+            core_c[:, :, i] = q_decayed[:, :, i] @ S + intra[:, :, i] @ v_new
+            S = (
+                S * chunk_decay[:, :, i][:, :, None, None]
+                + k_decayed[:, :, i].transpose(-1, -2) @ v_new
+            )
+
+        core = core_c.reshape(B, Hv, T_pad, Dv)[:, :, :T]
+        return core.transpose(1, 2).contiguous(), S
+
     # -- public API ------------------------------------------------------------
 
     def step(
@@ -365,19 +511,122 @@ class GatedDeltaNet(nn.Module):
             out = out.unsqueeze(1)
         return out, (S_new, new_buffer.to(dtype=mixed.dtype))
 
+    def forward_prefill_chunkwise(
+        self,
+        x: torch.Tensor,
+        chunk_size: int = 64,
+        initial_state: LinearAttentionState | None = None,
+        state: LinearAttentionState | None = None,
+    ) -> tuple[torch.Tensor, LinearAttentionState]:
+        """Chunkwise prefill: same result as the sequential scan, by chunks.
+
+        ``x`` is ``[B, T, d_model]``; ``chunk_size`` is the chunk length
+        ``C`` (default 64, as in HF ``torch_chunk_gated_delta_rule``);
+        ``initial_state`` is the ``(S, conv_buffer)`` pair to continue
+        from (``state`` is accepted as an alias keyword; passing both is
+        an error). Returns ``(out [B, T, D], final_state)`` whose final
+        state continues into :meth:`step` exactly as the sequential
+        final state does. The input state is never mutated.
+
+        Structure (no per-token Python loop anywhere): projections for
+        the whole sequence at once, one grouped causal ``conv1d`` seeded
+        with the incoming conv buffer, then
+        :meth:`_chunk_gated_delta_core` (intra-chunk triangular solve +
+        inter-chunk boundary state, gates/decay in fp32), then the same
+        gated RMSNorm and ``out_proj`` as the sequential path.
+        """
+        if state is not None and initial_state is not None:
+            raise ValueError("pass only one of initial_state / state")
+        if initial_state is None:
+            initial_state = state
+        if isinstance(chunk_size, bool) or not isinstance(chunk_size, int) or chunk_size <= 0:
+            raise ValueError(f"chunk_size must be a positive int, got {chunk_size!r}")
+        if x.dim() != 3 or x.shape[-1] != self.d_model:
+            raise ValueError(f"x must be [B, T, d_model={self.d_model}], got {tuple(x.shape)}")
+        B, T, _ = x.shape
+        if initial_state is None:
+            S0, conv_buffer = self.initial_state(B, device=x.device, dtype=torch.float32)
+        else:
+            S0, conv_buffer = initial_state
+        if T == 0:
+            return torch.empty_like(x), (S0.clone(), conv_buffer.clone())
+
+        # Per-token projections for the whole sequence up front (fp32 gates).
+        mixed_all = F.linear(x, self.in_proj_qkv.weight)  # [B, T, C]
+        z_all = F.linear(x, self.in_proj_z.weight).reshape(
+            B, T, self.num_value_heads, self.head_v_dim
+        )
+        b_all = F.linear(x, self.in_proj_b.weight)
+        a_all = F.linear(x, self.in_proj_a.weight)
+        beta_all = torch.sigmoid(b_all.float())  # [B, T, Hv] fp32
+        g_all = -self.A_log.float().exp() * F.softplus(
+            a_all.float() + self.dt_bias.float()
+        )  # [B, T, Hv] fp32, <= 0
+
+        # Causal conv over the sequence, seeded with the incoming buffer.
+        mixed_act, new_buffer = self._causal_conv_sequence(
+            mixed_all, conv_buffer.to(dtype=mixed_all.dtype)
+        )
+
+        q_raw, k_raw, v = torch.split(
+            mixed_act, [self.key_total, self.key_total, self.value_total], dim=-1
+        )
+        q = q_raw.reshape(B, T, self.num_key_heads, self.head_k_dim)
+        k = k_raw.reshape(B, T, self.num_key_heads, self.head_k_dim)
+        v = v.reshape(B, T, self.num_value_heads, self.head_v_dim).float()
+        if self.n_rep > 1:
+            q = q.repeat_interleave(self.n_rep, dim=2)
+            k = k.repeat_interleave(self.n_rep, dim=2)
+        q = _l2norm(q) * (self.head_k_dim ** -0.5)
+        k = _l2norm(k)
+
+        core, S_final = self._chunk_gated_delta_core(
+            q, k, v, beta_all, g_all, S0, chunk_size
+        )  # core [B, T, Hv, Dv] fp32
+
+        # Final gated norm + output projection (same tail as _recurrent_token).
+        core = self.norm(
+            core.reshape(B * T * self.num_value_heads, self.head_v_dim),
+            z_all.reshape(B * T * self.num_value_heads, self.head_v_dim),
+        )
+        core = core.reshape(B, T, self.value_total)
+        out = F.linear(core.to(self.out_proj.weight.dtype), self.out_proj.weight)
+        return out.to(x.dtype), (S_final, new_buffer.to(dtype=mixed_all.dtype))
+
     def forward_prefill(
         self,
         x: torch.Tensor,
         state: LinearAttentionState | None = None,
+        method: str = "sequential",
+        chunk_size: int = 64,
     ) -> tuple[torch.Tensor, LinearAttentionState]:
-        """Prefill ``x`` ``[B, T, D]`` as an explicit sequential scan.
+        """Prefill ``x`` ``[B, T, D]``; ``method`` selects the evaluation.
 
-        Loops over ``T`` calling the same conv + recurrence step as
+        ``method="sequential"`` (default) is the explicit per-token scan:
+        loops over ``T`` calling the same conv + recurrence step as
         decode (projections are computed once -- they are per-token
         linears with no cross-token mixing, so this changes nothing
-        mathematically). Returns ``(out [B, T, D], final_state)``; the
-        final state continues seamlessly into :meth:`step`.
+        mathematically). ``method="chunkwise"`` delegates to
+        :meth:`forward_prefill_chunkwise` with ``chunk_size``.
+
+        The default stays ``"sequential"`` for compatibility: every
+        existing caller keeps the reference reduction order bit-for-bit,
+        while chunkwise re-associates the arithmetic and is therefore
+        only equal to fp32 tolerance -- an opt-in, not a silent swap.
+        Returns ``(out [B, T, D], final_state)``; the final state
+        continues seamlessly into :meth:`step` under either method.
         """
+        if not isinstance(method, str) or method.strip().lower() not in (
+            "sequential",
+            "chunkwise",
+        ):
+            raise ValueError(
+                f"method must be 'sequential' or 'chunkwise', got {method!r}"
+            )
+        if method.strip().lower() == "chunkwise":
+            return self.forward_prefill_chunkwise(
+                x, chunk_size=chunk_size, initial_state=state
+            )
         if x.dim() != 3 or x.shape[-1] != self.d_model:
             raise ValueError(f"x must be [B, T, d_model={self.d_model}], got {tuple(x.shape)}")
         B, T, _ = x.shape
@@ -408,13 +657,19 @@ class GatedDeltaNet(nn.Module):
         return out, (S, buf)
 
     def forward(
-        self, x: torch.Tensor, state: LinearAttentionState | None = None
+        self,
+        x: torch.Tensor,
+        state: LinearAttentionState | None = None,
+        method: str = "sequential",
+        chunk_size: int = 64,
     ) -> torch.Tensor:
         """HF-style forward: ``[B, T, D] -> [B, T, D]`` (output only).
 
         Use :meth:`forward_prefill` when the final state is needed.
         A length-1 sequence with a state is a decode step in disguise;
         it still routes through the sequential scan and stays exact.
+        ``method`` / ``chunk_size`` are forwarded to
+        :meth:`forward_prefill` (default stays sequential).
         """
-        out, _ = self.forward_prefill(x, state=state)
+        out, _ = self.forward_prefill(x, state=state, method=method, chunk_size=chunk_size)
         return out

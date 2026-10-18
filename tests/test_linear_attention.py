@@ -159,6 +159,107 @@ def test_gradient_free_determinism():
     assert not a.requires_grad
 
 
+def test_chunkwise_matches_sequential_all_lengths_and_chunk_sizes():
+    # Task matrix: T in {1,3,16,65} x chunk_size in {4,16,64}, fp32.
+    # Covers T < chunk, T == chunk, T not a multiple, and T spanning
+    # multiple chunks (65 with C=4/16/64). Output AND final state.
+    for T in (1, 3, 16, 65):
+        for chunk_size in (4, 16, 64):
+            torch.manual_seed(100 + T)
+            m = _model(seed=100 + T)
+            x = torch.randn(2, T, D_MODEL)
+            with torch.no_grad():
+                out_seq, state_seq = m.forward_prefill(x)
+                out_chunk, state_chunk = m.forward_prefill_chunkwise(
+                    x, chunk_size=chunk_size
+                )
+            assert out_chunk.shape == out_seq.shape == (2, T, D_MODEL)
+            assert torch.allclose(out_seq, out_chunk, atol=1e-5), (
+                f"T={T} C={chunk_size} out max diff "
+                f"{(out_seq - out_chunk).abs().max()}"
+            )
+            assert torch.allclose(state_seq[0], state_chunk[0], atol=1e-5), (
+                f"T={T} C={chunk_size} S max diff "
+                f"{(state_seq[0] - state_chunk[0]).abs().max()}"
+            )
+            assert torch.allclose(state_seq[1], state_chunk[1], atol=1e-6), (
+                f"T={T} C={chunk_size} conv buffer diff"
+            )
+
+
+def test_chunkwise_nonzero_initial_state_continuation():
+    torch.manual_seed(11)
+    m = _model(seed=11)
+    x = torch.randn(1, 20, D_MODEL)
+    with torch.no_grad():
+        _, state0 = m.forward_prefill(x[:, :7])
+        assert state0[0].abs().max() > 0  # genuinely nonzero S
+        snap = m.snapshot_state(state0)
+        out_seq, final_seq = m.forward_prefill(
+            x[:, 7:], state=m.restore_state(snap)
+        )
+        out_chunk, final_chunk = m.forward_prefill_chunkwise(
+            x[:, 7:], chunk_size=4, initial_state=m.restore_state(snap)
+        )
+        # `state=` alias keyword reaches the same path.
+        out_alias, _ = m.forward_prefill_chunkwise(
+            x[:, 7:], chunk_size=4, state=m.restore_state(snap)
+        )
+    assert torch.allclose(out_seq, out_chunk, atol=1e-5)
+    assert torch.allclose(out_seq, out_alias, atol=1e-5)
+    assert torch.allclose(final_seq[0], final_chunk[0], atol=1e-5)
+    assert torch.allclose(final_seq[1], final_chunk[1], atol=1e-6)
+    # Continuing from a chunkwise state must not mutate the snapshot.
+    assert torch.equal(snap[0], state0[0])
+
+
+def test_snapshot_continuation_after_chunkwise_equals_sequential():
+    torch.manual_seed(12)
+    m = _model(seed=12)
+    x = torch.randn(2, 11, D_MODEL)
+    extra = torch.randn(2, D_MODEL)
+    with torch.no_grad():
+        _, state_seq = m.forward_prefill(x)
+        _, state_chunk = m.forward_prefill_chunkwise(x, chunk_size=4)
+        snap_seq = m.snapshot_state(state_seq)
+        snap_chunk = m.snapshot_state(state_chunk)
+        out_seq, cont_seq = m.step(extra, m.restore_state(snap_seq))
+        out_chunk, cont_chunk = m.step(extra, m.restore_state(snap_chunk))
+    assert torch.allclose(out_seq, out_chunk, atol=1e-5)
+    assert torch.allclose(cont_seq[0], cont_chunk[0], atol=1e-5)
+    assert torch.allclose(cont_seq[1], cont_chunk[1], atol=1e-6)
+
+
+def test_forward_prefill_method_dispatch_and_validation():
+    torch.manual_seed(13)
+    m = _model(seed=13)
+    x = torch.randn(1, 9, D_MODEL)
+    with torch.no_grad():
+        default_out, default_state = m.forward_prefill(x)
+        seq_out, seq_state = m.forward_prefill(x, method="sequential")
+        chunk_out, chunk_state = m.forward_prefill(
+            x, method="chunkwise", chunk_size=4
+        )
+        direct_out, direct_state = m.forward_prefill_chunkwise(x, chunk_size=4)
+    # Default is sequential (bit-identical), chunkwise matches direct call.
+    assert torch.equal(default_out, seq_out)
+    assert torch.equal(default_state[0], seq_state[0])
+    assert torch.equal(chunk_out, direct_out)
+    assert torch.equal(chunk_state[0], direct_state[0])
+    assert torch.allclose(seq_out, chunk_out, atol=1e-5)
+    for bad_call in (
+        lambda: m.forward_prefill(x, method="bogus"),
+        lambda: m.forward_prefill_chunkwise(x, chunk_size=0),
+        lambda: m.forward_prefill_chunkwise(x, chunk_size=-4),
+    ):
+        try:
+            bad_call()
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("expected ValueError")
+
+
 def test_hf_parity_with_copied_weights():
     transformers = __import__("pytest").importorskip("transformers")
     from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
@@ -179,8 +280,15 @@ def test_hf_parity_with_copied_weights():
     with torch.no_grad():
         ref = hf(x)
         got, _ = ours.forward_prefill(x)
+        got_chunk, _ = ours.forward_prefill_chunkwise(x, chunk_size=4)
+        got_dispatch, _ = ours.forward_prefill(x, method="chunkwise", chunk_size=4)
     # Chunkwise (HF prefill) vs explicit recurrent scan: mathematically
     # identical, fp32 reduction order differs. Observed max-abs diff on
     # this machine is 1.19e-07; 1e-5 is the honest tolerance.
     diff = (ref - got).abs().max().item()
     assert torch.allclose(ref, got, atol=1e-5), f"max abs diff {diff}"
+    diff_chunk = (ref - got_chunk).abs().max().item()
+    assert torch.allclose(ref, got_chunk, atol=1e-5), (
+        f"chunkwise max abs diff {diff_chunk}"
+    )
+    assert torch.equal(got_chunk, got_dispatch)
