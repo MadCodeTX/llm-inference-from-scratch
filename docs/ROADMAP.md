@@ -205,6 +205,33 @@ The Tiny-to-Qwen ladder lives here. One codebase climbs it: only
   deliberate quality trade on model outputs.
 - **Builds on:** 05, 08, 10, 12
 
+### 23 — Tensor parallelism: two-rank sharding simulation — Built (CPU)
+
+- **Book framing:** sec. 5.4 (tensor parallelism), with sec. 2.2
+  (config/mechanics), sec. 2.4–2.5 (bottlenecks/attention),
+  sec. 4.2 (formats/reference implementations), and sec. 5.2
+  (speculation context).
+- **Goal:** Partition every hybrid tensor family across two ranks —
+  per-head `[q|gate]` pairs and segmented gated-delta QKV kept whole —
+  with exact shard/merge roundtrips and dense-equivalent matmuls on
+  CPU; price the 128 all-reduces per forward and the per-rank bytes.
+  No distributed runtime or GPU work; real collectives await an
+  approved GPU window.
+- **Builds on:** 21, 22
+
+### 24 — Native MTP head: foundations — Built (CPU)
+
+- **Book framing:** sec. 5.2 (speculation), with sec. 2.2
+  (config/mechanics), sec. 2.4–2.5 (bottlenecks/attention),
+  sec. 4.2 (formats/reference implementations), and sec. 5.4
+  (tensor-parallel context).
+- **Goal:** Build the checkpoint-derived MTP head (22 header-verified
+  tensors, one full-attention block reusing `HybridBlock`) plus shared
+  acceptance accounting with no fabricated numbers; record the
+  shape-silent joins as inferred and design Phase 3 rollback
+  (truncate KV, snapshot recurrent state) before wiring generation.
+- **Builds on:** 14, 22
+
 ### 11 — Serving: batching / PagedAttention — Built
 
 - **Book framing:** sec. 4.3 (engines), sec. 7.2 (concurrency and

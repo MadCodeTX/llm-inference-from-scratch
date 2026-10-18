@@ -58,6 +58,18 @@ Full-attention layer anatomy (layer 3, the template for `GatedFullAttention`): `
 
 `TinyHybridLM` (embed → `HybridBlock`s → final norm → untied `lm_head`) runs prefill and decode through one path: `logits, state = model(idx)`, then `logits, state = model(next_ids, state)` with any `T ≥ 1` (`prefill`/`decode_step` are the named forms). `HybridState.layer_states[i]` holds `(k_all, v_all)` for full layers and `(S, conv_buffer)` for linear layers; `seq_len` is the next absolute position. `snapshot_state`/`restore_state` deep-copy both kinds, so a restored continuation is bit-identical (tested with `torch.equal`), and prefill-vs-token-step logits agree to ~1e-7 at tiny dims.
 
+## Runtime and state: `HybridState`, explicit positions, `generate_hybrid`
+
+The stack above is stateless maths; the runtime that makes it usable is three pieces, all in [hybrid.py](../src/inference_from_scratch/hybrid.py) (Kiely Inference Engineering sec. 2.2 for the config/mechanics framing, sec. 2.4–2.5 for why the state shapes below matter, sec. 5.4 for how this state would shard under tensor parallelism).
+
+**Typed state.** `HybridState` stores one tagged entry per layer: `("kv", KVCache)` for full layers — a single-layer chapter-05 cache holding that layer's keys and values — and `("linear", (S, conv_buffer))` for gated-delta layers, with `("linear", None)` as the lazy zero state before the first token. `seq_len` counts positions already processed, so the next token's absolute position is always known. `clone()` / `snapshot()` / `restore()` deep-copy every tensor on both sides of the tag, which makes branching a first-class operation: snapshot once after a shared prompt, restore per branch, and each suffix generation proceeds without seeing the other branches' writes. The older untagged view survives as the `layer_states` property (`(k, v)` / `(S, conv)` pairs, `None` when empty), so pre-existing callers and tests keep working unchanged.
+
+**Explicit positions.** `TinyHybridLM` and `GatedFullAttention` accept `position_ids` as `[T]` or `[3, T]`. The `[T]` form is text: the single axis is repeated to the temporal/height/width mRoPE axes, the interleaved recomposition (H owning pair slots 1, 4, 7, …, W owning 2, 5, 8, …, bounded by `mrope_section`) then writes each slot with the value already there, and the result is bit-identical to the default `start_pos` path — asserted with `torch.equal` in the tests. A vision-shaped `[3, T]` whose H/W axes differ changes exactly the pair slots those axes own and nothing else (also asserted, slot by slot, over the rotary pairs). Positions are absolute and are never offset by `start_pos`; the gated-delta layers receive no positions at all, since their recurrence carries no position embedding. This is the seam the deferred vision tower will use, and no vision tensor is executed here.
+
+**Generation.** `generate_hybrid(model, idx, max_new_tokens, ...)` mirrors chapter 08's loop over the hybrid state: one prefill, then one decode step per token, sampling every step through `sampling.sample_next` (temperature / top-k / top-p / seeded generator, `temperature=0` for greedy, EOS included in the output and stopping only once every row has emitted it). Its one hybrid-specific knob is `prefill_method`: `"sequential"` runs the reference per-token scan for the prompt, `"chunkwise"` runs the chapter-21 chunked gated-delta form. The two agree only to fp32 tolerance in logits, but greedy token ids on the tiny models are asserted identical across both, and a snapshot-branching test asserts that two suffix generations restored from one prompt snapshot each reproduce a fresh from-scratch generation of the same suffix.
+
+One audit note the runtime depends on: the checkpoint config labels the full-attention output gate `output_gate_type = "swish"`, but the reference implementation applies `attn_output * sigmoid(gate)` unconditionally (transformers `modeling_qwen3_5.py`, the `Qwen3_5Attention.forward` gate line). `silu(g) = g · sigmoid(g)` is a different function, so in this codebase `"swish"` resolves to `"sigmoid"` wherever it arrives — config or explicit argument — and `gate_activation="silu"` survives only as an explicitly non-HF alternative. The HF-parity test, which loads `Qwen3_5Attention` weights strictly and compares outputs, pins the sigmoid behaviour.
+
 ## MTP head anatomy (`mtp.safetensors`, 22 tensors)
 
 Multi-token prediction: one extra full-attention decoder layer that predicts the *next-next* token from the current hidden state fused with the next token's embedding.
@@ -102,6 +114,27 @@ Every gain is ~0.77 too small: the checkpoint stores zero-centred weights whose 
 
 Only the 16 full layers: each appends 4 KV heads × 256 dims × 2 (K and V) values per token. The 48 linear layers keep a fixed `48 × 128 × 128` recurrent matrix plus a 3-vector conv buffer, independent of position.
 </details>
+
+## Streaming checkpoint loader (`hybrid_checkpoint.py`)
+
+The loader that turns the on-disk checkpoint into tensors without ever holding the model (Kiely sec. 2.2 config/mechanics, sec. 4.2 formats/reference implementations; sharding context sec. 5.4, MTP/speculation context sec. 5.2). Three stages, strictly lazy:
+
+1. **Manifest (headers only).** `discover_shards(dir)` resolves the 66 shard files from `model.safetensors.index.json` (falling back to a glob); `build_manifest(dir)` parses each shard with our own `weights.read_safetensors_header` — no tensor bytes are read — and emits entries `{checkpoint_name, target_name, shard, dtype, shape, bytes, kind}` with `kind` in `fp8_weight | scale_inv | bf16 | other`. Target names reuse `hybrid.list_hybrid_tensor_map`'s mapping; vision tensors map to `None` and stay deferred.
+2. **Validation (formulas, not fixtures).** `expected_language_tensors(config)` derives every expected name and shape from `HybridConfig` arithmetic: embedding `[248320, 5120]`, per-layer widths by `layer_types` (e.g. full `q_proj [12288, 5120]`, linear `in_proj_qkv [10240, 5120]`), final norm, untied `lm_head`, and the MTP block, with each FP8 weight's `weight_scale_inv` at `[ceil(R/128), ceil(C/128)]`. `validate_manifest(manifest, config)` then reports `{missing, unexpected, shape_mismatch, ok, counts, total_bytes_by_dtype}`; vision tensors are out of scope on both sides.
+3. **Lazy load (one tensor at a time).** `load_tensor(dir, checkpoint_name, dequantize=True)` opens only the owning shard with `safetensors.safe_open`, pairs an FP8 weight with its `*_weight_scale_inv` automatically, and returns BF16 via `quantization.dequantize_block_fp8`. Loading a scale tensor directly, an unknown name, or an FP8 weight with a missing scale raises a clear error. `iter_layer_tensors(dir, layer_idx)` is a generator over that primitive: only the requested layer materialises, scales are consumed by pairing and not yielded. `scripts/inspect_qwen38_checkpoint.py [--layer N]` prints the validation summary header-only; `--layer N` additionally loads only that layer's small norm tensors (never a full layer) to prove the lazy path.
+
+Verified on the real snapshot (`scripts/inspect_qwen38_checkpoint.py`, CPU, headers + small norms only):
+
+```
+shards: 66
+manifest entries: 1606
+kinds: {'bf16': 792, 'fp8_weight': 407, 'scale_inv': 407}
+total_bytes_by_dtype: {'BF16': 6167455584, 'F8_E4M3': 24699207680}
+counts: {'expected': 1273, 'present': 1273, 'manifest_entries': 1606, 'missing': 0, 'unexpected': 0, 'shape_mismatch': 0}
+ok: True
+```
+
+Total safetensors payload is 30,866,663,264 bytes (≈ 30.87 GB). The 1273 expected tensors are the language model + MTP + `lm_head`; the remaining 333 manifest entries are the deferred vision tower. Synthetic multi-shard fixtures and lazy-dequant parity are covered by `tests/test_hybrid_checkpoint.py`.
 
 ## Summary in 30 seconds
 

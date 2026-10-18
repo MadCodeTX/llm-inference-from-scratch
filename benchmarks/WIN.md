@@ -92,6 +92,23 @@ Speed without correctness is not a win. Before any timing claim:
 - Sampled-arm runs use the fixed seed in `suite.json` so reruns are
   comparable.
 
+## Phase status
+
+- **Phase 1b-prep (CPU foundations): done.** The streaming hybrid
+  checkpoint loader, chunkwise gated-delta prefill, hybrid runtime
+  state with `generate_hybrid`, the two-rank tensor-parallel sharding
+  simulation (ch. 23), and the native MTP foundations (ch. 24) are
+  built and tested on CPU only (`.venv/bin/python -m pytest -q` →
+  221 passed). Framing follows Kiely, *Inference Engineering*
+  (2026), sec. 2.2, sec. 2.4–2.5, sec. 4.2, sec. 5.2, and sec. 5.4;
+  prose here is original.
+- **GPU window: still pending.** No candidate has been run on GPU,
+  no real collective has been timed, Arm B (vLLM + MTP) is still
+  "not yet measured", and no win is claimed. The live vLLM service
+  on both cards was not stopped, modified, or benchmarked during
+  the CPU work. The protocol below runs only inside a later
+  user-approved window.
+
 ## GPU-window protocol (run only when the user approves a pause)
 
 The box normally serves production traffic on both GPUs. Do not stop,
