@@ -28,7 +28,7 @@ New readers: start at [00_overview.md](00_overview.md), keep
 [GLOSSARY.md](GLOSSARY.md) open, and use [ROADMAP.md](ROADMAP.md) for
 the grouped curriculum. This file is the cross-reference, not a chapter.
 
-## Chapter map: repo 00–25 to book sections
+## Chapter map: repo 00–27 to book sections
 
 Build status is stated plainly. **Built** means hand-written code plus
 tests exist today. **Read-only** means the chapter dissects production
@@ -62,6 +62,8 @@ the roadmap describe it so far — no chapter file or code exists yet.
 | [22 Hybrid Qwen3.8](22_hybrid_qwen38.md) | Repo extension (no direct book section) | Built | How do gated full-attention layers sit inside a linear-attention stack, and what state does each kind carry? |
 | [23 Tensor parallelism](23_tensor_parallel.md) | Sec. 5.4 (with sec. 2.2, 2.4–2.5, 4.2, 5.2 context) | Built (simulation + distributed + measured real TP2) | How is every hybrid tensor family cut across two ranks without splitting a unit the maths treats as indivisible, and what does the all-reduce cost? |
 | [24 Native MTP head](24_mtp.md) | Sec. 5.2 (with sec. 2.2, 2.4–2.5, 4.2, 5.4 context) | Built (CPU foundations + measured TP2 speculation, exact but not faster) | How does one checkpoint-derived extra layer draft ahead of the target, and how is acceptance counted without inventing numbers? |
+| [26 Prefill: chunkwise TP prefill](26_prefill.md) | Sec. 2.4–2.5, 5.3 | Built | How is long-prompt prefill chunked without changing outputs? |
+| [27 Prefix cache (TP)](27_prefix_cache.md) | Sec. 5.3.1 | Built | How does block-aligned KV/state reuse cut TTFT on shared prefixes? |
 | [25 Static decode](25_static_decode.md) | Sec. 4.1, 4.5 | Built (CPU + CUDA smoke) | What must be true of a decode step's shapes, addresses, and control flow before a CUDA graph can capture it, and what stays dynamic even then? |
 
 Chapters 13–18 are written. Chapters 15–17 are prose chapters over

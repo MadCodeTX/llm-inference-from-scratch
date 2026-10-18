@@ -248,14 +248,14 @@ The Tiny-to-Qwen ladder lives here. One codebase climbs it: only
   acceptance accounting with no fabricated numbers; record the
   shape-silent joins as inferred and design Phase 3 rollback
   (truncate KV, snapshot recurrent state) before wiring generation.
-  Arm B attempted 2026-10-18 **FAILED_TO_START** (exact-flags KV overflow); no acceptance or win numbers are claimed.
+  Arm B retry 2026-10-18 **MEASURED-WITH-DEVIATION** (--max-model-len 256608 only; acceptance 98.8%, failed=0; no win claimed).
 - **Status (2026-10-18, measured):** wiring sweep (48 candidates,
   teacher-forced) resolved=false — best acceptance 0.8721 with tied
   rows, so no winner was written in as default. The TP2 speculative
   loop (eager + graph-captured) is exact (32/32 x3, capital 128/128)
   with acceptance 0.88–0.94 but slower than graph-nonspec
   (32.51 vs 24.49 ms effective TPOT, capital x128); not a win.
-  Arm B **FAILED_TO_START** 2026-10-18; retry needs owner decision on max-model-len/gpu-memory-utilization. Also: mtp1-graph2 merged graph 32.90 ms eff capital x128 (exact, not faster); best is fused nonspec 23.67 ms (42.25 tok/s).
+  Arm B **MEASURED-WITH-DEVIATION** 2026-10-18 (--max-model-len 256608 only). TP chunkwise prefill chunk128 1316 tok/s @512 / 1306 tok/s @2048 (ours-vs-ours); TP prefix cache scaled-agent cold 10.66s / warm 1.31s median (8.14x ours-vs-ours, no win vs vLLM claimed). Also: mtp1-graph2 merged graph 32.90 ms eff capital x128 (exact, not faster); best is fused nonspec 23.67 ms (42.25 tok/s).
 - **Builds on:** 14, 22
 
 ### 11 — Serving: batching / PagedAttention — Built

@@ -26,10 +26,10 @@ Integration smoke re-check (this window, incumbent stopped first via `launch.sh 
 | ours TP2 + MTP mtp1-graph (chunk+draft graphs) | 30.6 eff (capital 128) | 32.51 ms eff | 128/128 exact vs graph-nonspec; 32/32 x3 |
 | ours TP2 + MTP mtp1-graph2 (merged graph, 1 sync/cycle) | 30.4 eff (capital 128) | 32.90 ms eff | 128/128 exact vs graph-nonspec; 32/32 x3 |
 | ours TP2 graph + fused gated-delta (nonspec, best) | 42.25 | 23.67 ms | 32/32 exact x3 |
-| vLLM Arm B (MTP K=1) | FAILED_TO_START | n/a | no numbers; KV 4.49>4.4 GiB |
+| vLLM Arm B (MTP K=1, 256608) | ~71/stream c1 short (4272-4291 tok/min) | n/a (chunk TPOT) | 32/32 exact x3; MEASURED-WITH-DEVIATION |
 | Roofline floor (TP2 batch-1, bound only) | 52.2 ceiling | 19.17 ms floor | n/a — not a measurement |
 
-Bridge v2 detail: prefill 0.54 s (first, JIT) / 0.10–0.12 s, load 23.5 s, peak ~15.0 / ~15.1 GB/GPU. Re-check this window: 8-token capital probe 8/8 prefix exact at 18.98 tok/s, prefill 0.52 s. No candidate clears the win thresholds; Arm B attempted 2026-10-18 and FAILED_TO_START (see below).
+Bridge v2 detail: prefill 0.54 s (first, JIT) / 0.10–0.12 s, load 23.5 s, peak ~15.0 / ~15.1 GB/GPU. Re-check this window: 8-token capital probe 8/8 prefix exact at 18.98 tok/s, prefill 0.52 s. No candidate clears the win thresholds; Arm B retry MEASURED-WITH-DEVIATION (see below).
 
 TP2 v1 detail: `scripts/run_qwen38_tp2.py` (torchrun TP2, resident-FP8 rank shards, replicated embed/head, 2 all-reduces/block/step), raw record `benchmarks/baseline/ours_tp2_first_run.json`: load 21.2 s/rank, peak 16.39 GiB/rank, prefill 0.61 s first (Triton JIT) then 0.14–0.17 s, TPOT 42.5–43.7 ms vs Arm A 20.3 ms and the 19.17 ms roofline floor — faster than bridge v2 but roughly 2.1× off Arm A, so **not a win**; the gap to the floor is unprofiled.
 
@@ -39,9 +39,9 @@ TP2 v3 detail: static state (`TPStaticState`) + one captured `decode_token_stati
 
 MTP speculative detail (2026-10-18, artifact `benchmarks/baseline/ours_tp2_mtp_matrix.json`): gamma=1 native-MTP speculation is exact everywhere (32/32 x3 probes vs bridge+Arm-A; capital 128/128 vs this run's graph-nonspec reference ids) with acceptance 0.88-0.94, but it is **slower** than graph-nonspec (40.5-40.8 tok/s, TPOT 24.5 ms): mtp1-eager effective TPOT 38.68 ms and mtp1-graph 32.51 ms on capital x128. CUDA-event profile per cycle (capital x128): draft 5.8 ms, verify chunk 52.8 ms eager / 34.6 ms graph, snapshot 0.46 ms, rollback copy ~0.03 ms, reject re-feed ~3.3 ms, host/capture overhead 12.7-18.8 ms. Expected tokens/cycle at gamma=1 is 1+alpha = 1.92; phase-only predicted effective TPOT for mtp1-graph is 22.96 ms/token, but measured is 32.51 ms -- the M=2 verify chunk costs 34.6 ms vs 24.5 ms for the M=1 graph step and host/capture overhead consumes the rest. Runner speculative default stays `off`; no speedup is claimed and this is **not a win**.
 
-Waterfall vs Arm A / Arm B (measured, same-shape only where noted): Arm A TPOT 20.3 ms (greedy short c1, serving harness) is the reference; ours best nonspec fused-delta graph is 23.67 ms (42.25 tok/s, local runner x32, 32/32 exact x3) — 3.37 ms above Arm A, 4.50 ms above the 19.17 ms roofline floor, dominated by Triton FP8 14.57 ms/token (profile `benchmarks/profile/tp2_graph_profile.json`: elementwise residual 5.34 ms fused, dense GEMV 1.73 ms, NCCL 1.39 ms). Spec candidates are slower at capital x128: mtp1-graph 32.51 ms, mtp1-graph2 32.90 ms, mtp1-eager 38.68 ms — all exact, none beats nonspec. Arm B has no TPOT (FAILED_TO_START), so no waterfall or win vs Arm B exists. **No candidate is a win vs Arm A or Arm B.**
+Waterfall vs Arm A / Arm B (measured, same-shape only where noted): Arm A TPOT 20.3 ms (greedy short c1, serving harness) is the reference; ours best nonspec fused-delta graph is 23.67 ms (42.25 tok/s, local runner x32, 32/32 exact x3) — 3.37 ms above Arm A, 4.50 ms above the 19.17 ms roofline floor, dominated by Triton FP8 14.57 ms/token (profile `benchmarks/profile/tp2_graph_profile.json`: elementwise residual 5.34 ms fused, dense GEMV 1.73 ms, NCCL 1.39 ms). Spec candidates are slower at capital x128: mtp1-graph 32.51 ms, mtp1-graph2 32.90 ms, mtp1-eager 38.68 ms — all exact, none beats nonspec. Arm B (MEASURED-WITH-DEVIATION, max-len 256608) has no per-token TPOT comparable to Arm A (chunk TPOT only; effective c1 short ~71 tok/s), so no TPOT waterfall vs Arm B is drawn. **No candidate is a win vs Arm A or Arm B.**
 
-Raw v2 record: `benchmarks/baseline/ours_pipeline_fastfp8.json` (`--sampling-sync batched --grad-mode inference`; A/B toggles `--fp8-path reference --sampling-sync per-token --grad-mode no-grad` reproduce v1 at 1.82 tok/s, 8/8 prefix). v2 is ~10.7× v1, driven by removing the profiled dequant cost (`benchmarks/profile/SUMMARY.md`: ~243 ms/token/GPU dequant vs ~25 ms matmul). Batched-vs-per-token sampling sync alone was 19.57 vs 19.56 tok/s — no measurable difference once dequant is gone, so no speed is claimed for it. Other profile candidates were audited and skipped where evidence does not justify a change: no `BlockFP8Linear` is called twice with the same weight in one forward (each projection fires once per block), and the pipeline boundary transfer is one `[1, 1, 5120]` BF16 tensor per token (~10 KB), negligible next to the dequant traffic — neither was changed. `--grad-mode inference` (default) replaces `no_grad` with `inference_mode`; `--grad-mode no-grad` reproduces the old context. **Not a win vs Arm A:** Arm A greedy short c1 is TPOT p50 20.3 ms (~49 tok/s/stream, 2745 tok/min); v2 TPOT is ~50.7 ms (~19.7 tok/s, ~1180 tok/min). v2 clears neither the throughput nor the TPOT threshold above, and Arm B has no numbers (FAILED_TO_START, below).
+Raw v2 record: `benchmarks/baseline/ours_pipeline_fastfp8.json` (`--sampling-sync batched --grad-mode inference`; A/B toggles `--fp8-path reference --sampling-sync per-token --grad-mode no-grad` reproduce v1 at 1.82 tok/s, 8/8 prefix). v2 is ~10.7× v1, driven by removing the profiled dequant cost (`benchmarks/profile/SUMMARY.md`: ~243 ms/token/GPU dequant vs ~25 ms matmul). Batched-vs-per-token sampling sync alone was 19.57 vs 19.56 tok/s — no measurable difference once dequant is gone, so no speed is claimed for it. Other profile candidates were audited and skipped where evidence does not justify a change: no `BlockFP8Linear` is called twice with the same weight in one forward (each projection fires once per block), and the pipeline boundary transfer is one `[1, 1, 5120]` BF16 tensor per token (~10 KB), negligible next to the dequant traffic — neither was changed. `--grad-mode inference` (default) replaces `no_grad` with `inference_mode`; `--grad-mode no-grad` reproduces the old context. **Not a win vs Arm A:** Arm A greedy short c1 is TPOT p50 20.3 ms (~49 tok/s/stream, 2745 tok/min); v2 TPOT is ~50.7 ms (~19.7 tok/s, ~1180 tok/min). v2 clears neither threshold above; Arm B is MEASURED-WITH-DEVIATION with no comparable per-token TPOT (below).
 
 ## Metrics
 
@@ -162,12 +162,18 @@ same arms, same box):
 - **Arm A — incumbent as-is:** vLLM serving `Qwen/Qwen3.8-27B-FP8` with
   its current config (the `incumbent_existing.json` reference).
 - **Arm B — vLLM + MTP:** the same vLLM with multi-token prediction
-  enabled. Attempted 2026-10-18 (isolated `vllm-armb-qwen38-mtp`, exact
-  Arm A flags + `{"method": "mtp", "num_speculative_tokens": 1}`): engine
-  exited before serving — KV cache 4.49 GiB needed > 4.4 GiB available at
-  `max_model_len` 262144, `gpu_memory_utilization` 0.93 (estimated max
-  256608). Status FAILED_TO_START in `benchmarks/arms/arm-b-mtp.json`;
-  no Arm B numbers exist and no win may be claimed against it.
+  enabled. First attempt 2026-10-18 (exact Arm A flags + MTP K=1) FAILED_TO_START:
+  KV cache 4.49 GiB needed > 4.4 GiB available at `max_model_len` 262144
+  (vLLM estimated max 256608). **Retry 2026-10-18: MEASURED-WITH-DEVIATION** —
+  exactly one deviation, `--max-model-len 256608` instead of 262144, everything
+  else identical to Arm A + MTP K=1 (isolated `vllm-armb-qwen38-mtp`, 127.0.0.1:8003).
+  Quality 3/3 exact vs Arm A; greedy c1 short 4272–4291 tok/min, agent-shared-prefix
+  TTFT p50 3.33 s cold / 0.90 s warm; short c4 12113–12136 tok/min; spec acceptance
+  3574/3617 (98.8%); failed=0. Raw: `benchmarks/baseline/arm_b_mtp_k1_256608.json`
+  (+`_c4`), `arm_b_quality_probes.json`, `arm_b_metrics_*.txt`. Caveat: `run_bench`
+  TPOT is per streamed chunk and MTP chunks carry multiple tokens, so Arm B chunk
+  TPOT (~24.7 ms) is not comparable to Arm A per-token TPOT; no TPOT win/loss is
+  claimed from it. Status in `benchmarks/arms/arm-b-mtp.json`: MEASURED-WITH-DEVIATION.
 
 Thresholds (all must hold for the claimed cells):
 
