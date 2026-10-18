@@ -166,3 +166,101 @@ def speculative_generate(
 
 # Name the task / chapter vocabulary explicitly.
 greedy_speculative_generate = speculative_generate
+
+
+# ---------------------------------------------------------------------------
+# Acceptance accounting (shared by draft-model and MTP drafting, sec. 5.2).
+#
+# Pure counting over caller-supplied token ids: given what a draft
+# proposed at each verification step and what the target itself chose,
+# how long were the accepted prefixes? Nothing here runs a model, and
+# no real-model acceptance number is baked in -- callers supply ids
+# they actually observed (or synthetic ids in tests).
+# ---------------------------------------------------------------------------
+
+
+def _ids_of(step) -> list[int]:  # type: ignore[no-untyped-def]
+    if isinstance(step, torch.Tensor):
+        return [int(x) for x in step.reshape(-1).tolist()]
+    return [int(x) for x in step]
+
+
+def accepted_prefix_len(proposed, target) -> int:  # type: ignore[no-untyped-def]
+    """Longest common prefix length of one drafted run vs the target.
+
+    ``proposed`` / ``target`` are 1-D id sequences for a single
+    verification step (lists or tensors). The count stops at the first
+    disagreement and never exceeds either length.
+    """
+    p, t = _ids_of(proposed), _ids_of(target)
+    n = 0
+    for a, b in zip(p, t):
+        if a != b:
+            break
+        n += 1
+    return n
+
+
+def acceptance_stats(target_ids, draft_ids_per_step) -> dict:  # type: ignore[no-untyped-def]
+    """Acceptance accounting over verification steps: pure token math.
+
+    ``draft_ids_per_step`` is one proposal run per target forward: a
+    sequence of steps, each a sequence of drafted token ids (a flat
+    id sequence is read as a single step). ``target_ids`` mirrors it:
+    per step, the target's own greedy ids for the positions the draft
+    tried to fill -- conventionally ``gamma + 1`` of them (the accepted
+    prefix plus the correction/bonus position); only the longest
+    common prefix with the draft counts as accepted.
+
+    Returns ``{"accept_rate", "mean_accepted_len",
+    "expected_tokens_per_target_forward"}``:
+
+    - ``accept_rate``: accepted / drafted over all steps (0.0 when
+      nothing was drafted);
+    - ``mean_accepted_len``: accepted tokens per target forward;
+    - ``expected_tokens_per_target_forward``: ``mean_accepted_len + 1``
+      per step that ran -- every verification forward finalises its
+      accepted prefix plus one target-chosen token (the correction at
+      the first disagreement, or the bonus when all agree). With no
+      steps at all, all three values are 0.0.
+
+    Raises ``ValueError`` when the two inputs disagree on the number
+    of steps. No model is run and no acceptance figure is assumed.
+    """
+    def _steps(value, name):  # type: ignore[no-untyped-def]
+        if isinstance(value, torch.Tensor):
+            if value.dim() <= 1:
+                return [_ids_of(value)]
+            return [_ids_of(row) for row in value]
+        seq = list(value)
+        if not seq:
+            return []
+        if all(isinstance(x, (int,)) or (isinstance(x, torch.Tensor) and x.dim() == 0) for x in seq):
+            return [[int(x) for x in seq]]
+        return [_ids_of(step) for step in seq]
+
+    draft_steps = _steps(draft_ids_per_step, "draft_ids_per_step")
+    target_steps = _steps(target_ids, "target_ids")
+    if len(draft_steps) != len(target_steps):
+        raise ValueError(
+            f"target_ids has {len(target_steps)} step(s) but draft_ids_per_step "
+            f"has {len(draft_steps)}; give one target run per drafted run"
+        )
+    n_steps = len(draft_steps)
+    if n_steps == 0:
+        return {"accept_rate": 0.0, "mean_accepted_len": 0.0,
+                "expected_tokens_per_target_forward": 0.0}
+    accepted = sum(
+        accepted_prefix_len(d, t) for d, t in zip(draft_steps, target_steps)
+    )
+    drafted = sum(len(d) for d in draft_steps)
+    mean_accepted = accepted / n_steps
+    return {
+        "accept_rate": (accepted / drafted) if drafted else 0.0,
+        "mean_accepted_len": mean_accepted,
+        "expected_tokens_per_target_forward": mean_accepted + 1.0,
+    }
+
+
+# MTP drafting (docs/24) reports acceptance through this same accounting.
+mtp_acceptance_stats = acceptance_stats
