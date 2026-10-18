@@ -250,6 +250,14 @@ The Tiny-to-Qwen ladder lives here. One codebase climbs it: only
   (truncate KV, snapshot recurrent state) before wiring generation.
   Arm B (vLLM + MTP) remains **UNMEASURED**; no acceptance or win
   numbers are claimed.
+- **Status (2026-10-18, measured):** wiring sweep (48 candidates,
+  teacher-forced) resolved=false — best acceptance 0.8721 with tied
+  rows, so no winner was written in as default. The TP2 speculative
+  loop (eager + graph-captured) is exact (32/32 x3, capital 128/128)
+  with acceptance 0.88–0.94 but slower than graph-nonspec
+  (32.51 vs 24.49 ms effective TPOT, capital x128); not a win.
+  Arm B (vLLM + MTP) is still **UNMEASURED** and is the next
+  workflow's first job.
 - **Builds on:** 14, 22
 
 ### 11 — Serving: batching / PagedAttention — Built

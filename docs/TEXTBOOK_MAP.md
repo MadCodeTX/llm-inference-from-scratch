@@ -61,7 +61,7 @@ the roadmap describe it so far — no chapter file or code exists yet.
 | [21 Linear attention](21_linear_attention.md) | Repo extension (no direct book section) | Built | How does a fixed-size recurrent state replace a growing KV cache, and what recall is paid for it? |
 | [22 Hybrid Qwen3.8](22_hybrid_qwen38.md) | Repo extension (no direct book section) | Built | How do gated full-attention layers sit inside a linear-attention stack, and what state does each kind carry? |
 | [23 Tensor parallelism](23_tensor_parallel.md) | Sec. 5.4 (with sec. 2.2, 2.4–2.5, 4.2, 5.2 context) | Built (simulation + distributed + measured real TP2) | How is every hybrid tensor family cut across two ranks without splitting a unit the maths treats as indivisible, and what does the all-reduce cost? |
-| [24 Native MTP head](24_mtp.md) | Sec. 5.2 (with sec. 2.2, 2.4–2.5, 4.2, 5.4 context) | Built (CPU foundations) | How does one checkpoint-derived extra layer draft ahead of the target, and how is acceptance counted without inventing numbers? |
+| [24 Native MTP head](24_mtp.md) | Sec. 5.2 (with sec. 2.2, 2.4–2.5, 4.2, 5.4 context) | Built (CPU foundations + measured TP2 speculation, exact but not faster) | How does one checkpoint-derived extra layer draft ahead of the target, and how is acceptance counted without inventing numbers? |
 | [25 Static decode](25_static_decode.md) | Sec. 4.1, 4.5 | Built (CPU + CUDA smoke) | What must be true of a decode step's shapes, addresses, and control flow before a CUDA graph can capture it, and what stays dynamic even then? |
 
 Chapters 13–18 are written. Chapters 15–17 are prose chapters over
@@ -79,8 +79,12 @@ fused RMSNorm), 32/32 exact ×3 vs the bridge (retained as oracle)
 and vLLM Arm A — still no win claimed.
 Chapter 25 adds static decode (sec. 4.1, 4.5), now also
 smoke-tested on CUDA (static vs legacy `max_abs` 0.0); no CUDA
-graph has been captured yet. Arm B (vLLM + MTP) remains
-**UNMEASURED**.
+graph has been captured yet. MTP speculation has since been measured
+on TP2 (exact, acceptance 0.88–0.94, but slower than graph-nonspec:
+32.51 vs 24.49 ms effective TPOT on capital x128; not a win).
+Arm B (vLLM + MTP) remains **UNMEASURED** and is the next workflow's
+first job (restart the incumbent with the MTP config record in
+`benchmarks/arms/`).
 
 ## Where this repo deliberately goes deeper than the book
 
