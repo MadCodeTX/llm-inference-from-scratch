@@ -149,9 +149,18 @@ class QwenRMSNorm(nn.Module):
         self.d = d
         self.eps = eps
         self.weight = nn.Parameter(torch.zeros(d))
+        # Opt-in fused path (F.rms_norm); off by default so dense and
+        # pipeline runners keep the manual maths bit-for-bit. The TP2
+        # runner enables it (see run_qwen38_tp2 --norm) after profiling
+        # showed norm launches on the decode critical path.
+        self.use_fused_rmsnorm = False
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         orig_dtype = x.dtype
+        if self.use_fused_rmsnorm:
+            return F.rms_norm(
+                x.float(), [self.d], 1.0 + self.weight.float(), self.eps,
+            ).to(orig_dtype)
         xf = x.float()
         ms = xf.pow(2).mean(dim=-1, keepdim=True)
         y = xf * torch.rsqrt(ms + self.eps)

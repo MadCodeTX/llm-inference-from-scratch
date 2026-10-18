@@ -18,9 +18,15 @@ Integration smoke re-check (this window, incumbent stopped first via `launch.sh 
 | vLLM Arm A (greedy short c1) | ~49/stream (2745 tok/min) | 20.3 ms | reference |
 | ours bridge v1 (reference dequant) | 1.83 | ~548 ms | 32/32 exact ×3 |
 | ours bridge v2 (Triton fused, default) | 19.6–19.7 | ~50.7 ms | 32/32 exact ×3 |
+| ours TP2 v1 (true TP2, Triton resident FP8) | 22.9–23.6 | 42.5–43.7 ms | 32/32 exact ×3 |
+| ours TP2 v2 (v1 + fused RMSNorm) | 23.4–23.9 | 41.8–42.8 ms | 32/32 exact ×3 |
 | Roofline floor (TP2 batch-1, bound only) | 52.2 ceiling | 19.17 ms floor | n/a — not a measurement |
 
 Bridge v2 detail: prefill 0.54 s (first, JIT) / 0.10–0.12 s, load 23.5 s, peak ~15.0 / ~15.1 GB/GPU. Re-check this window: 8-token capital probe 8/8 prefix exact at 18.98 tok/s, prefill 0.52 s. No candidate clears the win thresholds; Arm B unmeasured.
+
+TP2 v1 detail: `scripts/run_qwen38_tp2.py` (torchrun TP2, resident-FP8 rank shards, replicated embed/head, 2 all-reduces/block/step), raw record `benchmarks/baseline/ours_tp2_first_run.json`: load 21.2 s/rank, peak 16.39 GiB/rank, prefill 0.61 s first (Triton JIT) then 0.14–0.17 s, TPOT 42.5–43.7 ms vs Arm A 20.3 ms and the 19.17 ms roofline floor — faster than bridge v2 but roughly 2.1× off Arm A, so **not a win**; the gap to the floor is unprofiled.
+
+TP2 v2 detail: profile (`scripts/profile_qwen38_tp2.py` → `benchmarks/profile/SUMMARY_tp2.md`) found decode host-launch-bound (clean 44.4 ms/token vs 31.3 ms GPU busy; FP8 kernel 18.9 ms, collectives exactly 128 all-reduces = 1.28 ms, no redundant gather). Single shipped fix: fused RMSNorm (`--norm fused`, default; `--norm manual` A/B), raw record `benchmarks/baseline/ours_tp2_v2.json`: TPOT 41.8–42.8 ms (23.4–23.9 tok/s), ids identical to v1 and 32/32 exact ×3 — still ~2.2× off Arm A/floor, **not a win**.
 
 Raw v2 record: `benchmarks/baseline/ours_pipeline_fastfp8.json` (`--sampling-sync batched --grad-mode inference`; A/B toggles `--fp8-path reference --sampling-sync per-token --grad-mode no-grad` reproduce v1 at 1.82 tok/s, 8/8 prefix). v2 is ~10.7× v1, driven by removing the profiled dequant cost (`benchmarks/profile/SUMMARY.md`: ~243 ms/token/GPU dequant vs ~25 ms matmul). Batched-vs-per-token sampling sync alone was 19.57 vs 19.56 tok/s — no measurable difference once dequant is gone, so no speed is claimed for it. Other profile candidates were audited and skipped where evidence does not justify a change: no `BlockFP8Linear` is called twice with the same weight in one forward (each projection fires once per block), and the pipeline boundary transfer is one `[1, 1, 5120]` BF16 tensor per token (~10 KB), negligible next to the dequant traffic — neither was changed. `--grad-mode inference` (default) replaces `no_grad` with `inference_mode`; `--grad-mode no-grad` reproduces the old context. **Not a win vs Arm A:** Arm A greedy short c1 is TPOT p50 20.3 ms (~49 tok/s/stream, 2745 tok/min); v2 TPOT is ~50.7 ms (~19.7 tok/s, ~1180 tok/min). v2 clears neither the throughput nor the TPOT threshold above, and Arm B is still unmeasured.
 

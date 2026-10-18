@@ -218,7 +218,7 @@ The Tiny-to-Qwen ladder lives here. One codebase climbs it: only
   deliberate quality trade on model outputs.
 - **Builds on:** 05, 08, 10, 12
 
-### 23 — Tensor parallelism: two-rank sharding simulation — Built (CPU)
+### 23 — Tensor parallelism — Built (CPU simulation + distributed tiny + measured real TP2)
 
 - **Book framing:** sec. 5.4 (tensor parallelism), with sec. 2.2
   (config/mechanics), sec. 2.4–2.5 (bottlenecks/attention),
@@ -229,9 +229,13 @@ The Tiny-to-Qwen ladder lives here. One codebase climbs it: only
   with exact shard/merge roundtrips and dense-equivalent matmuls on
   CPU; price the 128 all-reduces per forward and the per-rank bytes.
   The 2-rank NCCL all-reduce cost was since measured on GPU
-  (6.81 GB/s bus, 8.67 us fitted latency; `benchmarks/roofline/`), and
-  a pipeline-by-layers bridge ran the full model across both GPUs —
-  but true TP collectives inside the forward remain future work.
+  (6.81 GB/s bus, 8.67 us fitted latency; `benchmarks/roofline/`).
+  True TP2 has since run the full 27B model (`tp_distributed.py`,
+  `tp_checkpoint.py`, `scripts/run_qwen38_tp2.py`): v1 22.9–23.6 tok/s,
+  v2 (fused RMSNorm) 23.4–23.9 tok/s, both 32/32 exact ×3 vs the
+  pipeline bridge (retained as oracle) and vLLM Arm A; profile shows
+  host-launch-bound decode (128 all-reduces/token = 1.28 ms). Still
+  ~2.1× off Arm A — no win claimed. See `docs/23_tensor_parallel.md`.
 - **Builds on:** 21, 22
 
 ### 24 — Native MTP head: foundations — Built (CPU)
