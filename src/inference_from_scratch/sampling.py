@@ -142,6 +142,16 @@ def sample_next(
          are exactly reproducible (tests and eval harnesses depend on
          this; production serving deliberately does not seed).
     A bare [V] input is treated as B=1 and still returns [1, 1].
+
+    Device rule: ``torch.multinomial`` requires the generator to live
+    on the probs' device, but callers naturally hold a CPU generator
+    (``torch.Generator()`` defaults to CPU) while the model may run on
+    CUDA. A device-mismatched generator is therefore re-homed: one
+    seed is drawn from the caller's generator (advancing its stream,
+    so successive calls still draw different samples) and a fresh
+    generator on the probs' device is seeded with it. Two runs seeded
+    identically stay exactly reproducible; same-device generators are
+    passed through untouched.
     """
     if temperature < 0:
         raise ValueError(f"temperature must be >= 0 (0 means greedy), got {temperature}")
@@ -157,4 +167,7 @@ def sample_next(
     out = top_k_filter(out, top_k)
     out = top_p_filter(out, top_p)
     probs = torch.softmax(out, dim=-1)
+    if generator is not None and generator.device != probs.device:
+        seed = int(torch.randint(0, 2**62, (1,), generator=generator).item())
+        generator = torch.Generator(device=probs.device).manual_seed(seed)
     return torch.multinomial(probs, num_samples=1, generator=generator)

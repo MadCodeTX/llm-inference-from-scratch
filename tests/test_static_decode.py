@@ -104,6 +104,19 @@ def test_static_state_shapes_and_position_tensor():
         st.linear_state(3)
 
 
+def test_static_state_defaults_follow_model_dtype():
+    # The factory must not silently hand back an fp32/CPU state for a
+    # model placed elsewhere: dtype (CPU-checkable) and, by the same
+    # code path, device follow the model's parameters unless overridden.
+    m = _tiny_lm(seed=8).to(dtype=torch.float64)
+    st = m.static_state(batch_size=2, max_seq_len=8)
+    assert st.kv_cache.k_cache.dtype == torch.float64
+    assert st.linear_S[0].dtype == torch.float64
+    assert st.device == next(m.parameters()).device
+    st32 = m.static_state(batch_size=2, max_seq_len=8, dtype=torch.float32)
+    assert st32.kv_cache.k_cache.dtype == torch.float32  # explicit wins
+
+
 def test_static_snapshot_is_explicit_clone_and_copy_from_restores():
     m = _tiny_lm(seed=4)
     st = m.static_state(batch_size=2, max_seq_len=16)

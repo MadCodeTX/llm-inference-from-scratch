@@ -1890,7 +1890,21 @@ class TinyHybridLM(nn.Module):
         device: torch.device | str | None = None,
         dtype: torch.dtype | None = None,
     ) -> StaticHybridState:
-        """Allocate a :class:`StaticHybridState` for this model's config."""
+        """Allocate a :class:`StaticHybridState` for this model's config.
+
+        ``device`` / ``dtype`` default to this model's own parameter
+        device/dtype, so a model moved to CUDA (or cast to bf16) gets a
+        state that can actually be stepped without the caller having
+        to repeat the model's placement. Pass them explicitly to
+        override (e.g. an fp32 state for a bf16 model).
+        """
+        if device is None or dtype is None:
+            param = next(self.parameters(), None)
+            if param is not None:
+                if device is None:
+                    device = param.device
+                if dtype is None:
+                    dtype = param.dtype
         return StaticHybridState(
             self.config, batch_size=batch_size,
             max_seq_len=max_seq_len if max_seq_len is not None else self.config.max_position_embeddings,
