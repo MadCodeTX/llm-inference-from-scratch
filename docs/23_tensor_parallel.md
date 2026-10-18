@@ -21,9 +21,13 @@ partials sum in one all-reduce — and prove on CPU, with exact
 shard/merge roundtrips and dense-equivalent matmuls, that the cuts
 never separate two rows the maths treats as a unit.
 
-This chapter builds and proves the partitioning *maths* only. There is
-no distributed runtime, no process group and no GPU work here; a later
-step can put real collectives behind these same specs.
+This chapter first builds and proves the partitioning *maths* on CPU.
+Real two-process execution behind the same specs now also exists (see
+"Simulated vs distributed" below): `tp_distributed.py` +
+`scripts/tp2_tiny_check.py` run actual NCCL (GPU) and gloo (CPU)
+collectives at tiny scale. The full 27B model is not yet run under
+distributed TP — only the tiny MLP / attention / gated-delta blocks
+are proven end-to-end across two processes.
 
 ## Why the naive even split is wrong twice
 
@@ -223,11 +227,50 @@ The linear rows do not move with `seq_len` — that fixed state is the
 hybrid model's long-context advantage — while the 16 full layers' KV
 cache is the only term that grows, and TP halves it per rank.
 
+## Simulated vs distributed
+
+| Aspect | Simulated (existing) | Distributed (new) |
+|---|---|---|
+| Module | `tensor_parallel.py`: `SimulatedProcessGroup`, `ColumnParallelLinear`/`RowParallelLinear`, `TPMLP`, `TPFullAttention`, `TPGatedDeltaNet` | `tp_distributed.py`: `DistributedTPContext`, `TPColumnLinear`/`TPRowLinear`, `DistributedSwiGLU`, `DistributedFullAttention`, `DistributedGatedDeltaNet` |
+| Processes | one process, ranks are list positions | two OS processes under `torchrun` (`scripts/tp2_tiny_check.py`) |
+| Collectives | in-process sum / concat | real `dist.all_reduce` (in-place, returns the same tensor) + `all_gather`-concat (uneven dim-0 padded) |
+| Weights held | all ranks' shards in one process | only this rank's shard per process, built via `shard_state_dict` specs from the dense weights |
+| Backends proven | CPU only | NCCL on `cuda:LOCAL_RANK` (fp32 + bf16) and gloo on CPU, both world=2 |
+| Coverage | MLP, full attention (incl. KV-cache path), gated-delta step, state bytes | tiny SwiGLU MLP, tiny `GatedFullAttention`, `GatedDeltaNet` decode step (output + merged state), all vs dense reference from the same seed |
+| Results | `tests/test_tp_runtime.py` | fp32 max err ≤1.2e-7 (tight assert); bf16 reported max err 1.95e-3; per-rank shard shapes + peak memory printed (GPU peak 8.3 MiB/rank at tiny scale) |
+
+Reproduce:
+
+```bash
+.venv-gpu/bin/torchrun --nproc_per_node=2 scripts/tp2_tiny_check.py
+.venv/bin/torchrun --nproc_per_node=2 scripts/tp2_tiny_check.py --backend gloo --device cpu
+```
+
+The gloo run takes ~1.5 s, so `tests/test_tp_distributed.py` keeps it
+as a durable subprocess test alongside unit tests of shard
+construction. The gated-delta step lifted cleanly: the simulated
+per-rank branch (segmented qkv shard, local conv/recurrence over its
+value heads, `out_proj` partial) needed no new maths — only the
+in-process sum replaced by a real all-reduce.
+
+### Tiny all-reduce overhead per block (from measured microbench, not remeasured)
+
+From `benchmarks/roofline/SUMMARY.md` / `roofline_derived.json`
+(2-rank NCCL over PCIe, least-squares fit
+`seconds = latency + bytes/bus`): fixed latency **8.67 µs** per
+collective, bus **6.81 GB/s**. At real decode shape (hidden 5120,
+`[1, 5120]` BF16 partials = 10240 B), one all-reduce costs
+≈ 8.67 µs + 10240/6.81 GB/s ≈ **10.2 µs**; a block issues 2
+(mixer + MLP), so ≈ **17.3 µs latency-only, ~20 µs including the byte
+term, per block** — latency-dominated, as ch. 23's byte table
+predicts. Over 64 blocks that is ~1.11 ms/token latency-only
+(128 × 8.67 µs, as in `roofline_derived.json`), small next to the
+19.17 ms TP2 weight-read floor.
+
 ## What this deliberately is not
 
-No `torch.distributed`, no processes, no NCCL/PCIe transfer is run:
-the simulated process group performs collectives as explicit
-in-process sums/concatenations so the *maths* is the thing under test.
-GPU execution, real collectives and benchmarking the partitioning are
-gated on a later approved window, exactly like the rest of this
-repo's GPU work.
+The full 27B model does not run under distributed TP yet: no
+distributed TP prefill, no KV-cache path in the distributed attention
+(the simulated one has it), no vocab-parallel embedding/head, and no
+TP serving benchmark. Those remain gated on later approved windows,
+exactly like the rest of this repo's GPU work.
