@@ -47,8 +47,11 @@ interleave, *not* "first half of the flat vector is all queries".
 The gate then multiplies the attention output as
 ``attn_output * sigmoid(gate)`` before ``o_proj`` (modeling line 804;
 the checkpoint config labels this ``output_gate_type="swish"`` --
-``sigmoid`` is what the reference code applies, and is the default
-here; ``gate_activation="silu"`` selects ``silu(gate)`` instead).
+``sigmoid`` is what the reference code applies, so ``"swish"``
+resolves to ``"sigmoid"`` here whether it arrives via the config or
+via ``gate_activation=``. ``gate_activation="silu"`` remains an
+explicit non-HF alternative: ``silu(g) = g * sigmoid(g)`` is not the
+reference op and must never be selected by the config label).
 
 Partial RoPE and mrope
 -----------------------
@@ -56,11 +59,16 @@ Only the first ``rotary_dim = head_dim * partial_rotary_factor`` dims
 rotate (64 of 256 in the real model); the tail is identity. The real
 config carries mrope sections ``[11, 11, 10]`` over the 32 rotary
 *frequency pairs*: with interleaved mrope, the temporal/height/width
-position axes pick different frequency slots. For text-only input all
+position axes pick different frequency slots (H overwrites slots
+``1, 4, 7, ...``, W slots ``2, 5, 8, ...``). For text-only input all
 three axes carry the same position, so the recomposition is the
-identity and plain 1-D partial RoPE (this module) is exact; mrope
-matters only once vision tokens supply distinct H/W positions, which
-is the deferred vision tower's problem (see docs/22).
+identity and plain 1-D partial RoPE is exact. The full-attention path
+accepts explicit ``position_ids`` (``[T]`` or ``[3, T]``) and builds
+tables with :func:`precompute_mrope_cos_sin`: a ``[T]`` input is the
+text path repeated to three axes and reproduces the default exactly,
+while a vision-shaped ``[3, T]`` with distinct H/W axes rotates only
+the slots those axes own. No vision tensor is executed here; the
+position seam is (see docs/22).
 
 How production differs
 ------------------------
@@ -89,6 +97,7 @@ from .kv_cache import KVCache, StaticKVCache
 from .layers import precompute_rope_cache, apply_rope
 from .linear_attention import GatedDeltaNet, LinearAttentionState
 from .mlp import SwiGLU
+from .sampling import sample_next
 from .weights import read_safetensors_header
 
 __all__ = [
@@ -102,7 +111,9 @@ __all__ = [
     "ZeroCenteredRMSNorm",
     "TinyHybridLM",
     "apply_partial_rope",
+    "generate_hybrid",
     "partial_rope_dim",
+    "precompute_mrope_cos_sin",
     "precompute_partial_rope_cache",
     "list_hybrid_tensor_map",
     "hybrid_tensor_map",
@@ -223,6 +234,137 @@ def apply_partial_rope(
         sin[..., :rotary_dim],
         start_pos=start_pos,
     )
+    return torch.cat([rotated, x[..., rotary_dim:]], dim=-1)
+
+
+# ---------------------------------------------------------------------------
+# mRoPE: three position axes (T/H/W) recomposed over the rotary pairs.
+# ---------------------------------------------------------------------------
+
+
+def _normalize_position_ids(
+    position_ids: torch.Tensor, seq_len: int
+) -> torch.Tensor:
+    """Normalise caller positions to ``[3, T]`` or ``[3, B, T]``.
+
+    Accepted shapes: ``[T]`` (text: the one axis, repeated to all three
+    mRoPE axes), ``[3, T]`` (per-axis positions, shared across the
+    batch), ``[B, T]`` (text positions per batch row, repeated to three
+    axes) and ``[3, B, T]`` (HF's batched vision-aware form). Anything
+    else -- wrong rank, or a last dim other than ``seq_len`` -- raises.
+    A 2-D tensor whose first dim is 3 is read as ``[3, T]`` (the task's
+    vision-shaped form); a genuine 3-row text batch must use the 3-D
+    form to avoid that ambiguity.
+    """
+    if not isinstance(position_ids, torch.Tensor):
+        raise ValueError(
+            f"position_ids must be a tensor, got {type(position_ids).__name__}"
+        )
+    p = position_ids
+    if p.dim() == 1:
+        if p.shape[0] != seq_len:
+            raise ValueError(
+                f"position_ids [T] must have T={seq_len}, got {p.shape[0]}"
+            )
+        return p.unsqueeze(0).expand(3, seq_len)
+    if p.dim() == 2:
+        if p.shape[0] == 3 and p.shape[1] == seq_len:
+            return p
+        if p.shape[1] == seq_len:
+            return p.unsqueeze(0).expand(3, p.shape[0], seq_len)
+        raise ValueError(
+            f"position_ids [3, T] / [B, T] must end with T={seq_len}, "
+            f"got shape {tuple(p.shape)}"
+        )
+    if p.dim() == 3:
+        if p.shape[0] == 3 and p.shape[2] == seq_len:
+            return p
+        raise ValueError(
+            f"position_ids [3, B, T] must start with 3 and end with "
+            f"T={seq_len}, got shape {tuple(p.shape)}"
+        )
+    raise ValueError(
+        f"position_ids must be [T], [3, T], [B, T] or [3, B, T], "
+        f"got shape {tuple(p.shape)}"
+    )
+
+
+def precompute_mrope_cos_sin(
+    position_ids: torch.Tensor,
+    rotary_dim: int,
+    theta: float = 10000.0,
+    mrope_section: Sequence[int] | None = None,
+    dtype: torch.dtype | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """mRoPE cos/sin for explicit positions: ``([T, R], [T, R])``.
+
+    Mirrors HF ``Qwen3_5TextRotaryEmbedding`` (modeling_qwen3_5.py):
+    frequencies ``pos * theta ** (-2i / R)`` are built per axis over
+    the ``R // 2`` rotary pairs, then *interleaved* recomposition lets
+    the H axis overwrite pair slots ``1, 4, 7, ...`` and the W axis
+    slots ``2, 5, 8, ...`` (stride 3, bounded by
+    ``mrope_section[axis] * 3``), with the T axis supplying every other
+    slot. The result is duplicated to the rotate-half layout
+    ``cat([half, half])`` that :func:`apply_partial_rope` consumes, so
+    pair slot ``j`` lives at columns ``j`` and ``j + R // 2``.
+
+    Input is ``[T]`` or ``[3, T]`` (batched ``[B, T]`` / ``[3, B, T]``
+    also accepted, returning ``[B, T, R]``). For text -- all three axes
+    equal -- every overwrite writes the value already there, so the
+    recomposition is the identity and the tables equal the plain 1-D
+    partial-RoPE tables for the same positions. HF's recomposition
+    runs on the cos/sin values; recomposing the angles first and then
+    taking cos/sin is the same thing elementwise.
+    """
+    if rotary_dim <= 0 or rotary_dim % 2:
+        raise ValueError(f"rotary_dim must be a positive even int, got {rotary_dim}")
+    if not isinstance(position_ids, torch.Tensor) or position_ids.dim() == 0:
+        raise ValueError("position_ids must be a tensor with at least one dim")
+    seq_len = int(position_ids.shape[-1])
+    pos3 = _normalize_position_ids(position_ids, seq_len)  # [3, T] | [3, B, T]
+    section = [int(v) for v in (mrope_section if mrope_section is not None else [11, 11, 10])]
+    if len(section) != 3:
+        raise ValueError(f"mrope_section must have 3 entries, got {section}")
+    n_pairs = rotary_dim // 2
+    inv_freq = 1.0 / (
+        theta ** (torch.arange(0, rotary_dim, 2, device=pos3.device).float() / rotary_dim)
+    )  # [R/2]
+    angles = pos3.float().unsqueeze(-1) * inv_freq  # [3, (B,) T, R/2]
+    recomposed = angles[0].clone()
+    for axis, offset in ((1, 1), (2, 2)):
+        idx = slice(offset, section[axis] * 3, 3)
+        if idx.start < n_pairs:
+            recomposed[..., idx] = angles[axis][..., idx]
+    cos_half, sin_half = recomposed.cos(), recomposed.sin()
+    cos = torch.cat([cos_half, cos_half], dim=-1)
+    sin = torch.cat([sin_half, sin_half], dim=-1)
+    if dtype is not None:
+        cos, sin = cos.to(dtype), sin.to(dtype)
+    return cos, sin
+
+
+def _apply_rope_with_tables(
+    x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, rotary_dim: int
+) -> torch.Tensor:
+    """Rotate ``x`` ``[B, H, T, D]`` with per-position tables.
+
+    ``cos`` / ``sin`` are ``[T, R]`` (shared over the batch) or
+    ``[B, T, R]`` (per row), already in the duplicated rotate-half
+    layout over the rotary prefix; dims past ``rotary_dim`` pass
+    through untouched, exactly as in :func:`apply_partial_rope`.
+    """
+    prefix = x[..., :rotary_dim]
+    if cos.dim() == 2:
+        c = cos.view(1, 1, cos.shape[0], rotary_dim).to(dtype=x.dtype, device=x.device)
+        s = sin.view(1, 1, sin.shape[0], rotary_dim).to(dtype=x.dtype, device=x.device)
+    else:
+        c = cos.unsqueeze(1).to(dtype=x.dtype, device=x.device)
+        s = sin.unsqueeze(1).to(dtype=x.dtype, device=x.device)
+    half = rotary_dim // 2
+    rotated_half = torch.cat([-prefix[..., half:], prefix[..., :half]], dim=-1)
+    rotated = prefix * c + rotated_half * s
+    if rotary_dim >= x.shape[-1]:
+        return rotated
     return torch.cat([rotated, x[..., rotary_dim:]], dim=-1)
 
 
@@ -623,6 +765,11 @@ class GatedFullAttention(nn.Module):
             else _cfg_get(config, "partial_rotary_factor", default=0.25)
         )
         self.rotary_dim = partial_rope_dim(self.head_dim, self.partial_rotary_factor)
+        cfg_section = _cfg_get(config, "mrope_section", default=None)
+        self.mrope_section: list[int] = (
+            [int(v) for v in cfg_section] if cfg_section is not None else [11, 11, 10]
+        )
+        self.mrope_interleaved = bool(_cfg_get(config, "mrope_interleaved", default=True))
         self.rope_theta = float(
             rope_theta if rope_theta is not None else _cfg_get(config, "rope_theta", default=10000.0)
         )
@@ -639,11 +786,34 @@ class GatedFullAttention(nn.Module):
             self.attn_implementation = "manual"
         if self.attn_implementation not in ("manual", "sdpa"):
             raise ValueError(f"attn_implementation must be 'manual' or 'sdpa', got {self.attn_implementation!r}")
-        self.gate_activation = str(gate_activation or "sigmoid").lower()
-        if self.gate_activation in ("swish",):
-            self.gate_activation = "silu"
-        if self.gate_activation not in ("sigmoid", "silu", "none"):
-            raise ValueError(f"gate_activation must be 'sigmoid', 'silu' or 'none', got {gate_activation!r}")
+        # Gate resolution. HF Qwen3_5Attention.forward applies
+        # ``attn_output * torch.sigmoid(gate)`` unconditionally
+        # (modeling_qwen3_5.py line 804); the checkpoint config's
+        # ``output_gate_type="swish"`` is only a label for that op --
+        # SiLU (``x * sigmoid(x)``) is a *different* function and is
+        # never what the reference computes. So "swish" resolves to
+        # "sigmoid" here, whether it arrives via the explicit
+        # ``gate_activation`` argument or via the config's
+        # ``output_gate_type``; ``gate_activation="silu"`` remains an
+        # explicit non-HF alternative, and ``attn_output_gate=False``
+        # in the config disables the gate entirely.
+        cfg_gate = _cfg_get(config, "output_gate_type", default=None)
+        cfg_gate_enabled = _cfg_get(config, "attn_output_gate", default=True)
+        if gate_activation is not None:
+            requested_gate = str(gate_activation).lower()
+        elif cfg_gate is not None:
+            requested_gate = str(cfg_gate).lower()
+        elif cfg_gate_enabled is False:
+            requested_gate = "none"
+        else:
+            requested_gate = "sigmoid"
+        if requested_gate in ("swish", "sigmoid"):
+            requested_gate = "sigmoid"
+        if requested_gate not in ("sigmoid", "silu", "none"):
+            raise ValueError(
+                f"gate_activation must be 'sigmoid', 'silu' or 'none', got {gate_activation!r}"
+            )
+        self.gate_activation = requested_gate
         self.scaling = self.head_dim ** -0.5
 
         D, H, Hkv, Dh = self.d_model, self.n_head, self.n_kv_head, self.head_dim
@@ -684,6 +854,7 @@ class GatedFullAttention(nn.Module):
         layer_idx: int = 0,
         start_pos: int = 0,
         attention_mask: torch.Tensor | None = None,
+        position_ids: torch.Tensor | None = None,
         **kwargs: Any,
     ) -> torch.Tensor:
         """``x`` ``[B, T, D] -> [B, T, D]`` (causal, KV-cache aware).
@@ -692,7 +863,19 @@ class GatedFullAttention(nn.Module):
         full-head tables are sliced); when omitted, tables precomputed
         from the config are used. ``position_embeddings=(cos, sin)``
         is accepted as an alias (HF calling convention).
+
+        ``position_ids`` (``[T]`` or ``[3, T]``; batched ``[B, T]`` /
+        ``[3, B, T]`` also accepted) gives explicit absolute positions
+        and takes precedence over ``cos``/``sin``: tables are built
+        with :func:`precompute_mrope_cos_sin`, so a ``[T]`` text input
+        (repeated to all three mRoPE axes) reproduces the default
+        ``start_pos`` path, while differing H/W axes in a ``[3, T]``
+        input rotate only their interleaved pair slots. ``start_pos``
+        does not offset explicit positions -- they are already
+        absolute.
         """
+        if position_ids is None:
+            position_ids = kwargs.get("position_ids")
         if cos is None and "position_embeddings" in kwargs:
             cos, sin = kwargs["position_embeddings"]
         if kv_cache is None and "past_key_values" in kwargs:
@@ -712,10 +895,23 @@ class GatedFullAttention(nn.Module):
         k = self.k_norm(k).transpose(1, 2)  # [B, Hkv, T, Dh]
         v = v.transpose(1, 2)  # [B, Hkv, T, Dh]
 
-        if cos is None or sin is None:
-            cos, sin = self._rope_tables(start_pos + T, x.device, x.dtype)
-        q = apply_partial_rope(q, cos, sin, start_pos=start_pos, rotary_dim=self.rotary_dim)
-        k = apply_partial_rope(k, cos, sin, start_pos=start_pos, rotary_dim=self.rotary_dim)
+        if position_ids is not None:
+            if not isinstance(position_ids, torch.Tensor) or position_ids.shape[-1] != T:
+                got = tuple(position_ids.shape) if isinstance(position_ids, torch.Tensor) else type(position_ids).__name__
+                raise ValueError(
+                    f"position_ids must end with T={T} (one position per token), got {got}"
+                )
+            pos_cos, pos_sin = precompute_mrope_cos_sin(
+                position_ids, self.rotary_dim, theta=self.rope_theta,
+                mrope_section=self.mrope_section,
+            )
+            q = _apply_rope_with_tables(q, pos_cos, pos_sin, self.rotary_dim)
+            k = _apply_rope_with_tables(k, pos_cos, pos_sin, self.rotary_dim)
+        else:
+            if cos is None or sin is None:
+                cos, sin = self._rope_tables(start_pos + T, x.device, x.dtype)
+            q = apply_partial_rope(q, cos, sin, start_pos=start_pos, rotary_dim=self.rotary_dim)
+            k = apply_partial_rope(k, cos, sin, start_pos=start_pos, rotary_dim=self.rotary_dim)
 
         if kv_cache is not None:
             if isinstance(kv_cache, StaticKVCache):
@@ -762,26 +958,147 @@ GatedAttention = GatedFullAttention
 # ---------------------------------------------------------------------------
 
 
-@dataclass
 class HybridState:
-    """Unified inference state for a hybrid stack.
+    """Typed inference state for a hybrid stack.
 
-    ``layer_states[i]`` is, by ``layer_types[i]``:
+    The canonical storage is ``entries``: one ``(tag, payload)`` pair
+    per layer, tagged by the layer's kind:
 
-    * ``"full_attention"``: ``None`` before the first token, else the
-      ``(k_all, v_all)`` pair, each ``[B, H_kv, T_filled, head_dim]``;
-    * ``"linear_attention"``: ``None`` (meaning zero state) or a
-      :data:`~inference_from_scratch.linear_attention.LinearAttentionState`
-      ``(S [B, Hv, Dk, Dv], conv_buffer [B, conv_dim, K-1])``.
+    * ``("kv", KVCache)`` for ``full_attention`` layers -- a
+      single-layer :class:`~inference_from_scratch.kv_cache.KVCache`
+      holding that layer's ``k_all`` / ``v_all``
+      (``[B, H_kv, T_filled, head_dim]`` each, empty until the first
+      token);
+    * ``("linear", (S, conv_buffer))`` for ``linear_attention``
+      layers -- the gated-delta recurrent pair
+      ``(S [B, Hv, Dk, Dv], conv_buffer [B, conv_dim, K-1])``, or
+      ``("linear", None)`` for the lazy zero state (no token seen yet;
+      the layer materialises zeros on first use).
 
     ``seq_len`` is the number of positions already processed (the next
-    token's absolute position). Snapshot/restore deep-copy every
-    tensor, so a restored state can be continued repeatedly and
-    independently -- the mixed-type analogue of ch-21's state pair.
+    token's absolute position). ``clone()`` / ``snapshot()`` /
+    ``restore()`` deep-copy every tensor, so a restored state can be
+    continued repeatedly and independently -- the mixed-type analogue
+    of ch-21's state pair. Branching is therefore cheap to express:
+    snapshot once after a shared prompt, restore per branch, and each
+    branch continues without seeing the others' writes.
+
+    Backward compatibility: the constructor still accepts the legacy
+    ``layer_states=[...]`` form (``None`` / ``(k, v)`` / ``(S, conv)``
+    per layer, disambiguated by ``layer_types`` when given), and the
+    :attr:`layer_states` property still reads/writes that legacy view
+    -- full layers as ``(k_all, v_all)`` or ``None`` when empty,
+    linear layers as ``(S, conv_buffer)`` or ``None``. The tensors in
+    the legacy view are the live payload tensors (not copies), so
+    in-place edits through it behave exactly as before.
     """
 
-    layer_states: list[Any] = field(default_factory=list)
-    seq_len: int = 0
+    def __init__(
+        self,
+        layer_states: Sequence[Any] | None = None,
+        seq_len: int = 0,
+        *,
+        layer_types: Sequence[str] | None = None,
+        entries: Sequence[tuple[str, Any]] | None = None,
+    ):
+        if entries is not None and layer_states is not None:
+            raise ValueError("pass only one of entries / layer_states")
+        self.seq_len = int(seq_len)
+        self.layer_types: list[str] | None = (
+            [_normalize_layer_type(t) for t in layer_types]
+            if layer_types is not None
+            else None
+        )
+        if entries is not None:
+            self._entries: list[tuple[str, Any]] = [
+                (str(tag), payload) for tag, payload in entries
+            ]
+        elif layer_states is not None:
+            self._entries = [
+                self._entry_from_legacy(i, s) for i, s in enumerate(layer_states)
+            ]
+        else:
+            self._entries = []
+
+    # -- construction helpers -------------------------------------------
+
+    def _tag_for(self, index: int) -> str:
+        if self.layer_types is not None and index < len(self.layer_types):
+            return "linear" if self.layer_types[index] == "linear_attention" else "kv"
+        return "kv"
+
+    def _entry_from_legacy(self, index: int, state: Any) -> tuple[str, Any]:
+        if isinstance(state, KVCache):
+            return ("kv", state)
+        tag = self._tag_for(index)
+        if state is None:
+            return ("linear", None) if tag == "linear" else ("kv", KVCache(1))
+        if tag == "linear":
+            s, conv = state
+            return ("linear", (s, conv))
+        cache = KVCache(1)
+        cache.keys[0], cache.values[0] = state[0], state[1]
+        return ("kv", cache)
+
+    @classmethod
+    def empty(
+        cls, layer_types: Sequence[str], seq_len: int = 0
+    ) -> "HybridState":
+        """Fresh state for a stack: empty KV caches + zero linear states."""
+        entries: list[tuple[str, Any]] = [
+            ("linear", None) if t == "linear_attention" else ("kv", KVCache(1))
+            for t in (_normalize_layer_type(x) for x in layer_types)
+        ]
+        return cls(entries=entries, seq_len=seq_len, layer_types=list(layer_types))
+
+    # -- typed access -----------------------------------------------------
+
+    @property
+    def entries(self) -> list[tuple[str, Any]]:
+        """The typed per-layer ``(tag, payload)`` pairs (list copy)."""
+        return list(self._entries)
+
+    def entry(self, index: int) -> tuple[str, Any]:
+        return self._entries[index]
+
+    def kv_cache(self, index: int) -> KVCache:
+        """The :class:`KVCache` payload of a full-attention layer."""
+        tag, payload = self._entries[index]
+        if tag != "kv":
+            raise ValueError(f"layer {index} holds a {tag!r} entry, not 'kv'")
+        return payload  # type: ignore[return-value]
+
+    def linear_state(self, index: int) -> LinearAttentionState | None:
+        """The ``(S, conv_buffer)`` payload of a linear layer (or None)."""
+        tag, payload = self._entries[index]
+        if tag != "linear":
+            raise ValueError(f"layer {index} holds a {tag!r} entry, not 'linear'")
+        return payload
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    # -- legacy view ------------------------------------------------------
+
+    @property
+    def layer_states(self) -> list[Any]:
+        out: list[Any] = []
+        for tag, payload in self._entries:
+            if tag == "kv":
+                cache: KVCache = payload
+                if cache.keys[0] is None:
+                    out.append(None)
+                else:
+                    out.append((cache.keys[0], cache.values[0]))
+            else:
+                out.append(payload)
+        return out
+
+    @layer_states.setter
+    def layer_states(self, states: Sequence[Any]) -> None:
+        self._entries = [
+            self._entry_from_legacy(i, s) for i, s in enumerate(states)
+        ]
 
     @property
     def position(self) -> int:
@@ -790,6 +1107,8 @@ class HybridState:
     @property
     def states(self) -> list[Any]:
         return self.layer_states
+
+    # -- copying ------------------------------------------------------------
 
     def snapshot(self) -> "HybridState":
         return _snapshot_hybrid_state(self)
@@ -800,6 +1119,10 @@ class HybridState:
     # clone() reads naturally at call sites that think in tensors.
     def clone(self) -> "HybridState":
         return _snapshot_hybrid_state(self)
+
+    def __repr__(self) -> str:
+        tags = ",".join(tag for tag, _ in self._entries)
+        return f"HybridState(seq_len={self.seq_len}, entries=[{tags}])"
 
 
 # Name that reads as "the cache object" at model call sites.
@@ -816,10 +1139,28 @@ def _clone_layer_state(state: Any) -> Any:
     return state
 
 
+def _clone_kv_cache(cache: KVCache) -> KVCache:
+    """Deep-copy a single-layer KVCache (tensors cloned, None kept)."""
+    out = KVCache(len(cache.keys))
+    out.keys = [k.clone() if k is not None else None for k in cache.keys]
+    out.values = [v.clone() if v is not None else None for v in cache.values]
+    return out
+
+
 def _snapshot_hybrid_state(state: HybridState) -> HybridState:
+    entries: list[tuple[str, Any]] = []
+    for tag, payload in state.entries:
+        if tag == "kv":
+            entries.append(("kv", _clone_kv_cache(payload)))
+        elif payload is None:
+            entries.append(("linear", None))
+        else:
+            s, conv = payload
+            entries.append(("linear", (s.clone(), conv.clone())))
     return HybridState(
-        layer_states=[_clone_layer_state(s) for s in state.layer_states],
+        entries=entries,
         seq_len=int(state.seq_len),
+        layer_types=state.layer_types,
     )
 
 
@@ -898,27 +1239,49 @@ class HybridBlock(nn.Module):
         sin: torch.Tensor | None = None,
         start_pos: int = 0,
         layer_idx: int | None = None,
+        position_ids: torch.Tensor | None = None,
+        prefill_method: str = "sequential",
+        chunk_size: int = 64,
     ) -> tuple[torch.Tensor, Any]:
         """Run the block threading one layer's state.
 
-        ``layer_state`` is ``(k_all, v_all)`` / ``None`` for full
-        layers (fed through the repo :class:`KVCache` internally) and
-        a linear-attention state / ``None`` for linear layers.
-        Returns ``(out [B, T, D], new_layer_state)``; the input state
-        tensors are never mutated.
+        ``layer_state`` is, for full layers, a single-layer
+        :class:`KVCache`, a legacy ``(k_all, v_all)`` pair, or
+        ``None`` (empty); for linear layers a
+        ``(S, conv_buffer)`` state or ``None`` (zero state).
+        ``position_ids`` (full layers only) and
+        ``prefill_method`` / ``chunk_size`` (linear layers only) are
+        forwarded to the token mixer. Returns
+        ``(out [B, T, D], new_layer_state)`` with the legacy payload
+        shapes -- ``(k_all, v_all)`` for full layers, ``(S, conv)``
+        for linear ones; :class:`TinyHybridLM` wraps the full-layer
+        pair into the typed ``("kv", KVCache)`` entry. The input state
+        is never mutated (a passed ``KVCache`` is forked, not written
+        through: ``KVCache.update`` only ever rebinds its slots to
+        freshly concatenated tensors).
         """
         idx = self.layer_idx if layer_idx is None else int(layer_idx)
         h = self.input_layernorm(x)
         if self.layer_type == "full_attention":
             assert self.self_attn is not None
-            cache = KVCache(1)
-            if layer_state is not None:
-                cache.keys[0], cache.values[0] = layer_state
-            mixed = self.self_attn(h, cos, sin, kv_cache=cache, layer_idx=0, start_pos=start_pos)
+            if isinstance(layer_state, KVCache):
+                cache = KVCache(len(layer_state.keys))
+                cache.keys = list(layer_state.keys)
+                cache.values = list(layer_state.values)
+            else:
+                cache = KVCache(1)
+                if layer_state is not None:
+                    cache.keys[0], cache.values[0] = layer_state
+            mixed = self.self_attn(
+                h, cos, sin, kv_cache=cache, layer_idx=0,
+                start_pos=start_pos, position_ids=position_ids,
+            )
             new_state = (cache.keys[0], cache.values[0])
         else:
             assert self.linear_attn is not None
-            mixed, new_state = self.linear_attn.forward_prefill(h, state=layer_state)
+            mixed, new_state = self.linear_attn.forward_prefill(
+                h, state=layer_state, method=prefill_method, chunk_size=chunk_size
+            )
         x = x + mixed
         x = x + self.mlp(self.post_attention_layernorm(x))
         return x, new_state
@@ -932,6 +1295,9 @@ class HybridBlock(nn.Module):
         layer_idx: int = 0,
         start_pos: int = 0,
         state: Any = None,
+        position_ids: torch.Tensor | None = None,
+        prefill_method: str = "sequential",
+        chunk_size: int = 64,
         **kwargs: Any,
     ) -> Any:
         """Hidden-only forward, or ``(hidden, state)`` when state is used.
@@ -939,17 +1305,26 @@ class HybridBlock(nn.Module):
         With no state arguments this runs a stateless full-sequence
         pass and returns ``[B, T, D]``. Passing ``state=`` (a per-layer
         state) or a ``kv_cache`` for a full layer threads state and
-        returns ``(hidden, new_layer_state)``.
+        returns ``(hidden, new_layer_state)``. ``position_ids`` /
+        ``prefill_method`` / ``chunk_size`` are forwarded to the token
+        mixer (also accepted as ``**kwargs`` for HF-style callers).
         """
+        if position_ids is None:
+            position_ids = kwargs.get("position_ids")
         if state is not None or kwargs.get("layer_state") is not None:
             return self.forward_with_state(
                 x, state if state is not None else kwargs["layer_state"],
                 cos=cos, sin=sin, start_pos=start_pos, layer_idx=layer_idx,
+                position_ids=position_ids,
+                prefill_method=prefill_method, chunk_size=chunk_size,
             )
         h = self.input_layernorm(x)
         if self.layer_type == "full_attention":
             assert self.self_attn is not None
-            mixed = self.self_attn(h, cos, sin, kv_cache=kv_cache, layer_idx=layer_idx, start_pos=start_pos)
+            mixed = self.self_attn(
+                h, cos, sin, kv_cache=kv_cache, layer_idx=layer_idx,
+                start_pos=start_pos, position_ids=position_ids,
+            )
         else:
             assert self.linear_attn is not None
             mixed = self.linear_attn(h)
@@ -1032,10 +1407,18 @@ class TinyHybridLM(nn.Module):
         device: torch.device | str | None = None,
         dtype: torch.dtype = torch.float32,
     ) -> HybridState:
-        """Fresh empty mixed state (all layers ``None``, ``seq_len=0``)."""
+        """Fresh empty mixed state (typed entries, ``seq_len=0``).
+
+        Full layers start as ``("kv", KVCache)`` with nothing cached;
+        linear layers as the lazy zero state ``("linear", None)``.
+        ``batch_size`` / ``device`` / ``dtype`` are accepted for
+        signature compatibility with the per-layer state constructors;
+        both payload kinds materialise lazily on the first forward, so
+        they are not needed here.
+        """
         if batch_size <= 0:
             raise ValueError(f"batch_size must be positive, got {batch_size}")
-        return HybridState(layer_states=[None] * len(self.layers), seq_len=0)
+        return HybridState.empty(self.config.layer_types, seq_len=0)
 
     def zero_state(self, *args: Any, **kwargs: Any) -> HybridState:
         return self.initial_state(*args, **kwargs)
@@ -1067,6 +1450,9 @@ class TinyHybridLM(nn.Module):
         idx: torch.Tensor,
         state: HybridState | None = None,
         start_pos: int | None = None,
+        position_ids: torch.Tensor | None = None,
+        prefill_method: str = "sequential",
+        chunk_size: int = 64,
         **kwargs: Any,
     ) -> tuple[torch.Tensor, HybridState]:
         """Token ids ``[B, T]`` -> ``(logits [B, T, V], new_state)``.
@@ -1075,9 +1461,21 @@ class TinyHybridLM(nn.Module):
         continues at ``state.seq_len`` (or explicit ``start_pos``).
         ``cache=`` / ``hybrid_state=`` / ``kv_caches=`` (when it holds a
         :class:`HybridState`) are accepted as aliases for ``state``.
-        The input state is never mutated: the returned state owns the
-        extended KV / recurrent tensors.
+
+        ``position_ids`` (``[T]`` or ``[3, T]``) supplies explicit
+        absolute positions to the full-attention layers only (the
+        gated-delta layers carry no position embedding); the default
+        is the text path ``arange(start_pos, start_pos + T)`` repeated
+        over the three mRoPE axes, which the mRoPE recomposition maps
+        to exactly the default tables. ``prefill_method`` /
+        ``chunk_size`` select the linear layers' prefill evaluation
+        (``"sequential"`` by default, as in
+        :meth:`GatedDeltaNet.forward_prefill`). The input state is
+        never mutated: the returned state owns the extended KV /
+        recurrent tensors.
         """
+        if position_ids is None:
+            position_ids = kwargs.get("position_ids")
         if state is None:
             for alias in ("cache", "hybrid_state", "kv_caches", "past_key_values"):
                 candidate = kwargs.get(alias)
@@ -1087,31 +1485,68 @@ class TinyHybridLM(nn.Module):
         if idx.dim() == 1:
             idx = idx.unsqueeze(0)
         B, T = idx.shape
+        if position_ids is not None and (
+            not isinstance(position_ids, torch.Tensor) or position_ids.shape[-1] != T
+        ):
+            got = tuple(position_ids.shape) if isinstance(position_ids, torch.Tensor) else type(position_ids).__name__
+            raise ValueError(
+                f"position_ids must end with T={T} (one position per token), got {got}"
+            )
         if state is None:
             state = self.initial_state(B, device=idx.device)
-        if len(state.layer_states) != len(self.layers):
+        if len(state) != len(self.layers):
             raise ValueError(
-                f"state has {len(state.layer_states)} layers, model has {len(self.layers)}"
+                f"state has {len(state)} layers, model has {len(self.layers)}"
             )
         if start_pos is None:
             start_pos = int(state.seq_len)
         cos, sin = self._rope(start_pos + T, idx.device, torch.float32)
         x = self.embed_tokens(idx)
-        new_layer_states: list[Any] = []
+        new_entries: list[tuple[str, Any]] = []
         for i, block in enumerate(self.layers):
-            x, layer_state = block.forward_with_state(
-                x, state.layer_states[i], cos=cos, sin=sin,
-                start_pos=start_pos, layer_idx=i,
-            )
-            new_layer_states.append(layer_state)
+            tag, payload = state.entry(i)
+            if block.layer_type == "full_attention":
+                x, kv_pair = block.forward_with_state(
+                    x, payload, cos=cos, sin=sin,
+                    start_pos=start_pos, layer_idx=i,
+                    position_ids=position_ids,
+                )
+                cache = KVCache(1)
+                cache.keys[0], cache.values[0] = kv_pair
+                new_entries.append(("kv", cache))
+            else:
+                # A legacy state built without layer_types may hold an
+                # empty-KV placeholder here; it means the zero state.
+                block_payload = payload
+                if isinstance(block_payload, KVCache) and block_payload.keys[0] is None:
+                    block_payload = None
+                x, linear_payload = block.forward_with_state(
+                    x, block_payload, cos=cos, sin=sin,
+                    start_pos=start_pos, layer_idx=i,
+                    prefill_method=prefill_method, chunk_size=chunk_size,
+                )
+                new_entries.append(("linear", linear_payload))
         logits = self.lm_head(self.norm(x))
-        return logits, HybridState(layer_states=new_layer_states, seq_len=start_pos + T)
+        return logits, HybridState(
+            entries=new_entries,
+            seq_len=start_pos + T,
+            layer_types=self.config.layer_types,
+        )
 
     def prefill(
-        self, idx: torch.Tensor, state: HybridState | None = None
+        self,
+        idx: torch.Tensor,
+        state: HybridState | None = None,
+        *,
+        prefill_method: str = "sequential",
+        chunk_size: int = 64,
+        position_ids: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, HybridState]:
         """Prefill ``idx`` ``[B, T]`` (from scratch unless ``state`` given)."""
-        return self.forward(idx, state=state)
+        return self.forward(
+            idx, state=state, prefill_method=prefill_method,
+            chunk_size=chunk_size, position_ids=position_ids,
+        )
 
     forward_prefill = prefill
 
@@ -1129,6 +1564,98 @@ class TinyHybridLM(nn.Module):
         return self.forward(token_ids, state=state)
 
     step = decode_step
+
+
+# ---------------------------------------------------------------------------
+# Stateful generation over the hybrid stack.
+# ---------------------------------------------------------------------------
+
+
+def generate_hybrid(
+    model: TinyHybridLM,
+    idx: torch.Tensor,
+    max_new_tokens: int,
+    temperature: float = 1.0,
+    top_k: int | None = None,
+    top_p: float | None = None,
+    eos_id: int | None = None,
+    generator: torch.Generator | None = None,
+    prefill_method: str = "sequential",
+    chunk_size: int = 64,
+    *,
+    eos: int | None = None,
+) -> torch.Tensor:
+    """Generate up to ``max_new_tokens`` tokens after prompt ``idx``.
+
+    The hybrid analogue of :func:`~inference_from_scratch.generate.generate`:
+    one stateful prefill over the prompt (``idx`` is ``[B, T_prompt]``),
+    then one :meth:`TinyHybridLM.decode_step` per emitted token, with
+    each step's ``logits[:, -1]`` sampled by
+    :func:`~inference_from_scratch.sampling.sample_next`
+    (``temperature=0`` is greedy; ``generator`` seeds stochastic runs).
+    Returns ``[B, T_prompt + n]`` including the prompt, with
+    ``n <= max_new_tokens`` -- smaller only when every batch row has
+    emitted ``eos_id`` (``eos`` is accepted as an alias; the EOS token
+    itself stays in the output, matching ``generate``).
+
+    ``prefill_method`` selects how the linear layers evaluate the
+    prompt prefill: ``"sequential"`` (default; the reference scan) or
+    ``"chunkwise"`` (the chunked gated-delta form, equal to fp32
+    tolerance). Decode steps are single tokens and are unaffected.
+    Under greedy sampling the two prefill methods emit identical token
+    ids on the tiny test models (asserted in the tests); under
+    stochastic sampling they share the sampler and the seed but may
+    diverge once a near-tie flips, as any re-associated arithmetic can.
+    """
+    if eos_id is None:
+        eos_id = eos
+    if max_new_tokens < 0:
+        raise ValueError(f"max_new_tokens must be >= 0, got {max_new_tokens}")
+    if idx.dim() != 2:
+        raise ValueError(f"idx must be [B, T], got shape {tuple(idx.shape)}")
+    if not isinstance(prefill_method, str) or prefill_method.strip().lower() not in (
+        "sequential",
+        "chunkwise",
+    ):
+        raise ValueError(
+            f"prefill_method must be 'sequential' or 'chunkwise', got {prefill_method!r}"
+        )
+    if max_new_tokens == 0:
+        return idx.clone()
+
+    sample_kwargs = dict(
+        temperature=temperature, top_k=top_k, top_p=top_p, generator=generator,
+    )
+    was_training = model.training
+    model.eval()
+    try:
+        with torch.no_grad():
+            out = idx.clone()
+            logits, state = model.prefill(
+                out, prefill_method=prefill_method.strip().lower(),
+                chunk_size=chunk_size,
+            )
+            next_token = sample_next(logits[:, -1], **sample_kwargs)
+            out = torch.cat([out, next_token], dim=1)
+            finished = (
+                (next_token.squeeze(1) == eos_id)
+                if eos_id is not None
+                else torch.zeros(out.shape[0], dtype=torch.bool, device=out.device)
+            )
+            if bool(finished.all()):
+                return out
+            for _ in range(max_new_tokens - 1):
+                logits, state = model.decode_step(next_token, state)
+                next_token = sample_next(logits[:, -1], **sample_kwargs)
+                out = torch.cat([out, next_token], dim=1)
+                if eos_id is not None:
+                    finished = finished | (next_token.squeeze(1) == eos_id)
+                    if bool(finished.all()):
+                        break
+            return out
+    finally:
+        if was_training:
+            model.train()
 
 
 # ---------------------------------------------------------------------------

@@ -16,11 +16,15 @@ from inference_from_scratch.hybrid import (
     GatedFullAttention,
     HybridBlock,
     HybridConfig,
+    HybridState,
     TinyHybridLM,
     apply_partial_rope,
+    generate_hybrid,
     list_hybrid_tensor_map,
+    precompute_mrope_cos_sin,
     precompute_partial_rope_cache,
 )
+from inference_from_scratch.kv_cache import KVCache
 
 # Tiny hybrid: 3 linear + 1 full, GQA 4q/2kv, head_dim 16 (rotary 4).
 D, VOCAB = 32, 97
@@ -305,6 +309,231 @@ def test_tensor_map_from_checkpoint_style_names():
         "layers.0.mlp.gate_proj.weight"
     assert mp["mtp.fc.weight"] == "mtp.fc.weight"
     assert "model.visual.blocks.0.attn.qkv.weight" not in mp  # vision deferred
+
+
+# -- explicit positions (mRoPE) and the output gate ---------------------------
+
+
+def test_position_ids_text_repeat_equals_default():
+    torch.manual_seed(10)
+    attn = GatedFullAttention(_tiny_config()).eval()
+    x = torch.randn(2, 6, D)
+    pos = torch.arange(6)
+    with torch.no_grad():
+        ref = attn(x)
+        by_t = attn(x, position_ids=pos)
+        by_3t = attn(x, position_ids=pos.unsqueeze(0).expand(3, -1))
+    # Text semantics: one axis repeated to T/H/W; the interleaved
+    # recomposition is then the identity, bit-for-bit.
+    assert torch.equal(ref, by_t)
+    assert torch.equal(ref, by_3t)
+    # The mrope tables themselves equal the plain partial-RoPE tables.
+    cos_m, sin_m = precompute_mrope_cos_sin(
+        pos, attn.rotary_dim, theta=10000.0, mrope_section=[11, 11, 10])
+    cos_p, sin_p, _ = precompute_partial_rope_cache(
+        6, head_dim=16, partial_rotary_factor=0.25, theta=10000.0)
+    assert torch.equal(cos_m, cos_p) and torch.equal(sin_m, sin_p)
+
+
+def test_position_ids_differing_axes_touch_only_their_slots():
+    # Rotary width 8 -> 4 pairs; section [2, 1, 1]: H owns pair slot 1
+    # (slice(1, 3, 3)), W owns slot 2 (slice(2, 3, 3)), T the rest.
+    base = torch.arange(5)
+    pos3 = torch.stack([base, base + 100, base + 200])
+    cos3, sin3 = precompute_mrope_cos_sin(
+        pos3, 8, theta=10000.0, mrope_section=[2, 1, 1])
+    cos1, sin1 = precompute_mrope_cos_sin(
+        base, 8, theta=10000.0, mrope_section=[2, 1, 1])
+    for tables in ((cos3, cos1), (sin3, sin1)):
+        changed = [j for j in range(4)
+                   if not torch.equal(tables[0][:, j], tables[1][:, j])]
+        assert changed == [1, 2]
+    # Rotate-half layout duplicates each pair into the second half.
+    assert torch.equal(cos3[:, 1], cos3[:, 5])
+    assert torch.equal(cos3[:, 0], cos3[:, 4])
+    # At the attention level the differing axes really do move the
+    # output (the slots above are not decorative).
+    torch.manual_seed(11)
+    cfg = _tiny_config(head_dim=32, partial_rotary_factor=0.25,
+                       mrope_section=[2, 1, 1])
+    attn = GatedFullAttention(cfg).eval()
+    x = torch.randn(1, 5, D)
+    with torch.no_grad():
+        ref = attn(x, position_ids=base)
+        moved = attn(x, position_ids=pos3)
+    assert not torch.allclose(ref, moved)
+
+
+def test_position_ids_lm_level_and_validation():
+    m = _tiny_lm(seed=12)
+    idx = torch.randint(0, VOCAB, (2, 7))
+    pos = torch.arange(7)
+    with torch.no_grad():
+        ref, _ = m(idx)
+        by_t, _ = m(idx, position_ids=pos)
+        by_3t, _ = m(idx, position_ids=pos.unsqueeze(0).expand(3, -1))
+    assert torch.equal(ref, by_t) and torch.equal(ref, by_3t)
+    with pytest.raises(ValueError):
+        m(idx, position_ids=torch.arange(3))  # one position per token
+    with pytest.raises(ValueError):
+        GatedFullAttention(_tiny_config())(torch.randn(1, 4, D),
+                                           position_ids=torch.arange(9))
+    with pytest.raises(ValueError):
+        precompute_mrope_cos_sin(torch.zeros(2, 2, 2, 2), 4)
+
+
+def test_output_gate_swish_label_means_sigmoid():
+    # HF applies attn_output * sigmoid(gate) (modeling line 804); the
+    # config's output_gate_type="swish" is a label for that op, and
+    # silu(g) = g * sigmoid(g) must never be selected by it.
+    cfg = _tiny_config(output_gate_type="swish")
+    assert GatedFullAttention(cfg).gate_activation == "sigmoid"
+    assert GatedFullAttention(_tiny_config(),
+                              gate_activation="swish").gate_activation == "sigmoid"
+    assert GatedFullAttention(_tiny_config(),
+                              gate_activation="silu").gate_activation == "silu"
+    torch.manual_seed(13)
+    sig = GatedFullAttention(_tiny_config()).eval()
+    swish = GatedFullAttention(cfg).eval()
+    swish.load_state_dict(sig.state_dict())
+    silu = GatedFullAttention(_tiny_config(), gate_activation="silu").eval()
+    silu.load_state_dict(sig.state_dict())
+    x = torch.randn(2, 5, D)
+    with torch.no_grad():
+        assert torch.equal(sig(x), swish(x))
+        assert not torch.allclose(sig(x), silu(x))
+
+
+# -- typed HybridState ---------------------------------------------------------
+
+
+def test_hybrid_state_typed_entries_and_clone():
+    m = _tiny_lm(seed=14)
+    fresh = m.initial_state(2)
+    assert [tag for tag, _ in fresh.entries] == [
+        "linear", "linear", "linear", "kv"]
+    assert isinstance(fresh.kv_cache(3), KVCache)
+    assert fresh.linear_state(0) is None  # lazy zero state
+    assert fresh.seq_len == 0 and len(fresh) == 4
+
+    idx = torch.randint(0, VOCAB, (2, 4))
+    with torch.no_grad():
+        _, state = m.prefill(idx)
+    assert state.seq_len == 4
+    tag, payload = state.entry(0)
+    assert tag == "linear" and payload[0].shape == (2, 4, 8, 8)
+    assert state.kv_cache(3).keys[0].shape == (2, 2, 4, 16)
+    # Legacy view still reads as (k, v) / (S, conv) tensor pairs.
+    assert state.layer_states[3][0].shape[2] == 4
+    assert state.layer_states[0][0].shape == (2, 4, 8, 8)
+
+    snap = state.clone()
+    with torch.no_grad():
+        _, continued = m.decode_step(torch.randint(0, VOCAB, (2,)), state)
+    assert continued.seq_len == 5
+    # The clone is untouched by continuing the original.
+    assert snap.seq_len == 4
+    assert torch.equal(snap.kv_cache(3).keys[0], state.kv_cache(3).keys[0])
+    assert snap.kv_cache(3).keys[0].shape[2] == 4
+    # And it restores into an independently continuable state.
+    restored = snap.restore()
+    assert restored.seq_len == 4 and restored.entry(3)[0] == "kv"
+    # Legacy construction (no layer_types) still feeds the model.
+    legacy = HybridState(layer_states=[None] * 4, seq_len=0)
+    with torch.no_grad():
+        logits, out_state = m(idx, legacy)
+    assert out_state.seq_len == 4
+
+
+# -- stateful generation --------------------------------------------------------
+
+
+def test_generate_hybrid_greedy_prefill_methods_agree():
+    m = _tiny_lm(seed=15)
+    prompt = torch.randint(0, VOCAB, (2, 5))
+    with torch.no_grad():
+        seq = generate_hybrid(m, prompt, 6, temperature=0,
+                              prefill_method="sequential")
+        chunk = generate_hybrid(m, prompt, 6, temperature=0,
+                                prefill_method="chunkwise", chunk_size=4)
+    assert torch.equal(seq, chunk)
+    assert seq.shape == (2, 11)
+    assert torch.equal(seq[:, :5], prompt)  # prompt preserved verbatim
+    with pytest.raises(ValueError):
+        generate_hybrid(m, prompt, 2, temperature=0, prefill_method="bogus")
+    assert generate_hybrid(m, prompt, 0, temperature=0).shape == (2, 5)
+
+
+def test_generate_hybrid_sampling_reproducible_and_eos():
+    m = _tiny_lm(seed=16)
+    prompt = torch.randint(0, VOCAB, (1, 4))
+    g1, g2 = torch.Generator().manual_seed(42), torch.Generator().manual_seed(42)
+    with torch.no_grad():
+        a = generate_hybrid(m, prompt, 5, temperature=0.8, top_k=10, generator=g1)
+        b = generate_hybrid(m, prompt, 5, temperature=0.8, top_k=10, generator=g2)
+        greedy = generate_hybrid(m, prompt, 6, temperature=0)
+        stopped = generate_hybrid(m, prompt, 6, temperature=0,
+                                  eos_id=int(greedy[0, 4]))
+        stopped_alias = generate_hybrid(m, prompt, 6, temperature=0,
+                                        eos=int(greedy[0, 4]))
+    assert torch.equal(a, b)  # same seed, same ids
+    assert stopped.shape == (1, 5)  # EOS (included) ends generation
+    assert torch.equal(stopped, greedy[:, :5])
+    assert torch.equal(stopped_alias, stopped)
+
+
+def test_branching_snapshot_suffixes_equal_fresh_generations():
+    m = _tiny_lm(seed=17)
+    prompt = torch.randint(0, VOCAB, (1, 5))
+
+    def greedy_suffix(state, forced_token, n_new):
+        """Feed ``forced_token``, then argmax-chain ``n_new`` ids."""
+        ids, logits = [], None
+        logits, s = m.decode_step(torch.tensor([[forced_token]]), state)
+        nxt = int(logits[:, -1].argmax())
+        ids.append(nxt)
+        for _ in range(n_new - 1):
+            logits, s = m.decode_step(torch.tensor([[nxt]]), s)
+            nxt = int(logits[:, -1].argmax())
+            ids.append(nxt)
+        return ids, logits
+
+    def fresh_suffix(forced_token, n_new):
+        """The same suffix built token-by-token from an empty state."""
+        s = m.initial_state(1)
+        for t in range(prompt.shape[1]):
+            _, s = m.decode_step(prompt[:, t], s)
+        return greedy_suffix(s, forced_token, n_new)
+
+    with torch.no_grad():
+        _, prompt_state = m.prefill(prompt)
+        snap = m.snapshot_state(prompt_state)
+        branch_a_ids, branch_a_logits = greedy_suffix(
+            m.restore_state(snap), forced_token=3, n_new=4)
+        branch_b_ids, branch_b_logits = greedy_suffix(
+            m.restore_state(snap), forced_token=90, n_new=4)
+        fresh_a_ids, fresh_a_logits = fresh_suffix(forced_token=3, n_new=4)
+        fresh_b_ids, fresh_b_logits = fresh_suffix(forced_token=90, n_new=4)
+        # A single fresh full forward over each branch's whole token
+        # stream lands on the same final logits (fp tolerance: the
+        # batched prefill re-associates the arithmetic).
+        full_a, _ = m(torch.cat(
+            [prompt, torch.tensor([[3] + branch_a_ids[:-1]])], dim=1))
+        full_b, _ = m(torch.cat(
+            [prompt, torch.tensor([[90] + branch_b_ids[:-1]])], dim=1))
+    # Each branch's greedy suffix equals the fresh generation's.
+    assert branch_a_ids == fresh_a_ids and branch_b_ids == fresh_b_ids
+    assert torch.allclose(branch_a_logits, fresh_a_logits, atol=1e-6)
+    assert torch.allclose(branch_b_logits, fresh_b_logits, atol=1e-6)
+    assert torch.allclose(branch_a_logits, full_a[:, -1:], atol=1e-6)
+    assert torch.allclose(branch_b_logits, full_b[:, -1:], atol=1e-6)
+    # The two branches really diverged, and neither disturbed the other
+    # or the shared snapshot: replaying branch A still matches.
+    assert branch_a_ids != branch_b_ids
+    assert snap.seq_len == 5 and prompt_state.seq_len == 5
+    with torch.no_grad():
+        replay_ids, _ = greedy_suffix(m.restore_state(snap), 3, 4)
+    assert replay_ids == branch_a_ids
 
 
 @pytest.mark.skipif(_snapshot_dir() is None, reason="Qwen3.8 snapshot not in HF cache")
