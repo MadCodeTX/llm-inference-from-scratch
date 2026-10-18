@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "arm": "A",
+  "id": "arm-a-incumbent",
+  "status": "reference-measured-elsewhere",
+  "description": "Arm A: incumbent vLLM as-is. Config record for the GPU window only; not executed by this file. Every field below is copied from evidence already in this repo (benchmarks/WIN.md, benchmarks/baseline/README.md, benchmarks/baseline/incumbent_existing.json, benchmarks/suite.json). No live server was queried to build it.",
+  "engine": "vllm",
+  "model": "Qwen/Qwen3.8-27B-FP8",
+  "served_model_name": "Qwen/Qwen3.8-27B-FP8",
+  "base_url": "http://127.0.0.1:8000",
+  "endpoint_evidence": "http://127.0.0.1:8000/v1 chat/completions (streaming, include_usage) per incumbent_existing.json provenance; run_bench.py uses /v1/completions",
+  "launch_flags_recorded_from_repo": {
+    "model": "Qwen/Qwen3.8-27B-FP8",
+    "host_port_evidence": "127.0.0.1:8000 (suite.json base_url_default, WIN.md GPU-window protocol)"
+  },
+  "launch_flags_not_in_repo": [
+    "tensor_parallel_size",
+    "gpu_memory_utilization",
+    "max_model_len",
+    "max_num_seqs",
+    "enforce_eager",
+    "enable_prefix_caching",
+    "dtype/quantization launch flags",
+    "any other vllm serve CLI flags: not recorded in WIN.md or the repo, so not invented here; confirm and fill in at the start of the approved GPU window before restoring afterwards"
+  ],
+  "incumbent_harness_evidence": {
+    "source_harness": "/home/nick/llm/vllm/bench_vllm.py",
+    "source_labels": ["baseline", "S5-nativefp8", "S9-FINAL-seqs16-262k"],
+    "sampling": {"temperature": 0.7, "top_p": 0.8, "ignore_eos": true, "chat_template_kwargs": {"enable_thinking": false}},
+    "shapes_tokens_in_out": {"patient_gen": [2048, 2048], "chart_summary": [16384, 1024], "research_synth": [49152, 4096]}
+  },
+  "speculative_config": null,
+  "bench_command": "python benchmarks/run_bench.py --base-url http://127.0.0.1:8000 --model Qwen/Qwen3.8-27B-FP8 --tokenizer-dir <real-snapshot> --output benchmarks/results-incumbent.json",
+  "provenance": ["benchmarks/WIN.md", "benchmarks/baseline/README.md", "benchmarks/baseline/incumbent_existing.json", "benchmarks/suite.json"]
+}

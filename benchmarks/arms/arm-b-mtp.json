@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "arm": "B",
+  "id": "arm-b-mtp",
+  "status": "UNMEASURED",
+  "description": "Arm B: incumbent vLLM (Arm A) plus MTP speculative decoding. Config record for the GPU window only; not executed, no numbers claimed. Each sweep entry is a separate run inside the window.",
+  "engine": "vllm",
+  "model": "Qwen/Qwen3.8-27B-FP8",
+  "served_model_name": "Qwen/Qwen3.8-27B-FP8",
+  "base_url": "http://127.0.0.1:8000",
+  "base_arm": "arm-a-incumbent",
+  "entries": [
+    {
+      "id": "arm-b-mtp-k1",
+      "status": "UNMEASURED",
+      "speculative_config": {"method": "mtp", "num_speculative_tokens": 1},
+      "vllm_flag": "--speculative-config {\"method\": \"mtp\", \"num_speculative_tokens\": 1}"
+    },
+    {
+      "id": "arm-b-mtp-k2",
+      "status": "UNMEASURED",
+      "speculative_config": {"method": "mtp", "num_speculative_tokens": 2},
+      "vllm_flag": "--speculative-config {\"method\": \"mtp\", \"num_speculative_tokens\": 2}"
+    },
+    {
+      "id": "arm-b-mtp-k3",
+      "status": "UNMEASURED",
+      "speculative_config": {"method": "mtp", "num_speculative_tokens": 3},
+      "vllm_flag": "--speculative-config {\"method\": \"mtp\", \"num_speculative_tokens\": 3}"
+    }
+  ],
+  "num_speculative_tokens_sweep": [1, 2, 3],
+  "bench_command_template": "python benchmarks/run_bench.py --base-url http://127.0.0.1:8000 --model Qwen/Qwen3.8-27B-FP8 --tokenizer-dir <real-snapshot> --output benchmarks/results-mtp-k<K>.json",
+  "provenance": ["benchmarks/arms/arm-a-incumbent.json", "benchmarks/WIN.md (Arm B: vLLM + MTP, not yet measured)"]
+}

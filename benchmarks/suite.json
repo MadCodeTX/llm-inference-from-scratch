@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Synthetic public benchmark shapes matching the incumbent token geometries. Prompt text is generated procedurally by benchmarks/run_bench.py from a neutral filler paragraph written for this repo (no incumbent prompt text). Sizes are target token counts; the harness repeats/truncates the filler by words and reports both word and token counts when a tokenizer is available.",
+  "description": "Synthetic public benchmark shapes matching the incumbent token geometries. Prompt text is generated procedurally by benchmarks/run_bench.py from a neutral filler paragraph written for this repo (no incumbent prompt text). Sizes are target token counts: with --tokenizer-dir the harness repeats/truncates filler token ids to exact lengths and records prompt_tokens_actual per request; without it sizes fall back to word counts and target tokens are labelled approximate.",
   "model_default": "Qwen/Qwen3.8-27B-FP8",
   "base_url_default": "http://127.0.0.1:8000",
   "concurrency": [1, 4, 16],

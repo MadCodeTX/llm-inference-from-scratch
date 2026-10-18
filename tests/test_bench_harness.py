@@ -57,6 +57,84 @@ def test_prompt_generation_is_deterministic_and_word_sized():
         assert " ".join(p.split()[:prefix_words]) == prefix
 
 
+class _FakeTokenizer:
+    """Word-level fake: each whitespace word is one token id."""
+
+    def __init__(self):
+        self._vocab = {}
+        self._rev = {}
+
+    def encode(self, text, add_special_tokens=False):
+        ids = []
+        for w in text.split():
+            if w not in self._vocab:
+                self._vocab[w] = len(self._vocab) + 1
+                self._rev[self._vocab[w]] = w
+            ids.append(self._vocab[w])
+        return ids
+
+    def decode(self, ids, skip_special_tokens=False):
+        return " ".join(self._rev[int(i)] for i in ids)
+
+
+def test_exact_token_lengths_with_fake_tokenizer():
+    tok = _FakeTokenizer()
+    assert len(run_bench.build_token_ids(37, tok, seed=0)) == 37
+    assert run_bench.build_token_ids(37, tok, seed=0) == run_bench.build_token_ids(37, tok, seed=0)
+    assert len(run_bench.build_token_ids(0, tok)) == 0
+    shape = {"id": "x", "prompt_tokens": 64, "output_tokens": 8,
+             "shared_prefix_tokens": 0, "unique_tokens": 64}
+    id_lists = run_bench.build_shape_prompt_ids(shape, 3, 0, tok)
+    assert [len(x) for x in id_lists] == [64, 64, 64]
+    prompts = run_bench.build_shape_prompts(shape, 3, 0, tokenizer=tok)
+    assert [len(tok.encode(p)) for p in prompts] == [64, 64, 64]
+    # Dry-run plan records exact actuals per request, not approximate.
+    suite = {"shapes": [shape], "concurrency": [2], "repeats": 1,
+             "arms": {"greedy": {}}}
+    plan = run_bench.build_plan(suite, tokenizer=tok)
+    assert plan["tokenizer_available"] is True
+    assert plan["target_tokens_approximate"] is False
+    assert plan["batches"][0]["prompt_tokens_actual"] == [64, 64]
+    assert plan["batches"][0]["target_tokens_approximate"] is False
+    # Without a tokenizer the fallback labels targets approximate.
+    plan2 = run_bench.build_plan(suite)
+    assert plan2["target_tokens_approximate"] is True
+    assert plan2["batches"][0]["prompt_tokens_actual"] == [None, None]
+
+
+def test_shared_prefix_identity_at_token_level():
+    tok = _FakeTokenizer()
+    shape = {"id": "agent-shared-prefix", "prompt_tokens": 8704,
+             "output_tokens": 512, "shared_prefix_tokens": 8192,
+             "unique_tokens": 512}
+    small = dict(shape, prompt_tokens=40, shared_prefix_tokens=24,
+                 unique_tokens=16)
+    id_lists = run_bench.build_shape_prompt_ids(small, 4, 0, tok)
+    assert [len(x) for x in id_lists] == [40, 40, 40, 40]
+    prefix = id_lists[0][:24]
+    for ids in id_lists:
+        assert ids[:24] == prefix
+    # Unique suffixes differ across the batch.
+    assert len({tuple(x[24:]) for x in id_lists}) == 4
+
+
+def test_arms_configs_parse():
+    arms = _REPO / "benchmarks" / "arms"
+    a = json.loads((arms / "arm-a-incumbent.json").read_text())
+    b = json.loads((arms / "arm-b-mtp.json").read_text())
+    assert a["version"] == 1 and a["arm"] == "A"
+    assert a["model"] == "Qwen/Qwen3.8-27B-FP8"
+    assert a["speculative_config"] is None
+    assert b["version"] == 1 and b["arm"] == "B"
+    assert b["status"] == "UNMEASURED"
+    assert b["num_speculative_tokens_sweep"] == [1, 2, 3]
+    assert [e["speculative_config"]["num_speculative_tokens"] for e in b["entries"]] == [1, 2, 3]
+    assert all(e["speculative_config"]["method"] == "mtp" for e in b["entries"])
+    assert all(e["status"] == "UNMEASURED" for e in b["entries"])
+    assert (arms / "arm-a-incumbent.md").exists()
+    assert (arms / "arm-b-mtp.md").exists()
+
+
 def test_percentile_aggregation_on_fake_stream_events():
     # Fake stream: tokens arrive at 1.10, 1.12, 1.15, 1.20 (t0 = 1.00).
     m = run_bench.metrics_from_timestamps([1.10, 1.12, 1.15, 1.20], t0=1.00)

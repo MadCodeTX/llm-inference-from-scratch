@@ -102,6 +102,7 @@ Speed without correctness is not a win. Before any timing claim:
   221 passed). Framing follows Kiely, *Inference Engineering*
   (2026), sec. 2.2, sec. 2.4–2.5, sec. 4.2, sec. 5.2, and sec. 5.4;
   prose here is original.
+- **Phase 1c (CPU integration): done; status line — suite 246 passed, 3 skipped, Arm B still UNMEASURED, no win claimed.** Checkpoint assembly onto `HybridLM` validates on the real snapshot (851 tensors, 26,895,998,464 params), real layers 0/3 match HF (layer 3 bit-exact; layer 0 bf16 rel_rms 1.5e-3, fp32 1.2e-7), the TP execution simulation and static decode state (ch. 25) equal their dense/legacy paths, and `run_bench.py --tokenizer-dir` now builds exact-token prompts with Arm A/B defined in `benchmarks/arms/`. All CPU only; the live vLLM service was not touched.
 - **GPU window: still pending.** No candidate has been run on GPU,
   no real collective has been timed, Arm B (vLLM + MTP) is still
   "not yet measured", and no win is claimed. The live vLLM service
@@ -114,16 +115,26 @@ Speed without correctness is not a win. Before any timing claim:
 The box normally serves production traffic on both GPUs. Do not stop,
 restart, or load it outside an approved window. When the user approves:
 
-1. Confirm the window and the exact incumbent config to restore after.
-2. Incumbent arm: `vllm bench serve` (or the incumbent's own bench)
-   against the live server, then
-   `python benchmarks/run_bench.py --base-url http://127.0.0.1:8000 --model Qwen/Qwen3.8-27B-FP8 --output benchmarks/results-incumbent.json`.
-3. Candidate arm: start the candidate server on a free port, run the
-   same `run_bench.py` command against it, then the microbench
-   (`scripts/benchmark.py` for the tiny model, or the candidate's own).
-4. MTP arm: enable MTP in vLLM, restart once inside the window, rerun
-   step 2's `run_bench.py` command.
-5. Restore the original serving config, verify `/v1/models` answers,
+1. Confirm the window and the exact incumbent config to restore after
+   (fill in the launch flags Arm A leaves unrecorded; see
+   `benchmarks/arms/arm-a-incumbent.json`).
+2. Microbench first: run the candidate microbench
+   (`benchmarks/microbench_hybrid_decode.py`, or
+   `scripts/benchmark.py` for the tiny model) so kernel-level numbers
+   exist before any serving load.
+3. Arm A (incumbent as-is, `benchmarks/arms/arm-a-incumbent.json`):
+   `vllm bench serve` (or the incumbent's own bench) against the live
+   server, then
+   `python benchmarks/run_bench.py --base-url http://127.0.0.1:8000 --model Qwen/Qwen3.8-27B-FP8 --tokenizer-dir <real-snapshot> --output benchmarks/results-incumbent.json`.
+4. Arm B (vLLM + MTP, `benchmarks/arms/arm-b-mtp.json`, UNMEASURED
+   until run): enable MTP in vLLM with
+   `--speculative-config {"method": "mtp", "num_speculative_tokens": K}`
+   for each `K` in `[1, 2, 3]` as separate entries, restart once per
+   entry inside the window, and rerun step 3's `run_bench.py` command
+   per entry.
+5. Ours: start the candidate server on a free port and run the same
+   `run_bench.py` command against it.
+6. Restore the original serving config, verify `/v1/models` answers,
    and record every output file with its command line. Outside the
    window, the only permitted live call is a single tiny smoke
    (`run_bench.py --smoke`, 16 tokens, greedy).

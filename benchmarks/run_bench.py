@@ -6,12 +6,16 @@ latencies (TPOT distribution), token counts and wall time; aggregates
 tokens/minute and percentiles via the repo's ``metrics.summarize``.
 
 Prompt text is procedural: a neutral filler paragraph written for this
-repo is repeated/truncated by *words* deterministically. Both the word
-count and (when the server reports it, via streaming usage) the token
-count are recorded. No incumbent prompt text is used.
+repo. With ``--tokenizer-dir`` prompts are built to *exact* target token
+counts by repeating/truncating the filler token ids; without it they are
+repeated/truncated by *words* and target token counts are approximate.
+``prompt_tokens_actual`` is recorded per request: the server's streaming
+usage when present, else the locally counted token ids. No incumbent
+prompt text is used.
 
 Usage:
   python benchmarks/run_bench.py --dry-run
+  python benchmarks/run_bench.py --dry-run --tokenizer-dir <snapshot>
   python benchmarks/run_bench.py --base-url http://127.0.0.1:8000 \
       --model Qwen/Qwen3.8-27B-FP8 --limit-concurrency 4 --output out.json
   python benchmarks/run_bench.py --smoke   # one 16-token greedy request
@@ -78,8 +82,101 @@ def count_words(text: str) -> int:
     return len(text.split()) if text.strip() else 0
 
 
-def build_shape_prompts(shape: dict, concurrency: int, repeat: int) -> list[str]:
-    """Prompts for one batch; shared-prefix shapes share the prefix text."""
+def load_tokenizer(tokenizer_dir):
+    """Load a HF tokenizer on CPU from ``tokenizer_dir`` (no network use
+    beyond what ``from_pretrained`` does for a local directory)."""
+    from transformers import AutoTokenizer
+
+    return AutoTokenizer.from_pretrained(
+        str(tokenizer_dir), trust_remote_code=False
+    )
+
+
+def _encode_ids(tokenizer, text: str) -> list[int]:
+    try:
+        ids = tokenizer.encode(text, add_special_tokens=False)
+    except TypeError:
+        ids = tokenizer.encode(text)
+    return [int(t) for t in ids]
+
+
+def _decode_ids(tokenizer, ids) -> str:
+    ids = [int(t) for t in ids]
+    try:
+        return tokenizer.decode(ids, skip_special_tokens=False)
+    except TypeError:
+        return tokenizer.decode(ids)
+
+
+def filler_token_ids(tokenizer) -> list[int]:
+    ids = _encode_ids(tokenizer, FILLER_PARAGRAPH)
+    if not ids:
+        raise ValueError("tokenizer produced no filler token ids")
+    return ids
+
+
+def build_token_ids(target_tokens: int, tokenizer, seed: int = 0) -> list[int]:
+    """Exactly ``target_tokens`` filler token ids, deterministically.
+
+    The filler paragraph's ids are repeated (rotated by ``seed``) and
+    truncated; no word-count approximation is involved.
+    """
+    target = int(target_tokens)
+    if target <= 0:
+        return []
+    base = filler_token_ids(tokenizer)
+    off = int(seed) % len(base)
+    seq = base[off:] + base[:off]
+    out: list[int] = []
+    while len(out) < target:
+        out.extend(seq)
+    return out[:target]
+
+
+def build_shape_prompt_ids(shape, concurrency, repeat, tokenizer):
+    """Per-request token ids for one batch at exact target lengths.
+
+    Shared-prefix shapes share the exact token-id prefix across the
+    batch; each request then carries its own unique suffix. The total
+    per request is exactly ``prompt_tokens`` (shared + unique for the
+    frozen shapes).
+    """
+    shared = int(shape.get("shared_prefix_tokens") or 0)
+    unique = int(shape.get("unique_tokens") or shape.get("prompt_tokens"))
+    target = int(shape["prompt_tokens"])
+    prefix_ids = build_token_ids(shared, tokenizer, seed=0) if shared else []
+    prompts = []
+    for i in range(concurrency):
+        unique_ids = build_token_ids(
+            unique, tokenizer, seed=1000 * (repeat + 1) + i
+        )
+        ids = list(prefix_ids) + unique_ids
+        if len(ids) < target:
+            ids.extend(
+                build_token_ids(
+                    target - len(ids), tokenizer,
+                    seed=7000 + 1000 * (repeat + 1) + i,
+                )
+            )
+        prompts.append(ids[:target])
+    return prompts
+
+
+def build_shape_prompts(shape: dict, concurrency: int, repeat: int,
+                        tokenizer=None) -> list[str]:
+    """Prompts for one batch; shared-prefix shapes share the prefix.
+
+    With ``tokenizer`` the prompts are decoded from exact-length token
+    ids (see :func:`build_shape_prompt_ids`); without it the legacy
+    word-count fallback is used and lengths are only approximate.
+    """
+    if tokenizer is not None:
+        return [
+            _decode_ids(tokenizer, ids)
+            for ids in build_shape_prompt_ids(
+                shape, concurrency, repeat, tokenizer
+            )
+        ]
     shared = int(shape.get("shared_prefix_tokens") or 0)
     unique = int(shape.get("unique_tokens") or shape.get("prompt_tokens"))
     prompts = []
@@ -110,18 +207,30 @@ def effective_concurrencies(suite: dict, limit: int | None) -> list[int]:
 
 
 def build_plan(
-    suite: dict, limit_concurrency: int | None = None, shapes: list[str] | None = None
+    suite: dict, limit_concurrency: int | None = None,
+    shapes: list[str] | None = None, tokenizer=None,
 ) -> dict:
     """Dry-run plan: every batch and request count, without any network."""
     arms = suite.get("arms") or {"greedy": {}}
     repeats = int(suite.get("repeats", 1))
     selected = [s for s in suite["shapes"] if not shapes or s["id"] in shapes]
+    exact = tokenizer is not None
     batches = []
     for shape in selected:
         for arm in arms:
             for conc in effective_concurrencies(suite, limit_concurrency):
                 for rep in range(repeats):
-                    prompts = build_shape_prompts(shape, conc, rep)
+                    if exact:
+                        id_lists = build_shape_prompt_ids(
+                            shape, conc, rep, tokenizer
+                        )
+                        prompts = [
+                            _decode_ids(tokenizer, ids) for ids in id_lists
+                        ]
+                        actual = [len(ids) for ids in id_lists]
+                    else:
+                        prompts = build_shape_prompts(shape, conc, rep)
+                        actual = [None] * len(prompts)
                     batches.append({
                         "shape": shape["id"],
                         "arm": arm,
@@ -129,6 +238,8 @@ def build_plan(
                         "repeat": rep,
                         "requests": conc,
                         "target_prompt_tokens": int(shape["prompt_tokens"]),
+                        "target_tokens_approximate": not exact,
+                        "prompt_tokens_actual": actual,
                         "output_tokens": int(shape["output_tokens"]),
                         "prompt_words_first": count_words(prompts[0]) if prompts else 0,
                     })
@@ -141,8 +252,16 @@ def build_plan(
         "batches": batches,
         "total_batches": len(batches),
         "total_requests": sum(b["requests"] for b in batches),
-        "tokenizer_available": False,
-        "note": "Word counts are procedural (WORDS_PER_TOKEN sizing); token counts are targets until a server tokenizer/usage reports actuals.",
+        "tokenizer_available": exact,
+        "target_tokens_approximate": not exact,
+        "note": (
+            "Token counts are exact: prompts built from filler token ids "
+            "at the target lengths; prompt_tokens_actual is locally counted."
+            if exact else
+            "Word counts are procedural (WORDS_PER_TOKEN sizing); "
+            "target_tokens are approximate until a tokenizer "
+            "(--tokenizer-dir) or server usage reports actuals."
+        ),
     }
 
 
@@ -203,8 +322,14 @@ def _chunk_text(chunk: dict) -> str:
     return str(delta.get("content") or delta.get("text") or "")
 
 
-def one_request(base_url, model, prompt, output_tokens, arm_cfg, timeout=1800):
-    """Stream one /v1/completions request; record TTFT/TPOT/tokens."""
+def one_request(base_url, model, prompt, output_tokens, arm_cfg,
+                timeout=1800, prompt_tokens_local=None):
+    """Stream one /v1/completions request; record TTFT/TPOT/tokens.
+
+    ``prompt_tokens_actual`` is the server's streaming
+    ``usage.prompt_tokens`` when present, else ``prompt_tokens_local``
+    (the locally counted token ids, when a tokenizer built the prompt).
+    """
     payload = {
         "model": model,
         "prompt": prompt,
@@ -218,6 +343,7 @@ def one_request(base_url, model, prompt, output_tokens, arm_cfg, timeout=1800):
         payload["seed"] = int(arm_cfg["seed"])
     rec = {"ok": False, "ttft_s": None, "inter_token_s": [],
            "latency_s": None, "completion_tokens": 0, "prompt_tokens": 0,
+           "prompt_tokens_actual": prompt_tokens_local,
            "prompt_words": count_words(prompt), "error": None}
     token_times: list[float] = []
     t0 = time.perf_counter()
@@ -243,6 +369,7 @@ def one_request(base_url, model, prompt, output_tokens, arm_cfg, timeout=1800):
                     rec["completion_tokens"] = int(usage["completion_tokens"])
                 if usage.get("prompt_tokens"):
                     rec["prompt_tokens"] = int(usage["prompt_tokens"])
+                    rec["prompt_tokens_actual"] = int(usage["prompt_tokens"])
         m = metrics_from_timestamps(token_times, t0)
         rec["ttft_s"] = m["ttft_s"]
         rec["inter_token_s"] = m["inter_token_s"]
@@ -256,20 +383,29 @@ def one_request(base_url, model, prompt, output_tokens, arm_cfg, timeout=1800):
     return rec
 
 
-def run_batch(base_url, model, suite, shape, arm, concurrency, repeat):
+def run_batch(base_url, model, suite, shape, arm, concurrency, repeat,
+              tokenizer=None):
     """Run one (shape, arm, concurrency, repeat) batch with threads."""
     arm_cfg = (suite.get("arms") or {}).get(arm, {})
-    prompts = build_shape_prompts(shape, concurrency, repeat)
+    if tokenizer is not None:
+        id_lists = build_shape_prompt_ids(shape, concurrency, repeat, tokenizer)
+        prompts = [_decode_ids(tokenizer, ids) for ids in id_lists]
+        local_counts = [len(ids) for ids in id_lists]
+    else:
+        prompts = build_shape_prompts(shape, concurrency, repeat)
+        local_counts = [None] * len(prompts)
     results: list[dict] = []
     lock = threading.Lock()
 
-    def worker(prompt):
+    def worker(prompt, local_count=None):
         rec = one_request(base_url, model, prompt,
-                          int(shape["output_tokens"]), arm_cfg)
+                          int(shape["output_tokens"]), arm_cfg,
+                          prompt_tokens_local=local_count)
         with lock:
             results.append(rec)
 
-    threads = [threading.Thread(target=worker, args=(p,)) for p in prompts]
+    threads = [threading.Thread(target=worker, args=(p, c))
+               for p, c in zip(prompts, local_counts)]
     t0 = time.perf_counter()
     for t in threads:
         t.start()
@@ -291,6 +427,11 @@ def run_batch(base_url, model, suite, shape, arm, concurrency, repeat):
         "ok": len(ok),
         "failed": len(results) - len(ok),
         "prompt_tokens": ok[0]["prompt_tokens"] if ok else 0,
+        "prompt_tokens_actual": (
+            ok[0].get("prompt_tokens_actual") if ok else None
+        ),
+        "target_prompt_tokens": int(shape["prompt_tokens"]),
+        "target_tokens_approximate": tokenizer is None,
         "prompt_words": ok[0]["prompt_words"] if ok else 0,
         "total_output_tokens": total_out,
         "aggregate_output_tps": round(agg_tps, 2),
@@ -304,6 +445,7 @@ def run_batch(base_url, model, suite, shape, arm, concurrency, repeat):
             {"ttft_s": r["ttft_s"], "latency_s": r["latency_s"],
              "completion_tokens": r["completion_tokens"],
              "prompt_tokens": r["prompt_tokens"],
+             "prompt_tokens_actual": r.get("prompt_tokens_actual"),
              "prompt_words": r["prompt_words"], "ok": r["ok"]}
             for r in results
         ],
@@ -321,6 +463,7 @@ def run_smoke(base_url: str, model: str) -> dict:
             "ttft_s": rec["ttft_s"], "latency_s": rec["latency_s"],
             "completion_tokens": rec["completion_tokens"],
             "prompt_tokens": rec["prompt_tokens"],
+            "prompt_tokens_actual": rec.get("prompt_tokens_actual"),
             "tpot": itl, "error": rec["error"]}
 
 
@@ -336,7 +479,12 @@ def main(argv=None) -> int:
     ap.add_argument("--smoke", action="store_true",
                     help="run exactly one 16-token greedy completion, then stop")
     ap.add_argument("--output", default=None, help="write results JSON here")
+    ap.add_argument("--tokenizer-dir", default=None,
+                    help="HF tokenizer dir/snapshot; prompts are built to "
+                         "exact target token counts (CPU tokenization)")
     args = ap.parse_args(argv)
+
+    tokenizer = load_tokenizer(args.tokenizer_dir) if args.tokenizer_dir else None
 
     if args.smoke:
         result = run_smoke(args.base_url, args.model)
@@ -347,9 +495,12 @@ def main(argv=None) -> int:
 
     suite = load_suite(args.suite)
     if args.dry_run:
-        plan = build_plan(suite, args.limit_concurrency, args.shape)
+        plan = build_plan(suite, args.limit_concurrency, args.shape,
+                          tokenizer=tokenizer)
         plan["base_url"] = args.base_url
         plan["model"] = args.model
+        if args.tokenizer_dir:
+            plan["tokenizer_dir"] = args.tokenizer_dir
         print(json.dumps(plan, indent=2))
         return 0
 
@@ -361,7 +512,8 @@ def main(argv=None) -> int:
             for conc in effective_concurrencies(suite, args.limit_concurrency):
                 for rep in range(int(suite.get("repeats", 1))):
                     row = run_batch(args.base_url, args.model, suite,
-                                    shape, arm, conc, rep)
+                                    shape, arm, conc, rep,
+                                    tokenizer=tokenizer)
                     row["label"] = "run_bench"
                     row["model"] = args.model
                     rows.append(row)
