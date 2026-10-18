@@ -117,3 +117,50 @@ behind the graphed B=1 path (23.67 ms, docs/25). Row 0's 64 ids are
 identical at every B and equal the single-row run
 (`b1_row0_eq_single_run: true`). Next lever is a batched CUDA-graph
 capture, not more eager batching.
+## Continuous-batching engine core (`tp_engine.py`)
+
+`TPEngineCore(model, ctx, max_slots, max_seq_len, token_budget, eos_id=None)`
+manages fixed slots over ONE batched `TPStaticState`
+(`batch_size == max_slots`), non-HTTP, greedy only in v1:
+
+- `submit(prompt_ids, max_new, sampling="greedy") -> request_id`
+  (any other sampling raises; prompt/max_new/max_seq_len validated
+  before any state is touched). `poll(request_id)` returns
+  `{status, token_ids, ttft_steps, finish_step}` with status in
+  `waiting|prefilling|decoding|finished`; unknown ids raise `KeyError`.
+- `step()`: (a) admit waiting FIFO into the lowest free slots,
+  `reset(rows=[slot])` at admission (a finished row is freed at
+  completion but reset deferred to this next admission); (b) prefill
+  chunkwise under the step's `token_budget`, shared with decode by
+  decode-first reservation -- each chunk is one row-sliced
+  `prefill_chunkwise_static` call (B=1 view of that slot's buffers and
+  `position` entry), so staggered rows prefill at their own offsets;
+  when a prompt completes, its last logits' argmax is the first token
+  that step (`ttft_steps` counts arrival step through that step);
+  (c) ONE batched `decode_token_static` over all slots for the
+  decoding rows planned at step start. Non-planned rows (prefilling,
+  free, budget-starved) are snapshotted before the call and restored
+  after it, so the batched step cannot corrupt a mid-prefill row;
+  rows finishing prefill this step join decode from the next step.
+  EOS (when `eos_id` set) or `max_new` finishes a request and frees
+  its slot. Every step returns an `EngineStepRecord`
+  (`prefill_tokens + decode_tokens <= token_budget`, asserted) and
+  appends it to `engine.history` -- the instrumented step token counts.
+- Bookkeeping mirrors `serving.ChunkedPrefillScheduler`'s accounting
+  concepts (decode-first budget, FIFO chunks, step-index TTFT/finish)
+  rather than importing it: that scheduler is a token-count simulation
+  whose `step()` invents tokens with no model, no slots and no real
+  EOS, so reusing it would double-track state. Prefix caching is not
+  integrated: the seam is admission, where a per-row prefix restore
+  would replace the full chunkwise prefill and seed `prefill_done`.
+
+Proofs: `tests/test_tp_engine.py` -- 5 staggered requests on 2 slots
+produce per-request ids exactly equal to independent B=1
+`generate_static_batched` runs (world=1 and, via
+`scripts/tp_engine_smoke.py` under torchrun, real 2-process gloo;
+the same script passes tiny NCCL on 2x RTX 4090,
+`TP_ENGINE_SMOKE PASS`, `staggered_exact=True`,
+`budget_respected=True`, 18 steps), slot reuse after EOS on a single
+slot, small-budget chunked prefill exactness, determinism replay, and
+validation. No throughput claim yet: eager per-step latency is the
+docs/28 bench above; a batched CUDA-graph decode remains the lever.

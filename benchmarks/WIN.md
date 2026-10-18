@@ -29,6 +29,25 @@ Integration smoke re-check (this window, incumbent stopped first via `launch.sh 
 | vLLM Arm B (MTP K=1, 256608) | ~71/stream c1 short (4272-4291 tok/min) | n/a (chunk TPOT) | 32/32 exact x3; MEASURED-WITH-DEVIATION |
 | Roofline floor (TP2 batch-1, bound only) | 52.2 ceiling | 19.17 ms floor | n/a — not a measurement |
 
+#### Throughput ladder — tokens/min by concurrency (measured only)
+
+Arm A/B are `run_bench.py` serving numbers (short 2048→512); ours batched is the local TP2 runner (6-token prompts, 64 greedy tokens, eager, ignore-EOS) — different harness/shape, so aggregate crossings are **not** WIN-threshold wins.
+
+| Concurrency | Arm A (short) | Arm B (MTP K1, dev.) | Ours (measured) | Verdict |
+|---|---|---|---|---|
+| 1 | 2,745 (TPOT 20.3 ms) | 4,272–4,291 (~71 tok/s) | graphed B=1 2,535 (23.67 ms); eager B=1 1,367 | lose per-stream vs both |
+| 2 | — | — | eager B=2 2,721 | no Arm bar |
+| 4 | 8,530 | 12,113–12,136 | eager B=4 5,360 | lose vs both |
+| 8 | — | — | eager B=8 10,746 | passes Arm A c4 numerically only |
+| 16 | — | — | eager B=16 20,001 | passes Arm B c4 numerically only |
+
+Prefill tok/s v2 (`ours_tp2_prefill_v2.json`, ours-vs-ours): 2048 chunk128 1,412.8 / chunk512 1,731.6 / chunk1024 1,596.0; 8192 chunk512 1,631.3; last-argmax equal. Arm A effective prompt rate ~2.9–3.4k tok/s (from TTFT) — **we do not beat Arm A/B on prefill**.
+
+Prefix TTFT v2 (`ours_prefix_ttft_v2.json`, 2048+256=2304, interval 256): cpu cold 1.926s / warm 0.252s; gpu cold 1.643s / warm 0.184s; n_reused=2048, argmax 12356 cold==warm. v1 was cold 10.66s / warm 1.31s. Arm A agent TTFT 1.81s @8704 is a different shape — **no TTFT win claimed**. Ours MTP graph2 (~32.9 ms eff.) stays slower than nonspec graphed (23.67 ms) and is not defaulted.
+
+**Where we do/don't beat:** per-stream decode — lose to Arm A (23.67 vs 20.3 ms) and Arm B (~71 tok/s); prefill rate — lose; prefix TTFT — no comparable-shape claim; aggregate tok/min — B=8/B=16 cross the c4 bars numerically on a different shape only. **No candidate is a win vs Arm A or Arm B under the thresholds below.**
+
+
 Bridge v2 detail: prefill 0.54 s (first, JIT) / 0.10–0.12 s, load 23.5 s, peak ~15.0 / ~15.1 GB/GPU. Re-check this window: 8-token capital probe 8/8 prefix exact at 18.98 tok/s, prefill 0.52 s. No candidate clears the win thresholds; Arm B retry MEASURED-WITH-DEVIATION (see below).
 
 TP2 v1 detail: `scripts/run_qwen38_tp2.py` (torchrun TP2, resident-FP8 rank shards, replicated embed/head, 2 all-reduces/block/step), raw record `benchmarks/baseline/ours_tp2_first_run.json`: load 21.2 s/rank, peak 16.39 GiB/rank, prefill 0.61 s first (Triton JIT) then 0.14–0.17 s, TPOT 42.5–43.7 ms vs Arm A 20.3 ms and the 19.17 ms roofline floor — faster than bridge v2 but roughly 2.1× off Arm A, so **not a win**; the gap to the floor is unprofiled.

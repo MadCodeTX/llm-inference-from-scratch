@@ -258,6 +258,21 @@ The Tiny-to-Qwen ladder lives here. One codebase climbs it: only
   Arm B **MEASURED-WITH-DEVIATION** 2026-10-18 (--max-model-len 256608 only). TP chunkwise prefill chunk128 1316 tok/s @512 / 1306 tok/s @2048 (ours-vs-ours); TP prefix cache scaled-agent cold 10.66s / warm 1.31s median (8.14x ours-vs-ours, no win vs vLLM claimed). Also: mtp1-graph2 merged graph 32.90 ms eff capital x128 (exact, not faster); best is fused nonspec 23.67 ms (42.25 tok/s).
 - **Builds on:** 14, 22
 
+### 26 — Chunkwise prefill (large-M FP8) — Built (measured v2)
+
+- **Goal:** Prefill in external chunks with large-M FP8 Triton tiles (BLOCK_M=64/BLOCK_N=32). Measured v2: 1,732 tok/s @2048 chunk512, argmax-equal; still behind Arm A ~2.9–3.4k prompt tok/s. See `docs/26_prefill.md`.
+- **Builds on:** 23, 25
+
+### 27 — TP prefix cache (snapshot interval) — Built (measured v2)
+
+- **Goal:** Reuse shared prefixes via interval-256 snapshots (hashing stays at block 16). Measured v2 @2304: cold 1.64s gpu / warm 0.18s (v1 10.66s / 1.31s), n_reused=2048, bit-exact. Different shape from Arm A 1.81s @8704 — no win claimed. See `docs/27_prefix_cache.md`.
+- **Builds on:** 23, 26
+
+### 28 — Batched TP decode + continuous batching — Built (measured)
+
+- **Goal:** Per-row positions, `generate_static_batched` (eager B=16 20,001 tok/min aggregate, per-seq ~44 ms — behind graphed 23.67 ms and Arm A 20.3 ms), and `TPEngineCore` (FIFO slots, token budget, exact staggered proof; no throughput claim). See `docs/28_batching.md`.
+- **Builds on:** 23, 25, 26, 27
+
 ### 11 — Serving: batching / PagedAttention — Built
 
 - **Book framing:** sec. 4.3 (engines), sec. 7.2 (concurrency and
