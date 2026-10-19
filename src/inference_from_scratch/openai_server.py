@@ -6,16 +6,20 @@ measure this engine in the same harness as vLLM:
 
 * ``POST /v1/completions`` -- streaming (SSE, one chunk per token,
   final chunk carries ``usage`` when ``stream_options.include_usage``)
-  and non-streaming. Greedy only: ``temperature > 0`` is rejected so
-  exactness is never silently violated.
+  and non-streaming. Backends that support sampling accept
+  ``temperature``/``top_p``/``top_k``/``seed``; greedy-only backends
+  reject ``temperature > 0`` with 400 so exactness is never silently
+  violated.
 * ``GET /health`` and ``GET /v1/models`` -- liveness / model list.
 
 Backend seam (injection for CPU tests, no 27B weights needed):
 
 * A backend provides ``model_id``, ``eos_id``, ``encode(text)``,
   ``decode(ids)`` and ``stream_token_ids(prompt_ids, max_tokens,
-  cancelled) -> Iterator[int]`` (raw ids, up to ``max_tokens``; the
-  server owns EOS/stop/max_tokens/usage/finish_reason policy).
+  cancelled, ignore_eos=False, sampling=None) -> Iterator[int]``
+  (raw ids, up to ``max_tokens``; the server owns EOS/stop/
+  max_tokens/usage/finish_reason policy). ``sampling`` is a dict with
+  ``temperature``/``top_p``/``top_k``/``seed`` keys.
 * :class:`FakeBackend` -- deterministic char-level fake.
 * :class:`BatchedEngineBackend` -- drives a ``TPEngineCore``-shaped
   engine (``submit``/``poll``/``step``/``has_work``) from one driver
@@ -34,6 +38,7 @@ from __future__ import annotations
 
 import json
 import queue
+import random
 import threading
 import time
 import uuid
@@ -41,7 +46,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable, Iterator, Protocol
 
 __all__ = ["FakeBackend", "BatchedEngineBackend", "HFBackend",
-           "make_server", "serve_forever", "participate"]
+           "make_server", "serve_forever", "participate",
+           "encode_lockstep_command", "decode_lockstep_command",
+           "participate_compact"]
 
 
 class Backend(Protocol):
@@ -53,7 +60,22 @@ class Backend(Protocol):
     def decode(self, ids: list[int]) -> str: ...
     def stream_token_ids(self, prompt_ids: list[int], max_tokens: int,
                          cancelled: threading.Event,
-                         ignore_eos: bool = False) -> Iterator[int]: ...
+                         ignore_eos: bool = False,
+                         sampling: dict | None = None) -> Iterator[int]: ...
+
+
+def _sampling_kwargs(sampling: dict | None) -> dict:
+    """Engine-submit kwargs from a server sampling dict (greedy default)."""
+    if not sampling:
+        return {"temperature": 0.0, "top_p": 1.0, "top_k": None, "seed": None}
+    return {"temperature": float(sampling.get("temperature") or 0.0),
+            "top_p": float(sampling.get("top_p", 1.0)),
+            "top_k": sampling.get("top_k"),
+            "seed": sampling.get("seed")}
+
+
+def _is_sampled(sampling: dict | None) -> bool:
+    return bool(sampling) and float(sampling.get("temperature") or 0.0) != 0.0
 
 
 # --------------------------------------------------------------------------
@@ -68,7 +90,7 @@ class FakeBackend:
     ``token_delay_s`` simulates a slow backend (timeout tests).
     """
 
-    greedy_only = True
+    greedy_only = False
     _WORDS = " alpha beta gamma delta epsilon zeta eta theta"
 
     def __init__(self, model_id: str = "fake-model", eos_id: int | None = None,
@@ -84,9 +106,19 @@ class FakeBackend:
     def decode(self, ids: list[int]) -> str:
         return "".join(chr(int(i)) for i in ids if int(i) != (self.eos_id or -1))
 
-    def stream_token_ids(self, prompt_ids, max_tokens, cancelled, ignore_eos=False):
+    def stream_token_ids(self, prompt_ids, max_tokens, cancelled, ignore_eos=False,
+                         sampling=None):
         if self._scripted is not None:
             ids = self._scripted[:max_tokens]
+        elif _is_sampled(sampling):
+            # Seeded fake sampling: reproducible per (seed, prompt),
+            # so sampled smoke tests are deterministic without weights.
+            seed = sampling.get("seed") if sampling else None
+            rng = random.Random(
+                (int(seed) if seed is not None else 0) * 1000003
+                + len(list(prompt_ids)))
+            pool = [ord(c) for c in self._WORDS]
+            ids = [rng.choice(pool) for _ in range(int(max_tokens))]
         else:
             text = (self._WORDS * (max_tokens // len(self._WORDS) + 2))
             ids = [ord(c) for c in text[:max_tokens]]
@@ -135,9 +167,11 @@ class HFBackend:
         except TypeError:
             return self._tok.decode(ids)
 
-    def stream_token_ids(self, prompt_ids, max_tokens, cancelled, ignore_eos=False):
+    def stream_token_ids(self, prompt_ids, max_tokens, cancelled, ignore_eos=False,
+                         sampling=None):
         # The injected generator yields raw ids; EOS policy stays in the
-        # server layer, so ignore_eos needs no change here.
+        # server layer, so ignore_eos needs no change here. Greedy only:
+        # the server rejects temperature>0 for this backend.
         yield from self._gen(list(prompt_ids), int(max_tokens), cancelled)
 
 
@@ -146,11 +180,13 @@ class HFBackend:
 # --------------------------------------------------------------------------
 class _Job:
     __slots__ = ("prompt_ids", "max_tokens", "cancelled", "tokens", "done", "error",
-                 "ignore_eos")
+                 "ignore_eos", "sampling")
 
-    def __init__(self, prompt_ids, max_tokens, cancelled, ignore_eos=False):
+    def __init__(self, prompt_ids, max_tokens, cancelled, ignore_eos=False,
+                 sampling=None):
         self.prompt_ids, self.max_tokens, self.cancelled = prompt_ids, max_tokens, cancelled
         self.ignore_eos = bool(ignore_eos)
+        self.sampling = sampling
         self.tokens: queue.Queue = queue.Queue()
         self.done = threading.Event()
         self.error: BaseException | None = None
@@ -165,7 +201,7 @@ class BatchedEngineBackend:
     lockstep. Without it the backend is single-process.
     """
 
-    greedy_only = True
+    greedy_only = False
 
     def __init__(self, model_id: str, engine, encode, decode,
                  eos_id: int | None = None, sync_hook: Callable | None = None):
@@ -178,11 +214,15 @@ class BatchedEngineBackend:
         self._seen: dict[int, int] = {}
         self._driver: threading.Thread | None = None
         self._stop = threading.Event()
+        self._closed = False
+        self._close_lock = threading.Lock()
 
     def encode(self, text): return self._encode(text)
     def decode(self, ids): return self._decode(ids)
 
     def _ensure_driver(self):
+        if self._closed:
+            raise RuntimeError("backend closed")
         if self._driver is None or not self._driver.is_alive():
             self._stop.clear()
             self._driver = threading.Thread(target=self._drive, daemon=True,
@@ -196,7 +236,7 @@ class BatchedEngineBackend:
             job.done.set()
 
     def _drive(self):
-        pending_submits: list[tuple[list[int], int, bool]] = []
+        pending_submits: list[tuple] = []
         while not self._stop.is_set():
             # Poll with a timeout even when idle so close() wakes us.
             try:
@@ -215,13 +255,21 @@ class BatchedEngineBackend:
                     continue
                 try:
                     rid = self.engine.submit(job.prompt_ids, job.max_tokens,
-                                             ignore_eos=job.ignore_eos)
+                                             ignore_eos=job.ignore_eos,
+                                             **_sampling_kwargs(job.sampling))
                 except Exception as exc:  # e.g. prompt+max_tokens > max_seq_len
                     self._fail([job], exc)
                     continue
                 self._active[rid] = job
                 self._seen[rid] = 0
-                pending_submits.append((job.prompt_ids, job.max_tokens, job.ignore_eos))
+                pending_submits.append((job.prompt_ids, job.max_tokens,
+                                        job.ignore_eos, job.sampling))
+            if self._stop.is_set():
+                self._fail(list(self._active.values()),
+                           RuntimeError("backend closed"))
+                self._active.clear(); self._seen.clear()
+                pending_submits = []
+                break
             if not self._active:
                 pending_submits = []
                 continue
@@ -247,10 +295,11 @@ class BatchedEngineBackend:
                 self._active.clear(); self._seen.clear()
                 pending_submits = []
 
-    def stream_token_ids(self, prompt_ids, max_tokens, cancelled, ignore_eos=False):
+    def stream_token_ids(self, prompt_ids, max_tokens, cancelled, ignore_eos=False,
+                         sampling=None):
         self._ensure_driver()
         job = _Job(list(prompt_ids), int(max_tokens), cancelled,
-                   ignore_eos=ignore_eos)
+                   ignore_eos=ignore_eos, sampling=sampling)
         self._pending.put(job)
         while True:
             if job.error is not None:
@@ -274,15 +323,35 @@ class BatchedEngineBackend:
             yield tid
 
     def close(self):
+        """Idempotent: fail in-flight/pending jobs, stop driver, then shutdown.
+
+        The shutdown broadcast is sent only after the driver thread has
+        stopped (or timed out), so it cannot interleave with a step
+        broadcast from the driver. A second close() is a no-op.
+        """
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
         self._stop.set()
+        driver = self._driver
+        if driver is not None and driver.is_alive():
+            driver.join(timeout=5.0)
+        # Fail anything the driver did not finish (in-flight or queued),
+        # so HTTP consumers error instead of hanging.
+        self._fail(list(self._active.values()), RuntimeError("backend closed"))
+        self._active.clear(); self._seen.clear()
+        while True:
+            try:
+                self._fail([self._pending.get_nowait()],
+                           RuntimeError("backend closed"))
+            except queue.Empty:
+                break
         if self._sync_hook is not None:
             try:
                 self._sync_hook([], False, shutdown=True)
             except Exception:
                 pass
-        driver = self._driver
-        if driver is not None and driver.is_alive():
-            driver.join(timeout=5.0)
 
 
 def participate(engine, recv: Callable, eos_id: int | None = None):
@@ -298,7 +367,118 @@ def participate(engine, recv: Callable, eos_id: int | None = None):
         for item in submits:
             prompt_ids, max_new = item[0], item[1]
             ignore_eos = bool(item[2]) if len(item) > 2 else False
-            engine.submit(list(prompt_ids), int(max_new), ignore_eos=ignore_eos)
+            sampling = item[3] if len(item) > 3 else None
+            engine.submit(list(prompt_ids), int(max_new), ignore_eos=ignore_eos,
+                          **_sampling_kwargs(sampling))
+        if do_step:
+            engine.step()
+
+
+def _float_to_ints(x: float) -> list[int]:
+    import struct
+    bits = struct.unpack("<Q", struct.pack("<d", float(x)))[0]
+    hi, lo = bits >> 32, bits & 0xFFFFFFFF
+    return [hi - (1 << 32) if hi >= (1 << 31) else hi,
+            lo - (1 << 32) if lo >= (1 << 31) else lo]
+
+
+def _ints_to_float(hi: int, lo: int) -> float:
+    import struct
+    bits = ((hi & 0xFFFFFFFF) << 32) | (lo & 0xFFFFFFFF)
+    return struct.unpack("<d", struct.pack("<Q", bits))[0]
+
+
+def _encode_sampling(sampling) -> list[int]:
+    kw = _sampling_kwargs(sampling)
+    return [*_float_to_ints(kw["temperature"]),
+            *_float_to_ints(kw["top_p"]),
+            int(kw["top_k"]) if kw["top_k"] is not None else 0,
+            int(kw["seed"]) if kw["seed"] is not None else -1]
+
+
+def _decode_sampling(vals) -> dict:
+    return {"temperature": _ints_to_float(vals[0], vals[1]),
+            "top_p": _ints_to_float(vals[2], vals[3]),
+            "top_k": int(vals[4]) if vals[4] else None,
+            "seed": int(vals[5]) if vals[5] >= 0 else None}
+
+
+def encode_lockstep_command(submits, do_step: bool,
+                            shutdown: bool = False) -> list[int]:
+    """Pack one lockstep command as flat ints (no pickle).
+
+    Layout: ``[shutdown, do_step, n_submits, (prompt_len, max_tokens,
+    ignore_eos, *prompt_ids) * n_submits]``. A step-only command is
+    3 ints, so the TP script can carry it in one small tensor
+    broadcast instead of ``broadcast_object_list`` per engine step.
+    When any submit carries a sampling dict (4th tuple element), a
+    trailing block ``[n_submits, (temp_hi, temp_lo, topp_hi, topp_lo,
+    top_k, seed) * n_submits]`` is appended; temperature/top_p are
+    carried as exact float64 bit patterns (two signed 32-bit ints
+    each), top_k 0=None, seed -1=None. Greedy 3-tuples encode
+    byte-identically to before.
+    """
+    submits = list(submits)
+    out = [1 if shutdown else 0, 1 if do_step else 0, len(submits)]
+    for item in submits:
+        prompt_ids, max_new, *rest = item
+        ids = [int(t) for t in prompt_ids]
+        out += [len(ids), int(max_new), 1 if (rest and rest[0]) else 0, *ids]
+    if any(len(item) > 3 and item[3] is not None for item in submits):
+        out.append(len(submits))
+        for item in submits:
+            sampling = item[3] if len(item) > 3 else None
+            out += _encode_sampling(sampling)
+    return out
+
+
+def decode_lockstep_command(payload) -> tuple[list, bool, bool]:
+    """Inverse of :func:`encode_lockstep_command`; raises on truncation."""
+    vals = [int(v) for v in payload]
+    if len(vals) < 3:
+        raise ValueError(f"lockstep command too short: {len(vals)} ints")
+    shutdown, do_step, n = bool(vals[0]), bool(vals[1]), vals[2]
+    if n < 0:
+        raise ValueError(f"lockstep command has negative submit count {n}")
+    submits, i = [], 3
+    for _ in range(n):
+        if i + 3 > len(vals):
+            raise ValueError("truncated lockstep submit header")
+        plen, max_new, ignore_eos = vals[i], vals[i + 1], bool(vals[i + 2])
+        i += 3
+        if plen < 0 or i + plen > len(vals):
+            raise ValueError("truncated lockstep prompt ids")
+        submits.append((vals[i:i + plen], int(max_new), ignore_eos))
+        i += plen
+    if i < len(vals):  # trailing sampling block (see encode)
+        if vals[i] != n or i + 1 + 6 * n > len(vals):
+            raise ValueError("truncated lockstep sampling block")
+        i += 1
+        sampled = []
+        for sub in submits:
+            sampled.append((*sub, _decode_sampling(vals[i:i + 6])))
+            i += 6
+        submits = sampled
+    return submits, do_step, shutdown
+
+
+def participate_compact(engine, recv_command: Callable):
+    """Like :func:`participate`, but ``recv_command()`` returns flat ints.
+
+    Errors from ``engine.submit``/``engine.step`` propagate to the
+    caller (the TP script destroys the process group in ``finally``),
+    matching the object protocol's failure behaviour.
+    """
+    while True:
+        submits, do_step, shutdown = decode_lockstep_command(recv_command())
+        if shutdown:
+            return
+        for item in submits:
+            prompt_ids, max_new, ignore_eos = item[0], item[1], item[2]
+            sampling = item[3] if len(item) > 3 else None
+            engine.submit(list(prompt_ids), int(max_new),
+                          ignore_eos=bool(ignore_eos),
+                          **_sampling_kwargs(sampling))
         if do_step:
             engine.step()
 
@@ -398,6 +578,30 @@ def _make_handler(state: _State):
                     "only greedy decoding (temperature=0) is supported; "
                     "sampled arms require a sampling backend", param="temperature"))
                 return
+            top_p_raw = req.get("top_p", 1.0)
+            try:
+                top_p = 1.0 if top_p_raw is None else float(top_p_raw)
+            except (TypeError, ValueError):
+                self._send_json(400, _err("top_p must be a number", param="top_p"))
+                return
+            if not (0.0 < top_p <= 1.0):
+                self._send_json(400, _err("top_p must be in (0, 1]", param="top_p"))
+                return
+            top_k = req.get("top_k")
+            if top_k is not None and (isinstance(top_k, bool)
+                                      or not isinstance(top_k, int) or top_k < 1):
+                self._send_json(400, _err("top_k must be an integer >= 1",
+                                          param="top_k"))
+                return
+            seed = req.get("seed")
+            if seed is not None and (isinstance(seed, bool)
+                                     or not isinstance(seed, int)
+                                     or not (0 <= seed < 2 ** 63)):
+                self._send_json(400, _err("seed must be a non-negative integer",
+                                          param="seed"))
+                return
+            sampling = {"temperature": temp, "top_p": top_p,
+                        "top_k": top_k, "seed": seed}
             # prompt: string, or explicit token-id list.
             prompt = req.get("prompt")
             if isinstance(prompt, str):
@@ -453,7 +657,8 @@ def _make_handler(state: _State):
                     return
                 try:
                     it = backend.stream_token_ids(list(prompt_ids), max_tokens, cancelled,
-                                                  ignore_eos=ignore_eos)
+                                                  ignore_eos=ignore_eos,
+                                                  sampling=sampling)
                     for tid in it:
                         if cancelled.is_set():
                             finish_reason = "cancelled"
@@ -540,7 +745,8 @@ def _make_handler(state: _State):
                         self.send_response(200)
                         self.send_header("Content-Type", "text/event-stream")
                         self.send_header("Cache-Control", "no-cache")
-                        self.send_header("Connection", "keep-alive")
+                        self.send_header("Connection", "close")
+                        self.close_connection = True
                         self.end_headers()
                         sent_headers = True
                     payload = "data: " + json.dumps(chunk(delta, None)) + "\n\n"
@@ -570,7 +776,8 @@ def _make_handler(state: _State):
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
                 self.send_header("Cache-Control", "no-cache")
-                self.send_header("Connection", "keep-alive")
+                self.send_header("Connection", "close")
+                self.close_connection = True
                 self.end_headers()
             try:
                 final = chunk("", finish_reason or "stop", with_usage=include_usage)

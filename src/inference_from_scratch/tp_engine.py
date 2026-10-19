@@ -5,7 +5,9 @@
 (``batch_size == max_slots``). Requests arrive via :meth:`submit`,
 are admitted FIFO into free slots, prefilled chunkwise, then decoded
 with one batched :meth:`DistributedHybridLM.decode_token_static` call
-per engine step for all decoding rows. Greedy sampling only (v1).
+per engine step for all decoding rows. Greedy by default; per-request
+sampled decoding (temperature/top_p/top_k/seed) is supported on the
+eager path (see :meth:`submit`).
 
 Bookkeeping note: ``serving.ChunkedPrefillScheduler`` is a pure
 token-count simulation -- its ``step()`` invents generated tokens
@@ -26,8 +28,19 @@ be applied per-row at admission, before any divergent decode). No
 prefix integration is done in v1.
 
 Determinism: FIFO queues ordered by submission sequence, lowest free
-slot first, greedy argmax only, no host randomness -- the same
-submission/step interleaving always yields the same token ids.
+slot first -- the same submission/step interleaving always yields the
+same token ids. Sampled requests carry their own CPU generator seeded
+from their per-request ``seed`` (or, when unseeded, deterministically
+from the submission sequence, which is identical on every TP rank
+because all ranks submit the same requests in the same order). Every
+rank holds the full vocab logits (``_lm_head_logits`` all-gathers the
+vocab shards), so identical generators over identical logits make
+identical sampling decisions on every rank.
+
+Sampled decode never replays the CUDA graph: the graph path reduces
+its static output buffer with ``argmax`` only, so any step containing
+a sampled row falls back to the eager path, which samples from the
+returned logits. Greedy-only steps keep the graph path unchanged.
 
 Graphed decode (``decode_mode="graph"``; the default ``None`` resolves
 to ``"graph"`` on a CUDA context and ``"eager"`` elsewhere, because the
@@ -55,6 +68,7 @@ from dataclasses import dataclass, field
 
 import torch
 
+from .sampling import sample_next
 from .tp_distributed import TPStaticState
 
 __all__ = ["TPEngineCore", "EngineRequest", "EngineStepRecord"]
@@ -69,6 +83,15 @@ class EngineRequest:
     submit_seq: int
     generated: list[int] = field(default_factory=list)
     ignore_eos: bool = False
+    temperature: float = 0.0
+    top_p: float = 1.0
+    top_k: int | None = None
+    seed: int | None = None
+    generator: torch.Generator | None = field(default=None, repr=False)
+
+    @property
+    def is_sampled(self) -> bool:
+        return self.temperature != 0.0
     status: str = "waiting"  # waiting|prefilling|decoding|finished
     slot: int | None = None
     prefill_done: int = 0
@@ -156,10 +179,44 @@ class TPEngineCore:
 
     # -- submission / results -------------------------------------------
     def submit(self, prompt_ids, max_new: int, sampling: str = "greedy",
-               ignore_eos: bool = False) -> int:
-        """Enqueue a greedy request; returns its integer request_id."""
+               ignore_eos: bool = False, temperature: float = 0.0,
+               top_p: float = 1.0, top_k: int | None = None,
+               seed: int | None = None) -> int:
+        """Enqueue a request; returns its integer request_id.
+
+        Default (``temperature=0``) is the exact greedy path. With
+        ``temperature > 0`` the request is sampled per token with
+        :func:`~inference_from_scratch.sampling.sample_next` applied to
+        the full logits (temperature, then top-k, then top-p), using a
+        per-request generator seeded by ``seed``; unseeded requests
+        derive their seed from the submission sequence so TP ranks,
+        which submit identically, still agree. ``top_p``/``top_k``/
+        ``seed`` with ``temperature=0`` are validated but do not alter
+        the greedy result.
+        """
         if sampling != "greedy":
             raise ValueError(f"only greedy sampling in v1, got {sampling!r}")
+        try:
+            temperature = float(temperature)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"temperature must be a number, got {temperature!r}") from None
+        if temperature != temperature or temperature in (float("inf"), float("-inf")) \
+                or temperature < 0:
+            raise ValueError(f"temperature must be finite and >= 0, got {temperature!r}")
+        try:
+            top_p = float(top_p)
+        except (TypeError, ValueError):
+            raise ValueError(f"top_p must be a number, got {top_p!r}") from None
+        if not (0.0 < top_p <= 1.0):
+            raise ValueError(f"top_p must be in (0, 1], got {top_p!r}")
+        if top_k is not None:
+            if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < 1:
+                raise ValueError(f"top_k must be an int >= 1 or None, got {top_k!r}")
+        if seed is not None:
+            if isinstance(seed, bool) or not isinstance(seed, int) \
+                    or not (0 <= seed < 2 ** 63):
+                raise ValueError(f"seed must be an int in [0, 2**63) or None, got {seed!r}")
         if isinstance(max_new, bool) or not isinstance(max_new, int) or max_new < 0:
             raise ValueError(f"max_new must be a non-negative int, got {max_new!r}")
         if isinstance(prompt_ids, torch.Tensor):
@@ -176,10 +233,16 @@ class TPEngineCore:
             raise ValueError(
                 f"prompt ({len(ids)}) + generated ({max_new}) needs {need} "
                 f"positions > max_seq_len={self.max_seq_len}")
+        effective_seed = (int(seed) if seed is not None
+                          else (0x5EED + self._submit_seq) % (2 ** 63))
+        generator = (torch.Generator().manual_seed(effective_seed)
+                     if temperature != 0.0 else None)
         req = EngineRequest(request_id=self._next_id, prompt_ids=ids,
                             max_new=int(max_new), arrival_step=self.step_count,
                             submit_seq=self._submit_seq,
-                            ignore_eos=bool(ignore_eos))
+                            ignore_eos=bool(ignore_eos),
+                            temperature=float(temperature), top_p=float(top_p),
+                            top_k=top_k, seed=seed, generator=generator)
         self._next_id += 1
         self._submit_seq += 1
         self._requests[req.request_id] = req
@@ -240,6 +303,20 @@ class TPEngineCore:
             self._slots[req.slot] = None  # row reset deferred to next admission
         finished.append(req.request_id)
 
+    def _pick_token(self, logits_row: torch.Tensor, req: EngineRequest) -> int:
+        """Next token for one row: exact argmax when greedy, else sampled.
+
+        ``logits_row`` is ``[1, V]`` (or ``[V]``) full-vocab logits,
+        identical on every TP rank; the per-request generator is in the
+        same state on every rank, so the sampled id agrees everywhere.
+        """
+        if not req.is_sampled:
+            return int(logits_row.float().argmax(dim=-1).reshape(-1)[0].item())
+        out = sample_next(logits_row.float(), temperature=req.temperature,
+                          top_k=req.top_k, top_p=req.top_p,
+                          generator=req.generator)
+        return int(out.reshape(-1)[0].item())
+
     def _is_eos(self, token: int, req: EngineRequest | None = None) -> bool:
         if req is not None and req.ignore_eos:
             return False
@@ -254,6 +331,8 @@ class TPEngineCore:
         """
         if self.decode_mode != "graph" or not decode_planned:
             return False
+        if any(r.is_sampled for r in decode_planned):
+            return False  # graph output is reduced with argmax only
         planned = {id(r) for r in decode_planned}
         return all(r is None or id(r) in planned for r in self._slots)
 
@@ -364,7 +443,7 @@ class TPEngineCore:
                     if int(req.max_new) == 0:
                         self._finish(req, step, finished)
                     else:
-                        token = int(logits.float().argmax(dim=-1).reshape(-1)[0].item())
+                        token = self._pick_token(logits, req)
                         req.generated.append(token)
                         req.first_token_step = step
                         first_tokens.append(req.request_id)
@@ -379,7 +458,7 @@ class TPEngineCore:
                 for r in decode_planned:
                     inp[int(r.slot)] = int(r.generated[-1])
                 if self._graph_eligible(decode_planned):
-                    nxt = self._decode_graphed(inp)
+                    nxt: list[int] | None = self._decode_graphed(inp)
                 else:
                     planned = {id(r) for r in decode_planned}
                     protected = [i for i, r in enumerate(self._slots)
@@ -389,9 +468,11 @@ class TPEngineCore:
                     snap = self._snapshot_rows(protected)
                     logits = self.model.decode_token_static(inp, self.state)
                     self._restore_rows(snap)
-                    nxt = logits.float().argmax(dim=-1).tolist()
+                    nxt = None
                 for req in decode_planned:
-                    token = int(nxt[int(req.slot)])
+                    token = (int(nxt[int(req.slot)]) if nxt is not None
+                             else self._pick_token(
+                                 logits[int(req.slot):int(req.slot) + 1], req))
                     req.generated.append(token)
                     if len(req.generated) >= req.max_new or self._is_eos(token, req):
                         self._finish(req, step, finished)

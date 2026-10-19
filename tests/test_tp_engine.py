@@ -125,6 +125,57 @@ def test_validation_and_greedy_only():
                              "ttft_steps": None, "finish_step": 0}
 
 
+def test_sampled_temperature_zero_equals_greedy():
+    tp = _tp()
+    ref = _b1(tp, PROMPTS[0], 6)
+    eng = TPEngineCore(tp, tp.ctx, max_slots=1, max_seq_len=64, token_budget=16)
+    rid = eng.submit(PROMPTS[0], 6, temperature=0.0, top_p=0.5, top_k=3, seed=99)
+    eng.run()
+    assert eng.poll(rid)["token_ids"] == ref
+
+
+def test_sampled_seeded_reproducible_and_rank_agreement_seam():
+    # Two engines with identical weights = two TP ranks holding
+    # identical full logits; same seed must decide identically.
+    outs = []
+    for _ in range(2):
+        tp = _tp()
+        eng = TPEngineCore(tp, tp.ctx, max_slots=2, max_seq_len=64, token_budget=16)
+        rid = eng.submit(PROMPTS[0], 8, temperature=1.0, top_p=0.9, seed=1234)
+        eng.run()
+        outs.append(eng.poll(rid)["token_ids"])
+    assert len(outs[0]) == 8 and outs[0] == outs[1]
+
+
+def test_sampled_topk1_and_tiny_topp_equal_greedy():
+    tp = _tp()
+    ref = _b1(tp, PROMPTS[0], 6)
+    for kw in ({"temperature": 1.3, "top_k": 1},
+               {"temperature": 1.3, "top_p": 0.01}):
+        eng = TPEngineCore(tp, tp.ctx, max_slots=1, max_seq_len=64, token_budget=16)
+        rid = eng.submit(PROMPTS[0], 6, seed=7, **kw)
+        eng.run()
+        assert eng.poll(rid)["token_ids"] == ref, kw
+
+
+def test_sampled_validation_and_graph_never_sampled():
+    tp = _tp()
+    eng = TPEngineCore(tp, tp.ctx, max_slots=1, max_seq_len=64, token_budget=16)
+    for kw in ({"temperature": -0.1}, {"temperature": float("nan")},
+               {"top_p": 0.0}, {"top_p": 1.5}, {"top_k": 0},
+               {"top_k": True}, {"seed": -1}, {"seed": True}):
+        with pytest.raises(ValueError):
+            eng.submit(PROMPTS[0], 4, **kw)
+    rid = eng.submit(PROMPTS[0], 4, temperature=0.7, top_p=0.8, seed=1234)
+    eng.step()  # prefill consumes the first sampled token
+    decoding = [r for r in eng._slots if r is not None and r.status == "decoding"]
+    if decoding:  # graph must refuse sampled rows even if forced on
+        eng.decode_mode = "graph"
+        assert eng._graph_eligible(decoding) is False
+    eng.run()
+    assert len(eng.poll(rid)["token_ids"]) >= 1
+
+
 def test_ignore_eos_per_request():
     tp = _tp()
     first = _b1(tp, PROMPTS[0], 6)[0]

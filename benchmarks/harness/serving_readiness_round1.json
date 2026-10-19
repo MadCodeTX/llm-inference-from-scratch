@@ -1,0 +1,542 @@
+{
+ "task": "serving readiness round 1: TP protocol candidate (compact) vs shipped (object), serial real-server probe",
+ "git_head": "f803996",
+ "model": "Qwen/Qwen3.8-27B-FP8",
+ "gpus": "2x 24 GiB (24564 MiB visible)",
+ "flags_used": {
+  "server": "scripts/serve_qwen38_tp2.py --tp-sync {object,compact} --max-slots N --max-seq-len L (defaults 8x16384, tp-sync default object preserved; no source edits)",
+  "bench": "benchmarks/run_bench.py --smoke; custom /tmp suites: short shape only, greedy arm, repeats=1, concurrency [1,4] or [16], --tokenizer-dir <snapshot>"
+ },
+ "memory_math": {
+  "resident_weights_gib_per_rank": 14.91,
+  "kv_bytes_per_token_upper_bound_all64_bf16": 262144,
+  "observed_resident_mib": {
+   "8x16384": 20928,
+   "8x8192": 18880,
+   "16x4096": 19468,
+   "1x65536": 18292,
+   "2x32768": 18454
+  },
+  "note": "Hybrid model: only full-attention layers hold static KV; empirical KV+state at 131072 tok \u2248 5.9 GiB/rank over weights. First graphed decode allocates a second full static_state as capture scratch (tp_engine._capture_graph), roughly doubling KV demand."
+ },
+ "configs": {
+  "A1_object_8x16384": {
+   "tp_sync": "object",
+   "max_slots": 8,
+   "max_seq_len": 16384,
+   "capacity_tokens": 131072,
+   "startup_s": 24.2,
+   "resident_mib_after_load": [
+    20928,
+    20928
+   ],
+   "peak_gpu_mib": [
+    24050,
+    24050
+   ],
+   "health_ok": true,
+   "models_status": 200,
+   "smoke_ok": true,
+   "greedy_probe_sha256_16": [
+    null,
+    null
+   ],
+   "greedy_probe_errors": [
+    "HTTP Error 500: Internal Server Error",
+    "timed out"
+   ],
+   "bench": [
+    {
+     "shape": "short",
+     "concurrency": 1,
+     "ok": 0,
+     "failed": 1,
+     "ttft_p50_s": null,
+     "tpot_p50_s": null,
+     "tokens_per_minute": 0.0,
+     "errors": [
+      "RemoteDisconnected: Remote end closed connection without response"
+     ]
+    },
+    {
+     "shape": "short",
+     "concurrency": 4,
+     "ok": 0,
+     "failed": 4,
+     "ttft_p50_s": null,
+     "tpot_p50_s": null,
+     "tokens_per_minute": 0.0,
+     "errors": [
+      "URLError: <urlopen error [Errno 111] Connection refused>",
+      "URLError: <urlopen error [Errno 111] Connection refused>",
+      "URLError: <urlopen error [Errno 111] Connection refused>"
+     ]
+    }
+   ],
+   "bench_rc": 0,
+   "error": null,
+   "shutdown_rc_torchrun": 1,
+   "port_free_after": true,
+   "gpu_mib_after_shutdown": [
+    1,
+    1
+   ],
+   "wall_s": 691.0
+  },
+  "B1_compact_8x16384": {
+   "tp_sync": "compact",
+   "max_slots": 8,
+   "max_seq_len": 16384,
+   "capacity_tokens": 131072,
+   "startup_s": 24.2,
+   "resident_mib_after_load": [
+    20928,
+    20928
+   ],
+   "peak_gpu_mib": [
+    24050,
+    24050
+   ],
+   "health_ok": true,
+   "models_status": 200,
+   "smoke_ok": true,
+   "greedy_probe_sha256_16": [
+    null,
+    null
+   ],
+   "greedy_probe_errors": [
+    "HTTP Error 500: Internal Server Error",
+    "timed out"
+   ],
+   "bench": [
+    {
+     "shape": "short",
+     "concurrency": 1,
+     "ok": 0,
+     "failed": 1,
+     "ttft_p50_s": null,
+     "tpot_p50_s": null,
+     "tokens_per_minute": 0.0,
+     "errors": [
+      "RemoteDisconnected: Remote end closed connection without response"
+     ]
+    },
+    {
+     "shape": "short",
+     "concurrency": 4,
+     "ok": 0,
+     "failed": 4,
+     "ttft_p50_s": null,
+     "tpot_p50_s": null,
+     "tokens_per_minute": 0.0,
+     "errors": [
+      "URLError: <urlopen error [Errno 111] Connection refused>",
+      "URLError: <urlopen error [Errno 111] Connection refused>",
+      "URLError: <urlopen error [Errno 111] Connection refused>"
+     ]
+    }
+   ],
+   "bench_rc": 0,
+   "error": null,
+   "shutdown_rc_torchrun": 1,
+   "port_free_after": true,
+   "gpu_mib_after_shutdown": [
+    1,
+    1
+   ],
+   "wall_s": 695.2
+  },
+  "A1_object_8x8192": {
+   "tp_sync": "object",
+   "max_slots": 8,
+   "max_seq_len": 8192,
+   "capacity_tokens": 65536,
+   "startup_s": 24.2,
+   "resident_mib_after_load": [
+    18880,
+    18880
+   ],
+   "peak_gpu_mib": [
+    23304,
+    23304
+   ],
+   "health_ok": true,
+   "models_status": 200,
+   "smoke_ok": true,
+   "greedy_probe_sha256_16": [
+    "bb54dbc4548dad57",
+    "d5b0c235b4e0dda3"
+   ],
+   "greedy_probe_errors": [
+    null,
+    null
+   ],
+   "bench": [
+    {
+     "shape": "short",
+     "concurrency": 1,
+     "ok": 1,
+     "failed": 0,
+     "ttft_p50_s": 1.865145293995738,
+     "tpot_p50_s": 0.11388578824698925,
+     "tokens_per_minute": 511.3,
+     "errors": []
+    },
+    {
+     "shape": "short",
+     "concurrency": 4,
+     "ok": 4,
+     "failed": 0,
+     "ttft_p50_s": 7.476689614821225,
+     "tpot_p50_s": 0.11403098260052502,
+     "tokens_per_minute": 1868.7,
+     "errors": []
+    }
+   ],
+   "bench_rc": 0,
+   "error": null,
+   "shutdown_rc_torchrun": 1,
+   "port_free_after": true,
+   "gpu_mib_after_shutdown": [
+    1,
+    1
+   ],
+   "wall_s": 198.4
+  },
+  "B1_compact_8x8192": {
+   "tp_sync": "compact",
+   "max_slots": 8,
+   "max_seq_len": 8192,
+   "capacity_tokens": 65536,
+   "startup_s": 21.2,
+   "resident_mib_after_load": [
+    18880,
+    18880
+   ],
+   "peak_gpu_mib": [
+    23304,
+    23304
+   ],
+   "health_ok": true,
+   "models_status": 200,
+   "smoke_ok": true,
+   "greedy_probe_sha256_16": [
+    "bb54dbc4548dad57",
+    "d5b0c235b4e0dda3"
+   ],
+   "greedy_probe_errors": [
+    null,
+    null
+   ],
+   "bench": [
+    {
+     "shape": "short",
+     "concurrency": 1,
+     "ok": 1,
+     "failed": 0,
+     "ttft_p50_s": 1.863720705267042,
+     "tpot_p50_s": 0.11382043920457363,
+     "tokens_per_minute": 511.7,
+     "errors": []
+    },
+    {
+     "shape": "short",
+     "concurrency": 4,
+     "ok": 4,
+     "failed": 0,
+     "ttft_p50_s": 7.47972302348353,
+     "tpot_p50_s": 0.1139450496993959,
+     "tokens_per_minute": 1869.8,
+     "errors": []
+    }
+   ],
+   "bench_rc": 0,
+   "error": null,
+   "shutdown_rc_torchrun": 1,
+   "port_free_after": true,
+   "gpu_mib_after_shutdown": [
+    1,
+    1
+   ],
+   "wall_s": 195.2
+  },
+  "B2_compact_8x8192": {
+   "tp_sync": "compact",
+   "max_slots": 8,
+   "max_seq_len": 8192,
+   "capacity_tokens": 65536,
+   "startup_s": 21.2,
+   "resident_mib_after_load": [
+    18880,
+    18880
+   ],
+   "peak_gpu_mib": [
+    23304,
+    23304
+   ],
+   "health_ok": true,
+   "models_status": 200,
+   "smoke_ok": true,
+   "greedy_probe_sha256_16": [
+    "bb54dbc4548dad57",
+    "d5b0c235b4e0dda3"
+   ],
+   "greedy_probe_errors": [
+    null,
+    null
+   ],
+   "bench": [
+    {
+     "shape": "short",
+     "concurrency": 1,
+     "ok": 1,
+     "failed": 0,
+     "ttft_p50_s": 1.8646443909965456,
+     "tpot_p50_s": 0.11383501999080181,
+     "tokens_per_minute": 511.6,
+     "errors": []
+    },
+    {
+     "shape": "short",
+     "concurrency": 4,
+     "ok": 4,
+     "failed": 0,
+     "ttft_p50_s": 7.482118953950703,
+     "tpot_p50_s": 0.11396162561140954,
+     "tokens_per_minute": 1869.6,
+     "errors": []
+    }
+   ],
+   "bench_rc": 0,
+   "error": null,
+   "shutdown_rc_torchrun": 1,
+   "port_free_after": true,
+   "gpu_mib_after_shutdown": [
+    1,
+    1
+   ],
+   "wall_s": 195.3
+  },
+  "A2_object_8x8192": {
+   "tp_sync": "object",
+   "max_slots": 8,
+   "max_seq_len": 8192,
+   "capacity_tokens": 65536,
+   "startup_s": 24.2,
+   "resident_mib_after_load": [
+    18880,
+    18880
+   ],
+   "peak_gpu_mib": [
+    23302,
+    23302
+   ],
+   "health_ok": true,
+   "models_status": 200,
+   "smoke_ok": true,
+   "greedy_probe_sha256_16": [
+    "bb54dbc4548dad57",
+    "d5b0c235b4e0dda3"
+   ],
+   "greedy_probe_errors": [
+    null,
+    null
+   ],
+   "bench": [
+    {
+     "shape": "short",
+     "concurrency": 1,
+     "ok": 1,
+     "failed": 0,
+     "ttft_p50_s": 1.8636991800740361,
+     "tpot_p50_s": 0.11388047784566879,
+     "tokens_per_minute": 511.3,
+     "errors": []
+    },
+    {
+     "shape": "short",
+     "concurrency": 4,
+     "ok": 4,
+     "failed": 0,
+     "ttft_p50_s": 5.590039669070393,
+     "tpot_p50_s": 0.11400859896093607,
+     "tokens_per_minute": 1868.9,
+     "errors": []
+    }
+   ],
+   "bench_rc": 0,
+   "error": null,
+   "shutdown_rc_torchrun": 1,
+   "port_free_after": true,
+   "gpu_mib_after_shutdown": [
+    1,
+    1
+   ],
+   "wall_s": 198.3
+  },
+  "C16_compact_16x4096": {
+   "tp_sync": "compact",
+   "max_slots": 16,
+   "max_seq_len": 4096,
+   "capacity_tokens": 65536,
+   "startup_s": 21.2,
+   "resident_mib_after_load": [
+    19468,
+    19468
+   ],
+   "peak_gpu_mib": [
+    24042,
+    24042
+   ],
+   "health_ok": true,
+   "models_status": 200,
+   "smoke_ok": true,
+   "greedy_probe_sha256_16": [
+    "bb54dbc4548dad57",
+    "d5b0c235b4e0dda3"
+   ],
+   "greedy_probe_errors": [
+    null,
+    null
+   ],
+   "bench": [
+    {
+     "shape": "short",
+     "concurrency": 16,
+     "ok": 1,
+     "failed": 15,
+     "ttft_p50_s": 1.91437057685107,
+     "tpot_p50_s": null,
+     "tokens_per_minute": 6.4,
+     "errors": [
+      "HTTPError: HTTP Error 500: Internal Server Error",
+      "HTTPError: HTTP Error 500: Internal Server Error",
+      "HTTPError: HTTP Error 500: Internal Server Error"
+     ]
+    }
+   ],
+   "bench_rc": 0,
+   "error": null,
+   "shutdown_rc_torchrun": 1,
+   "port_free_after": true,
+   "gpu_mib_after_shutdown": [
+    1,
+    1
+   ],
+   "wall_s": 79.3
+  },
+  "L_object_1x65536": {
+   "tp_sync": "object",
+   "max_slots": 1,
+   "max_seq_len": 65536,
+   "capacity_tokens": 65536,
+   "startup_s": 21.2,
+   "resident_mib_after_load": [
+    18292,
+    18292
+   ],
+   "peak_gpu_mib": [
+    20410,
+    20410
+   ],
+   "health_ok": true,
+   "models_status": 200,
+   "smoke_ok": true,
+   "greedy_probe_sha256_16": [
+    "bb54dbc4548dad57",
+    "d5b0c235b4e0dda3"
+   ],
+   "greedy_probe_errors": [
+    null,
+    null
+   ],
+   "bench": [],
+   "bench_rc": null,
+   "error": null,
+   "shutdown_rc_torchrun": 1,
+   "port_free_after": true,
+   "gpu_mib_after_shutdown": [
+    1,
+    1
+   ],
+   "wall_s": 67.4
+  },
+  "M_object_2x32768": {
+   "tp_sync": "object",
+   "max_slots": 2,
+   "max_seq_len": 32768,
+   "capacity_tokens": 65536,
+   "startup_s": 21.2,
+   "resident_mib_after_load": [
+    18454,
+    18454
+   ],
+   "peak_gpu_mib": [
+    19998,
+    19998
+   ],
+   "health_ok": true,
+   "models_status": 200,
+   "smoke_ok": true,
+   "greedy_probe_sha256_16": [
+    "bb54dbc4548dad57",
+    "d5b0c235b4e0dda3"
+   ],
+   "greedy_probe_errors": [
+    null,
+    null
+   ],
+   "bench": [],
+   "bench_rc": null,
+   "error": null,
+   "shutdown_rc_torchrun": 1,
+   "port_free_after": true,
+   "gpu_mib_after_shutdown": [
+    1,
+    1
+   ],
+   "wall_s": 67.0
+  }
+ },
+ "abba_8x8192_short_greedy": {
+  "order": [
+   "A1_object",
+   "B1_compact",
+   "B2_compact",
+   "A2_object"
+  ],
+  "tpot_p50_ms": {
+   "A1_object_c1": 113.89,
+   "B1_compact_c1": 113.82,
+   "B2_compact_c1": 113.84,
+   "A2_object_c1": 113.88,
+   "c4_range_ms": [
+    113.95,
+    114.03
+   ]
+  },
+  "tokens_per_minute_c4": {
+   "object": [
+    1868.7,
+    1868.9
+   ],
+   "compact": [
+    1869.8,
+    1869.6
+   ]
+  },
+  "greedy_exact": true,
+  "verdict": "No measurable compact TPOT/tokens-min difference at short c1/c4 (all within ~0.1%, single-repeat). No win claim."
+ },
+ "feasibility_matrix": {
+  "8x16384_current_default": "INFEASIBLE on 24 GiB/rank: both protocols OOM on rank1 at first graphed decode (_capture_graph static_state alloc, tried 128 MiB with 31.75 MiB free); smoke (1-token) passes misleadingly; first 32-token greedy probe HTTP 500, bench RemoteDisconnected then connection refused.",
+  "8x8192": "FEASIBLE: c1/c4 short bench all ok, peak 23304 MiB/rank. Supports short (2560) and agent-shared-prefix (9216 > 8192: NO). Medium/long NO.",
+  "16x4096": "NOT READY: health/smoke/greedy-c1 ok, but c16 short bench 1/16 ok, 15x HTTP 500 (generation failed; exact message not captured by run_bench); peak 24042 MiB; shutdown required SIGKILL escalation.",
+  "1x65536": "FEASIBLE health/smoke/greedy (long geometry 49152+1024=50176 <= 65536), peak 20410 MiB; no bench run (bounded scope).",
+  "2x32768": "FEASIBLE health/smoke/greedy (medium geometry 16384+1024=17408 <= 32768 at c<=2), peak 19998 MiB; no bench run."
+ },
+ "greedy_exactness": "Identical 32-token greedy text sha256 prefixes (bb54dbc4548dad57, d5b0c235b4e0dda3) across every feasible config and both protocols, incl. ABBA repeats.",
+ "context_only": "Best local TPOT 21.867 ms (prior microbench context) vs serving short-c1 TPOT p50 \u2248 113.9 ms in this probe; Arm A/B incumbent numbers not re-measured here. Context only, no win/loss claim until final same-harness phase.",
+ "recommendation": "REJECT compact as default (no measured benefit; keep opt-in --tp-sync compact). REJECT current 8x16384 default sizing on 24 GiB (OOM at graph capture). Adopt 8x8192 as the largest proven all-ok sizing for short c1/c4; treat 1x65536 / 2x32768 as opt-in long/medium feasibility only; c16 not ready.",
+ "safety": "GPUs verified idle before start; unique localhost ports 18211-18226; serial, one config at a time; only own torchrun servers started/stopped; port free + GPU 1 MiB verified after every config; no vLLM or external process touched; nothing committed."
+}

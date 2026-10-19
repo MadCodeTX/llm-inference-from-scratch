@@ -12,18 +12,33 @@ non-streaming form), `GET /health`, and `GET /v1/models`. Prompts may
 be strings or token-id lists; usage counts come from the tokenizer /
 engine, never from re-counting output text.
 
-Greedy only: `temperature > 0` returns HTTP 400. Sampled arms are
-explicitly unsupported, never silently ignored — `run_bench.py` will
-record per-request errors for the sampled arm until a sampling
-backend exists. Logprobs are accepted and returned as `null` (the
-quality probe re-tokenizes locally and labels ids
-`retokenized_local`).
+Sampling: `FakeBackend` and `BatchedEngineBackend` accept
+`temperature` / `top_p` / `top_k` / `seed` (the fields
+`benchmarks/run_bench.py` sends: temperature, top_p, seed; top_k is
+accepted for the engine's sampler). `temperature=0` remains the exact
+greedy path. Greedy-only backends (e.g. `HFBackend`) still return
+HTTP 400 for `temperature > 0`, never silently greedy. Invalid
+`top_p` / `top_k` / `seed` values return 400 naming the field.
+Logprobs are accepted and returned as `null` (the quality probe
+re-tokenizes locally and labels ids `retokenized_local`).
+
+`TPEngineCore` samples from the full returned logits on the eager
+path with a per-request generator seeded by the request `seed`
+(unseeded: derived from the submission sequence). All TP ranks hold
+identical full logits and submit identically, so sampling decisions
+agree across ranks. A step containing a sampled request never
+replays the CUDA graph (its output is reduced with `argmax` only);
+it uses eager sampling instead. Greedy-only steps keep the graph
+path and exact greedy behaviour unchanged.
 
 Three backends sit behind one seam (`encode` / `decode` /
-`stream_token_ids(prompt_ids, max_tokens, cancelled, ignore_eos)`):
+`stream_token_ids(prompt_ids, max_tokens, cancelled, ignore_eos,
+sampling)`):
 
-- `FakeBackend` — deterministic char-level fake for CPU tests.
-- `HFBackend` — real HF tokenizer plus an injected generator.
+- `FakeBackend` — deterministic char-level fake for CPU tests
+  (seeded fake sampling when `temperature > 0`).
+- `HFBackend` — real HF tokenizer plus an injected generator
+  (greedy only).
 - `BatchedEngineBackend` — one driver thread steps a
   `TPEngineCore`-shaped engine (`submit` / `poll` / `step`) so
   concurrent HTTP requests batch in the engine. An optional
@@ -51,10 +66,11 @@ Fake smoke (CPU, no weights):
 .venv/bin/python benchmarks/run_bench.py --smoke --base-url http://127.0.0.1:8000 --model fake-model
 ```
 
-Real 27B TP2 server (approved GPU window, incumbent stopped first):
+Real 27B TP2 server (approved GPU window, incumbent stopped first;
+defaults are the measured-feasible 8×8192 sizing):
 
 ```bash
-.venv-gpu/bin/torchrun --nproc_per_node=2 scripts/serve_qwen38_tp2.py --port 8000 --model Qwen/Qwen3.8-27B-FP8
+.venv-gpu/bin/torchrun --nproc_per_node=2 scripts/serve_qwen38_tp2.py --port 8000 --model Qwen/Qwen3.8-27B-FP8 --max-slots 8 --max-seq-len 8192
 ```
 
 Same-harness bench against it:
@@ -62,6 +78,12 @@ Same-harness bench against it:
 ```bash
 .venv/bin/python benchmarks/run_bench.py --base-url http://127.0.0.1:8000 --model Qwen/Qwen3.8-27B-FP8 --tokenizer-dir <snapshot> --output <artifact>.json
 ```
+
+Final head-to-head (exact commands, unique ports, one server at a
+time, shut down only the server you started): run the server command
+above, then the bench command, then repeat the pair for the incumbent
+under the same `benchmarks/suite.json`; compare against
+`benchmarks/WIN.md` thresholds. No head-to-head has been run yet.
 
 The TP2 script applies the adopted local decode defaults explicitly
 (no library default changed by the script): graphed decode,
@@ -73,27 +95,48 @@ exact and faster at c1/c4/c8; see
 `benchmarks/harness/throughput_round1.json`), and explicit
 `decode_mode="graph"` still fails closed off CUDA.
 
-## Readiness blockers (no vLLM win claimed)
+## Readiness verdict (no vLLM win claimed)
 
-- No same-harness suite result exists yet. The only real-27B serving
-  evidence is a tiny-prompt smoke (16 tokens, TPOT p50 ~88 ms
-  including graph capture and per-step broadcast overhead). **No win
-  vs vLLM Arm A or Arm B is claimed until a `run_bench.py` suite run
-  on `benchmarks/suite.json` passes the `benchmarks/WIN.md`
-  thresholds and quality gate.**
-- TP lockstep uses `broadcast_object_list` once per engine step,
-  which adds host latency; a tensor-broadcast or persistent
-  worker-step protocol is needed before attributing head-to-head
-  TPOT to the engine.
-- Static KV sizing: defaults are 8 slots × 16384 tokens. The suite
-  medium shape (16384+1024) and long shape (49152+1024), and c16,
-  need larger `--max-slots` / `--max-seq-len`, which may OOM on
-  24 GiB/rank next to the ~14.91 GiB resident weights. A sizing
-  sweep is required before those cells can run.
+Measured in `benchmarks/harness/serving_readiness_round1.json`
+(27B TP2, 2×24 GiB, short greedy, repeats=1):
+
+| Config | Resident / peak MiB/rank | Result |
+|---|---|---|
+| 8×16384 | 20928 / 24050 | INFEASIBLE — graph-capture OOM, both protocols |
+| 8×8192 (now the default) | 18880 / 23304 | FEASIBLE — c1/c4 short all OK |
+| 16×4096 | 19468 / 24042 | NOT READY — c16 bench 15/16 HTTP 500, cause unresolved |
+| 1×65536 | 18292 / 20410 | health/smoke/greedy only — long shape opt-in |
+| 2×32768 | 18454 / 19998 | health/smoke/greedy only — medium shape at c≤2, opt-in |
+
+- **No same-harness suite result exists yet**, so **no win vs vLLM
+  Arm A or Arm B is claimed** until a `run_bench.py` run on
+  `benchmarks/suite.json` passes the `benchmarks/WIN.md` thresholds
+  and quality gate. Serving TPOT at 8×8192 was ≈113.9 ms (c1) —
+  context only, not comparable to the 21.867 ms local-runner best.
+- Compact lockstep (`--tp-sync compact`, opt-in): real-27B ABBA at
+  8×8192 showed no measurable benefit (TPOT p50 113.82–113.89 ms,
+  tokens/min c4 1868.7–1869.8, both protocols, ~0.1%). It stays
+  opt-in; the default `object` protocol is unchanged. Sampling
+  floats cross the compact codec as exact float64 bits.
+- Greedy exactness: identical 32-token greedy hash prefixes
+  (`bb54dbc4548dad57`, `d5b0c235b4e0dda3`) across every feasible
+  config, both protocols, and ABBA repeats (64-bit prefixes only;
+  full hashes were not stored).
+- SSE streams send `Connection: close` and close after `[DONE]`,
+  so raw clients (e.g. `curl`) see EOF; parsers that stop at
+  `[DONE]` (such as `run_bench.py`) are unaffected.
+- `BatchedEngineBackend.close()` is idempotent, fails in-flight and
+  queued jobs with `backend closed` instead of hanging them, and
+  sends the TP shutdown broadcast only after the driver stops.
 - Cancellation of an in-flight engine request discards its output
   but cannot preempt its engine slot until it finishes (bounded by
   `max_tokens`).
-- The sampled arm returns HTTP 400 by design (greedy-only engine).
+- The sampled arm is implemented (temperature/top_p/top_k/seed) but
+  has no real-27B benchmark yet; sampled steps run eager, so sampled
+  TPOT is not comparable to the graphed greedy TPOT. c16 is not
+  ready (above), and graceful TP shutdown exit was not demonstrated
+  (round-1 recorded `shutdown_rc_torchrun=1`; only port-free +
+  GPU-idle after-state was verified).
 
 Local decode context, not a serving claim: best local TPOT is
 21.867 ms (graphed TP2, fused defaults), still above vLLM Arm A

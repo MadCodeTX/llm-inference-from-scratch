@@ -29,7 +29,8 @@ import run_qwen38_tp2 as runner  # noqa: E402
 from inference_from_scratch.hybrid import HybridConfig  # noqa: E402
 from inference_from_scratch.hybrid_checkpoint import build_manifest  # noqa: E402
 from inference_from_scratch.openai_server import (  # noqa: E402
-    BatchedEngineBackend, make_server, participate)
+    BatchedEngineBackend, encode_lockstep_command,
+    make_server, participate, participate_compact)
 from inference_from_scratch.tp_checkpoint import load_rank_state, resident_memory_report  # noqa: E402
 from inference_from_scratch.tp_distributed import DistributedTPContext  # noqa: E402
 from inference_from_scratch.tp_engine import TPEngineCore  # noqa: E402
@@ -41,12 +42,16 @@ def main() -> int:
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--model", default="Qwen/Qwen3.8-27B-FP8")
-    # Static KV state is slots*seq_len sized: 8x16384 fits 24 GiB/rank
-    # next to the 14.91 GiB resident weights; larger shapes need tuning.
+    # Static KV state is slots*seq_len sized. Measured on 24 GiB/rank
+    # (serving_readiness_round1): 8x16384 OOMs at graph capture; 8x8192
+    # is the largest proven sizing. Larger shapes are explicit opt-ins.
     ap.add_argument("--max-slots", type=int, default=8)
-    ap.add_argument("--max-seq-len", type=int, default=16384)
+    ap.add_argument("--max-seq-len", type=int, default=8192)
     ap.add_argument("--token-budget", type=int, default=8192)
     ap.add_argument("--request-timeout", type=float, default=1800.0)
+    ap.add_argument("--tp-sync", choices=("object", "compact"), default="object",
+                    help="lockstep transport: object=broadcast_object_list "
+                         "(default), compact=flat-int tensor broadcast")
     ap.add_argument("--memory-guard-gib", type=float, default=runner.MEMORY_GUARD_GIB)
     a = ap.parse_args()
     # Adopted defaults via existing explicit config helpers only.
@@ -94,6 +99,17 @@ def main() -> int:
         except TypeError: return tok.decode([int(t) for t in ids])
 
     if rank != 0:
+        if a.tp_sync == "compact":
+            def recv_command():
+                hdr = torch.empty(1, dtype=torch.int64, device=dev)
+                dist.broadcast(hdr, src=0)
+                buf = torch.empty(int(hdr.item()), dtype=torch.int64, device=dev)
+                dist.broadcast(buf, src=0)
+                return buf.tolist()
+            try: participate_compact(engine, recv_command)
+            finally: ctx.destroy()
+            return 0
+
         def recv():
             box = [None]
             dist.broadcast_object_list(box, src=0)
@@ -103,10 +119,21 @@ def main() -> int:
         finally: ctx.destroy()
         return 0
 
-    def sync_hook(submits, do_step, shutdown=False):
-        dist.broadcast_object_list(
-            [{"submits": [(list(p), int(m), bool(ie)) for p, m, ie in submits],
-              "step": bool(do_step), "shutdown": bool(shutdown)}], src=0)
+    if a.tp_sync == "compact":
+        def sync_hook(submits, do_step, shutdown=False):
+            payload = encode_lockstep_command(submits, do_step, shutdown)
+            hdr = torch.tensor([len(payload)], dtype=torch.int64, device=dev)
+            dist.broadcast(hdr, src=0)
+            dist.broadcast(torch.tensor(payload, dtype=torch.int64, device=dev),
+                           src=0)
+    else:
+        def sync_hook(submits, do_step, shutdown=False):
+            packed = [(list(s[0]), int(s[1]),
+                       bool(s[2]) if len(s) > 2 else False,
+                       s[3] if len(s) > 3 else None) for s in submits]
+            dist.broadcast_object_list(
+                [{"submits": packed, "step": bool(do_step),
+                  "shutdown": bool(shutdown)}], src=0)
 
     backend = BatchedEngineBackend(a.model, engine, encode, decode,
                                    eos_id=eos, sync_hook=sync_hook)
