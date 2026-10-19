@@ -3,9 +3,9 @@ id: throughput-batching
 domain: batching
 status: open
 current_best:
-  result: "eager aggregate tok/min B=1 1367, B=2 2721, B=4 5360, B=8 10746, B=16 20001 (step 43.7-47.3 ms; per-seq 22.8 -> 20.8 tok/s)"
-  artifact: benchmarks/baseline/ours_tp2_batched_decode.json
-  exactness: "row0 ids identical across batch sizes (b1_row0_eq_single_run true)"
+  result: "graphed batched decode (engine default on CUDA): median aggregate tok/min c1 2334, c4 5109, c8 7298 vs eager 1397/4462/6979 at suite-short 2048->512 (local TPEngineCore harness); eager B sweep retained below as context"
+  artifact: benchmarks/harness/throughput_round1.json
+  exactness: "graph vs eager token-identical on all 14 runs c1/c4/c8; captures=1, replays=511 per graph run"
 arm_a:
   result: "c4 short 8530 tok/min (run_bench.py serving harness)"
   artifact: benchmarks/baseline/arm_a_exact_greedy_c1_c4.json
@@ -22,7 +22,7 @@ objective_metrics:
   - {name: step_ms, direction: minimize, shape: "decode-loop seconds / 63 steps"}
 exactness_gate: "row0 generated ids identical at every batch size; staggered-start exactness via TPEngineCore proof for scheduling candidates"
 probe_command: ".venv-gpu/bin/torchrun --nproc_per_node=2 scripts/batched_decode_bench.py --batches 1,2,4,8,16 --decode-tokens 64 --out <artifact>.json"
-stop_condition: "graphed batching beats eager aggregate at B=4 and B=8 with per-seq no worse, or two successive k=1 steps adopt no candidate"
+stop_condition: "met for c1/c4/c8 (graph exact and faster, adopted as CUDA default); reopen for c16 or a per-seq regression"
 candidate_dimensions:
   invariant: ["row0-identity check at every B", "cross-harness non-claim discipline vs Arm A/B c4 bars"]
   domain_specific: ["CUDA-graphed batched decode (eager is the measured caveat: ~44 ms/step at every B)", "per-row position handling (ch 28: position is [B])", "continuous-batching scheduling in TPEngineCore (exactness shown; throughput unmeasured)"]

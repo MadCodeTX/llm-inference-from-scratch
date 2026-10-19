@@ -3,9 +3,9 @@ id: serving-head-to-head
 domain: serving
 status: open
 current_best:
-  result: "no candidate measured through run_bench.py as a server yet; local-runner best is decode-tpot card (23.67 ms, not a serving number)"
-  artifact: benchmarks/WIN.md
-  exactness: "n/a - no serving candidate run recorded"
+  result: "serving surface integrated (ch 30: openai_server + serve_qwen38_tp2, defects fixed/tested); no candidate measured through run_bench.py on the suite yet - blockers: TP broadcast overhead, static-KV sizing for medium/long/c16, greedy-only sampled arm"
+  artifact: docs/30_serving_openai.md
+  exactness: "fake/stub contract tests pass; real-27B evidence is a tiny-prompt smoke only, no suite quality-gate run"
 arm_a:
   result: "short c1 2745 tok/min / TPOT 20.3 ms; c4 8530 tok/min; agent TTFT p50 1.81 s @8704 (c1)"
   artifact: benchmarks/baseline/arm_a_exact_greedy_c1_c4.json

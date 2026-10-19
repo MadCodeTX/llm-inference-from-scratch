@@ -45,6 +45,8 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--backend", default=None, choices=["nccl", "gloo"])
     p.add_argument("--device", default=None, choices=["cuda", "cpu"])
+    p.add_argument("--decode-mode", default="eager", choices=["eager", "graph"],
+                   help="graph requires CUDA; steady-state steps replay one captured batched decode")
     args = p.parse_args()
     backend = args.backend or ("nccl" if args.device != "cpu" else "gloo")
     device_type = args.device or ("cuda" if backend == "nccl" else "cpu")
@@ -66,7 +68,8 @@ def main() -> int:
 
     with torch.no_grad():
         refs = [b1(p, 6) for p in PROMPTS]
-        eng = TPEngineCore(tp, ctx, max_slots=2, max_seq_len=64, token_budget=8)
+        eng = TPEngineCore(tp, ctx, max_slots=2, max_seq_len=64, token_budget=8,
+                           decode_mode=args.decode_mode)
         ids = [eng.submit(PROMPTS[0], 6), eng.submit(PROMPTS[1], 6)]
         eng.step(); eng.step()
         ids.append(eng.submit(PROMPTS[2], 6))
@@ -86,6 +89,14 @@ def main() -> int:
             raise AssertionError("token budget exceeded")
         # Slot reuse is implied: 5 requests finished through 2 slots.
         print(f"[rank {rank}] slot_reuse=True slots=2 requests=5", flush=True)
+        print(f"[rank {rank}] decode_mode={eng.decode_mode} "
+              f"graph_captures={eng.graph_captures} graph_replays={eng.graph_replays}",
+              flush=True)
+        if args.decode_mode == "graph" and (eng.graph_captures != 1 or eng.graph_replays < 1):
+            raise AssertionError(
+                f"graph path never replayed: captures={eng.graph_captures} "
+                f"replays={eng.graph_replays}")
+        eng.close()
 
     ctx.barrier()
     if rank == 0:

@@ -19,3 +19,21 @@
   Arm A c4 (8,530) / Arm B c4 (12,113–12,136) tok/min bars numerically is a
   cross-harness, cross-shape coincidence — explicitly not a win
   (`benchmarks/WIN.md`).
+
+## B2 — Graphed batched decode is exact and faster at c1/c4/c8
+
+- **cue**: a graphed batched step (`TPEngineCore` `decode_mode="graph"`)
+  proposed against the eager engine at suite-short geometry.
+- **lesson**: adopt as the engine default on CUDA (explicit `eager`
+  preserved; explicit `graph` still fails closed off CUDA). The gain
+  shrinks with batch (+67% / +15% / +5% aggregate), as expected for a
+  host-launch-overhead lever.
+- **evidence**: `benchmarks/harness/throughput_round1.json` (2048
+  filler -> 512 greedy, ignore-EOS, adopted fused defaults): median
+  aggregate tok/min graph vs eager c1 2,334 vs 1,397, c4 5,109 vs
+  4,462, c8 7,298 vs 6,979; token-identical on all 14 runs;
+  captures=1, replays=511 per graph run.
+- **confidence**: high (ABBA, exactness-gated, verifier-recomputed).
+- **applicability limits**: local engine harness, not `run_bench.py`
+  serving; TTFT/TPOT not observable (step indices only); c16 not
+  attempted; no vLLM win may be inferred.

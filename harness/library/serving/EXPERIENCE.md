@@ -17,3 +17,24 @@
   consistently across every ladder row).
 - **applicability limits**: none — this rule binds every domain's
   reporting, including future serving candidates.
+
+## V2 — Serving surface ships before any serving win exists
+
+- **cue**: an OpenAI-compatible server wrapping the TP engine is
+  ready to be measured, but no same-harness suite run exists.
+- **lesson**: ship the surface, state the blockers, claim nothing.
+  Driver exceptions must fail the request (never hang the consumer),
+  `ignore_eos` must reach the engine (a server-only flag cannot stop
+  engine EOS), and TP shutdown must broadcast + join the driver
+  before context teardown. All three are covered by committed
+  stub-engine tests in `tests/test_openai_server.py`.
+- **evidence**: `docs/30_serving_openai.md`; real-27B evidence is a
+  tiny-prompt smoke only (TPOT p50 ~88 ms including graph capture
+  and per-step `broadcast_object_list` overhead). Blockers: TP
+  broadcast overhead, static-KV sizing (8x16384 defaults vs suite
+  medium/long/c16 on 24 GiB/rank), greedy-only sampled arm.
+- **confidence**: high for the defect fixes (probed + tested);
+  none for serving speed (unmeasured).
+- **applicability limits**: until a `run_bench.py` suite run passes
+  the WIN.md quality gate, every serving-speed statement is a
+  blocker statement, not a result.

@@ -125,6 +125,43 @@ def test_validation_and_greedy_only():
                              "ttft_steps": None, "finish_step": 0}
 
 
+def test_ignore_eos_per_request():
+    tp = _tp()
+    first = _b1(tp, PROMPTS[0], 6)[0]
+    eng = TPEngineCore(tp, tp.ctx, max_slots=1, max_seq_len=64,
+                       token_budget=16, eos_id=first)
+    rid = eng.submit(PROMPTS[0], 3, ignore_eos=True)
+    eng.run()
+    assert len(eng.poll(rid)["token_ids"]) == 3  # EOS token does not finish it
+
+
+def test_decode_mode_default_and_validation():
+    tp = _tp()
+    eng = TPEngineCore(tp, tp.ctx, max_slots=2, max_seq_len=64, token_budget=8)
+    assert eng.decode_mode == "eager"  # CPU context resolves the default to eager
+    assert eng.graph_captures == 0 and eng.graph_replays == 0
+    with pytest.raises(ValueError):
+        TPEngineCore(tp, tp.ctx, max_slots=2, max_seq_len=64, token_budget=8,
+                     decode_mode="turbo")
+    # Graph fails closed off CUDA instead of silently falling back.
+    with pytest.raises(ValueError):
+        TPEngineCore(tp, tp.ctx, max_slots=2, max_seq_len=64, token_budget=8,
+                     decode_mode="graph")
+    eng.close()  # no graph captured: close is a no-op
+
+
+def test_graph_eligibility_requires_all_occupied_slots_decoding():
+    tp = _tp()
+    eng = TPEngineCore(tp, tp.ctx, max_slots=2, max_seq_len=64, token_budget=8)
+    # Eager engine is never graph-eligible, whatever the slot state.
+    r0 = eng.submit(PROMPTS[0], 4)
+    eng.step()  # prefills (budget 8 >= prompt 5 + decode 0) -> decoding
+    assert eng._graph_eligible([]) is False
+    decoding = [r for r in eng._slots if r is not None and r.status == "decoding"]
+    assert decoding and eng._graph_eligible(decoding) is False  # mode is eager
+    assert eng.poll(r0)["status"] in ("decoding", "finished")
+
+
 @pytest.mark.skipif(not (ROOT / "scripts/tp_engine_smoke.py").exists(),
                     reason="smoke script missing")
 def test_tp_engine_smoke_gloo_two_process():

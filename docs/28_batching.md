@@ -164,3 +164,40 @@ the same script passes tiny NCCL on 2x RTX 4090,
 slot, small-budget chunked prefill exactness, determinism replay, and
 validation. No throughput claim yet: eager per-step latency is the
 docs/28 bench above; a batched CUDA-graph decode remains the lever.
+
+## Graphed batched decode (`decode_mode="graph"`, default on CUDA)
+
+`TPEngineCore(..., decode_mode="graph")` (the default resolves to
+`"graph"` on a CUDA context and `"eager"` elsewhere; explicit
+`"eager"` is the unchanged v1 path) captures ONE CUDA graph over the fixed
+`max_slots`-wide `decode_token_static` -- static input/output
+buffers, side-stream warmup on a scratch state and a TP barrier
+before capture, exactly the runner's B=1 pattern
+(`scripts/run_qwen38_tp2.py:greedy_generate_graph_tp`). A step
+replays the graph only when every occupied slot is decode-planned;
+free slots are replayed with dummy input and reset at admission
+(their positions are also re-zeroed before they could leave the
+buffers), and any step with a prefilling or just-finished row uses
+the eager snapshot/restore step instead. Graph mode fails closed at
+construction off CUDA rather than silently falling back. The flag
+changes only launch mechanics: same greedy argmax, same EOS/finish
+rules, so token ids are identical to eager -- proven on tiny NCCL
+TP2 (`scripts/tp_engine_smoke.py --decode-mode graph`:
+`staggered_exact=True`, `graph_captures=1`, `graph_replays=13`,
+`TP_ENGINE_SMOKE PASS`) and by the CPU validation/eligibility tests
+in `tests/test_tp_engine.py`. Measured effect on the real 27B
+shape, suite-like TTFT/TPOT (steps are indices, no wall clock in
+the engine), and any throughput claim are deliberately not made
+here; the caller must still apply the adopted fused/scale-cache
+model tweaks (`run_qwen38_tp2.py:apply_*`) to the model it hands
+the engine, as before. Round-1 measurement on the real 27B at the
+suite-short geometry (`benchmarks/harness/throughput_round1.json`):
+graph vs eager median aggregate 2,334 vs 1,397 tok/min at c1,
+5,109 vs 4,462 at c4, 7,298 vs 6,979 at c8, token-identical on all
+14 runs (captures=1, replays=511 per graph run) -- exact and faster
+at every measured concurrency with no shape regression, which is
+why the CUDA default is now `graph`. That harness is the local
+engine, not `run_bench.py` serving: no vLLM win is claimed. Note GEMV (`gemv-bk512`) is an M=1 kernel:
+batched decode at `B > 1` takes the M=B FP8 path regardless, so
+the comparable-throughput lever at concurrency is this graph, not
+the B=1 GEMV default.

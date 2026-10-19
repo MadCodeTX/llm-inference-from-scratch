@@ -28,6 +28,26 @@ prefix integration is done in v1.
 Determinism: FIFO queues ordered by submission sequence, lowest free
 slot first, greedy argmax only, no host randomness -- the same
 submission/step interleaving always yields the same token ids.
+
+Graphed decode (``decode_mode="graph"``; the default ``None`` resolves
+to ``"graph"`` on a CUDA context and ``"eager"`` elsewhere, because the
+round-1 measurement was exact and faster at c1/c4/c8 with no shape
+regression -- see ``benchmarks/harness/throughput_round1.json``.
+Explicit ``"eager"`` preserves the exact v1 behaviour): on steps where every occupied slot
+is a decode-planned row, the batched decode is ONE replay of a CUDA
+graph captured over :meth:`DistributedHybridLM.decode_token_static`
+with static input/output buffers (the runner's B=1 pattern in
+``scripts/run_qwen38_tp2.py:greedy_generate_graph_tp``, lifted to the
+fixed ``max_slots`` batch). Steps with any prefilling/just-finished
+row fall back to the eager snapshot/restore step, token-identically.
+Free slots are replayed too; their state is discarded by the
+``reset(rows=[slot])`` at next admission, which is the only reason
+skipping snapshot/restore on the graph path is exact. Capture is
+lazy (first eligible step), after a side-stream warmup over a scratch
+state and a TP barrier, mirroring the runner. Graph replay skips the
+in-kernel overflow check, so the engine relies on the ``submit``
+bound (``prompt + max_new - 1 <= max_seq_len``) plus finishing at
+``max_new``/EOS -- a decoding row can never be fed past it.
 """
 from __future__ import annotations
 
@@ -48,6 +68,7 @@ class EngineRequest:
     arrival_step: int
     submit_seq: int
     generated: list[int] = field(default_factory=list)
+    ignore_eos: bool = False
     status: str = "waiting"  # waiting|prefilling|decoding|finished
     slot: int | None = None
     prefill_done: int = 0
@@ -85,16 +106,40 @@ class TPEngineCore:
     :meth:`step` in lockstep (collectives inside the model require it).
     """
 
+    DECODE_MODES = ("eager", "graph")
+
     def __init__(self, model, ctx, max_slots: int, max_seq_len: int,
-                 token_budget: int, *, eos_id: int | None = None):
+                 token_budget: int, *, eos_id: int | None = None,
+                 decode_mode: str | None = None):
         if isinstance(max_slots, bool) or int(max_slots) <= 0:
             raise ValueError(f"max_slots must be positive, got {max_slots!r}")
         if isinstance(max_seq_len, bool) or int(max_seq_len) <= 0:
             raise ValueError(f"max_seq_len must be positive, got {max_seq_len!r}")
         if isinstance(token_budget, bool) or int(token_budget) <= 0:
             raise ValueError(f"token_budget must be positive, got {token_budget!r}")
+        if decode_mode is not None and decode_mode not in self.DECODE_MODES:
+            raise ValueError(
+                f"decode_mode must be one of {self.DECODE_MODES}, got {decode_mode!r}")
         self.model = model
         self.ctx = ctx if ctx is not None else model.ctx
+        if decode_mode is None:
+            dev = getattr(self.ctx, "device", None)
+            decode_mode = ("graph" if dev is not None
+                           and torch.device(dev).type == "cuda"
+                           and torch.cuda.is_available() else "eager")
+        if decode_mode == "graph":
+            dev = getattr(self.ctx, "device", None)
+            if dev is None or torch.device(dev).type != "cuda" \
+                    or not torch.cuda.is_available():
+                raise ValueError(
+                    "decode_mode='graph' requires a CUDA TP context, "
+                    f"got device {dev!r}; use decode_mode='eager' there")
+        self.decode_mode = str(decode_mode)
+        self._graph = None
+        self._graph_input: torch.Tensor | None = None
+        self._graph_out: torch.Tensor | None = None
+        self.graph_captures = 0
+        self.graph_replays = 0
         self.max_slots = int(max_slots)
         self.max_seq_len = int(max_seq_len)
         self.token_budget = int(token_budget)
@@ -110,7 +155,8 @@ class TPEngineCore:
         self._slots: list[EngineRequest | None] = [None] * self.max_slots
 
     # -- submission / results -------------------------------------------
-    def submit(self, prompt_ids, max_new: int, sampling: str = "greedy") -> int:
+    def submit(self, prompt_ids, max_new: int, sampling: str = "greedy",
+               ignore_eos: bool = False) -> int:
         """Enqueue a greedy request; returns its integer request_id."""
         if sampling != "greedy":
             raise ValueError(f"only greedy sampling in v1, got {sampling!r}")
@@ -132,7 +178,8 @@ class TPEngineCore:
                 f"positions > max_seq_len={self.max_seq_len}")
         req = EngineRequest(request_id=self._next_id, prompt_ids=ids,
                             max_new=int(max_new), arrival_step=self.step_count,
-                            submit_seq=self._submit_seq)
+                            submit_seq=self._submit_seq,
+                            ignore_eos=bool(ignore_eos))
         self._next_id += 1
         self._submit_seq += 1
         self._requests[req.request_id] = req
@@ -193,8 +240,79 @@ class TPEngineCore:
             self._slots[req.slot] = None  # row reset deferred to next admission
         finished.append(req.request_id)
 
-    def _is_eos(self, token: int) -> bool:
+    def _is_eos(self, token: int, req: EngineRequest | None = None) -> bool:
+        if req is not None and req.ignore_eos:
+            return False
         return self.eos_id is not None and int(token) == self.eos_id
+
+    # -- opt-in graphed decode -------------------------------------------
+    def _graph_eligible(self, decode_planned) -> bool:
+        """True when a replay cannot touch a live non-decoding row.
+
+        Every occupied slot must be decode-planned; free slots may be
+        replayed because admission resets them before any use.
+        """
+        if self.decode_mode != "graph" or not decode_planned:
+            return False
+        planned = {id(r) for r in decode_planned}
+        return all(r is None or id(r) in planned for r in self._slots)
+
+    def _capture_graph(self, inp: torch.Tensor) -> None:
+        dev = self.ctx.device
+        scratch = self.model.static_state(
+            batch_size=self.max_slots, max_seq_len=self.max_seq_len)
+        warm_in = inp.clone()
+        side = torch.cuda.Stream(device=dev)
+        side.wait_stream(torch.cuda.current_stream(dev))
+        with torch.cuda.stream(side):
+            for _ in range(3):
+                self.model.decode_token_static(warm_in, scratch)
+        torch.cuda.current_stream(dev).wait_stream(side)
+        del scratch
+        if int(getattr(self.ctx, "world_size", 1)) > 1:
+            self.ctx.barrier()
+        self._graph_input = inp.clone()
+        self._graph_out = torch.empty(
+            self.max_slots, int(self.model.config.vocab_size),
+            device=dev, dtype=self.state.dtype)
+        torch.cuda.synchronize(dev)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            self.model.decode_token_static(
+                self._graph_input, self.state, out=self._graph_out)
+        torch.cuda.synchronize(dev)
+        if int(getattr(self.ctx, "world_size", 1)) > 1:
+            self.ctx.barrier()
+        self._graph = graph
+        self.graph_captures += 1
+
+    def _decode_graphed(self, inp: torch.Tensor) -> list[int]:
+        # Free rows are replayed with dummy input; keep their positions
+        # inside the buffers (admission resets them before real use).
+        positions = self.state.position.tolist()
+        stale = [i for i, r in enumerate(self._slots)
+                 if r is None and int(positions[i]) >= self.max_seq_len - 1]
+        if stale:
+            self.state.reset(rows=stale)
+        if self._graph is None:
+            self._capture_graph(inp)
+        assert self._graph is not None and self._graph_input is not None
+        assert self._graph_out is not None
+        self._graph_input.copy_(inp)
+        self._graph.replay()
+        self.graph_replays += 1
+        return self._graph_out.float().argmax(dim=-1).tolist()
+
+    def close(self) -> None:
+        """Drop the captured graph (sync first; NCCL teardown safety)."""
+        if self._graph is not None:
+            dev = getattr(self.ctx, "device", None)
+            if dev is not None and torch.device(dev).type == "cuda":
+                torch.cuda.synchronize(dev)
+            del self._graph
+            self._graph = None
+            if dev is not None and torch.device(dev).type == "cuda":
+                torch.cuda.synchronize(dev)
 
     # -- main loop ----------------------------------------------------------
     def step(self) -> EngineStepRecord:
@@ -250,29 +368,32 @@ class TPEngineCore:
                         req.generated.append(token)
                         req.first_token_step = step
                         first_tokens.append(req.request_id)
-                        if len(req.generated) >= req.max_new or self._is_eos(token):
+                        if len(req.generated) >= req.max_new or self._is_eos(token, req):
                             self._finish(req, step, finished)
                         else:
                             req.status = "decoding"
 
             # (c) One batched decode step for all (budget-planned) decoding rows.
             if decode_planned:
-                planned = {id(r) for r in decode_planned}
-                protected = [i for i, r in enumerate(self._slots)
-                             if r is None or id(r) not in planned]
-                # Finished-this-step slots are already None in _slots but their
-                # requests left the slot; every non-planned row is protected.
-                snap = self._snapshot_rows(protected)
                 inp = torch.zeros(self.max_slots, dtype=torch.long, device=self.ctx.device)
                 for r in decode_planned:
                     inp[int(r.slot)] = int(r.generated[-1])
-                logits = self.model.decode_token_static(inp, self.state)
-                self._restore_rows(snap)
-                nxt = logits.float().argmax(dim=-1).tolist()
+                if self._graph_eligible(decode_planned):
+                    nxt = self._decode_graphed(inp)
+                else:
+                    planned = {id(r) for r in decode_planned}
+                    protected = [i for i, r in enumerate(self._slots)
+                                 if r is None or id(r) not in planned]
+                    # Finished-this-step slots are already None in _slots but their
+                    # requests left the slot; every non-planned row is protected.
+                    snap = self._snapshot_rows(protected)
+                    logits = self.model.decode_token_static(inp, self.state)
+                    self._restore_rows(snap)
+                    nxt = logits.float().argmax(dim=-1).tolist()
                 for req in decode_planned:
                     token = int(nxt[int(req.slot)])
                     req.generated.append(token)
-                    if len(req.generated) >= req.max_new or self._is_eos(token):
+                    if len(req.generated) >= req.max_new or self._is_eos(token, req):
                         self._finish(req, step, finished)
         record = EngineStepRecord(step=step, admitted_request_ids=tuple(admitted),
                                   prefill_tokens=prefill_tokens, decode_tokens=decode_tokens,
