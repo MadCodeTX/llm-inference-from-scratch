@@ -3,7 +3,7 @@ id: serving-head-to-head
 domain: serving
 status: open
 current_best:
-  result: "serving surface integrated (ch 30); serving-overhead round 1 ABBA via run_bench.py (short, not the full suite): c1 TPOT 113.89 -> 63.98 ms, c4 3036.2 tok/min, 16x4096/c16 feasible 16/16 twice, 8x16384 still infeasible; no same-harness suite win yet"
+  result: "serving surface integrated (ch 30); serving-overhead round 1 ABBA: c1 TPOT 113.89 -> 63.98 ms, c4 3036.2 tok/min, 16x4096/c16 feasible 16/16 twice, 8x16384 still infeasible; serving-occupancy round 1 ABBA (8x8192, short): per-occupancy buckets adopted as serving default, c1 63.86 -> 25.77 ms, c4 46.95 ms, c8 flat, hashes exact, peak ~23.3-23.7 GiB/rank; no same-harness suite win yet"
   artifact: docs/30_serving_openai.md
   exactness: "fake/stub contract tests pass; real-27B evidence is a tiny-prompt smoke only, no suite quality-gate run"
 arm_a:

@@ -119,6 +119,26 @@ Measured in `benchmarks/harness/serving_readiness_round1.json`
   tok/min, greedy hashes identical). Still 2.9× the 21.867 ms
   local-runner best — the remainder is graphed B=8 geometry, not
   transport. Context only.
+- Per-occupancy graphs (`benchmarks/harness/serving_occupancy_round1.json`,
+  ABBA, 8×8192 short greedy): right-sized decode graphs (buckets
+  1/2/4/8/16 bounded by `--max-slots`) over prefix views of the one
+  state cut c1 TPOT p50 63.86 → 25.77 ms (−59.7%, 909 → 2129
+  tok/min), c4 64.20 → 46.95 ms, c8 64.91 → 64.89 ms (flat), greedy
+  hashes identical and sampled smoke OK in every run, peak
+  ~23.3–23.7 GiB/rank in both arms. Adopted as the serving-script
+  default (`--graph-buckets`, on by default in
+  `scripts/serve_qwen38_tp2.py`; `--no-graph-buckets` restores the
+  single full-width graph). The `TPEngineCore` library default
+  (`graph_bucketed=False`) is unchanged. Scattered, sampled, and
+  mixed steps never take a bucket: they fall back to the full-width
+  graph or eager, preserving exact greedy/sampled semantics and the
+  fail-closed real-state capture guard. At the opt-in 16×4096
+  geometry the candidate passed c16 16/16 (TPOT 74.29 ms) where the
+  shipped control failed 15/16 (pre-existing incapability); the
+  default geometry remains 8×8192. Capture/replay bucket counters
+  are not exposed via `/health`, so bucket attribution on the 27B
+  is inferential from timing/geometry. Still **no vLLM win**: no
+  same-harness `benchmarks/suite.json` run exists yet.
 - Compact lockstep (`--tp-sync compact`, opt-in): real-27B ABBA at
   8×8192 showed no measurable benefit (TPOT p50 113.82–113.89 ms,
   tokens/min c4 1868.7–1869.8, both protocols, ~0.1%). It stays

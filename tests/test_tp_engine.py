@@ -332,6 +332,145 @@ def test_real_state_warmup_restores_exactly_and_allocates_no_state():
     assert eng.poll(rid)["token_ids"] == ref
 
 
+def _fake_req(slot, temperature=0.0):
+    from inference_from_scratch.tp_engine import EngineRequest
+    req = EngineRequest(request_id=slot, prompt_ids=[1], max_new=2,
+                        arrival_step=0, submit_seq=slot,
+                        temperature=temperature)
+    req.slot, req.status = slot, "decoding"
+    return req
+
+
+def test_bucket_choice_prefix_scattered_sampled_and_defaults():
+    tp = _tp()
+    eng = TPEngineCore(tp, tp.ctx, max_slots=8, max_seq_len=64, token_budget=16,
+                       graph_bucketed=True)
+    assert eng.graph_buckets == (1, 2, 4, 8)
+    assert eng._bucket_choice([_fake_req(0)]) == 1
+    assert eng._bucket_choice([_fake_req(0), _fake_req(1)]) == 2
+    assert eng._bucket_choice([_fake_req(i) for i in range(3)]) == 4
+    assert eng._bucket_choice([_fake_req(i) for i in range(5)]) == 8
+    # Scattered active rows are NOT a prefix view: no bucket.
+    assert eng._bucket_choice([_fake_req(1)]) is None
+    assert eng._bucket_choice([_fake_req(0), _fake_req(2)]) is None
+    assert eng._bucket_choice([_fake_req(2), _fake_req(3)]) is None
+    # Sampled rows never take a graph bucket (argmax-only reduction).
+    assert eng._bucket_choice([_fake_req(0, temperature=1.0)]) is None
+    assert eng._bucket_choice([]) is None
+    # Opt-in: default engine never chooses a bucket.
+    plain = TPEngineCore(tp, tp.ctx, max_slots=8, max_seq_len=64, token_budget=16)
+    assert plain.graph_bucketed is False
+    assert plain._bucket_choice([_fake_req(0)]) is None
+    for bad in ((2, 1), (0,), (True,), ()):
+        with pytest.raises(ValueError):
+            TPEngineCore(tp, tp.ctx, max_slots=4, max_seq_len=64,
+                         token_budget=8, graph_buckets=bad)
+
+
+def test_prefix_state_shares_storage_reset_and_decode():
+    tp = _tp()
+    eng = TPEngineCore(tp, tp.ctx, max_slots=4, max_seq_len=64, token_budget=16)
+    view = eng._prefix_state(2)
+    assert view.batch_size == 2 and view.batch == 2
+    for name in ("kv_k", "kv_v", "linear_S", "linear_conv_buffers"):
+        for parent, child in zip(getattr(eng.state, name), getattr(view, name)):
+            if parent is not None:
+                assert child.data_ptr() == parent.data_ptr()
+                assert child.shape[0] == 2 and child.shape[1:] == parent.shape[1:]
+    assert view.position.data_ptr() == eng.state.position.data_ptr()
+    eng.state.position.copy_(torch.tensor([5, 6, 7, 8]))
+    view.reset(rows=[1])
+    assert eng.state.position.tolist() == [5, 0, 7, 8]  # only view row 1
+    # Exactness: decode over the prefix view == full-width decode rows.
+    idx = torch.tensor([PROMPTS[0], PROMPTS[1], PROMPTS[0], PROMPTS[1]])
+    eng.state.reset()
+    tp.prefill_chunkwise_static(idx, eng.state, chunk_size=2)
+    got = tp.decode_token_static(torch.tensor([3, 4]), eng._prefix_state(2))
+    eng2 = TPEngineCore(tp, tp.ctx, max_slots=4, max_seq_len=64, token_budget=16)
+    eng2.state.reset()
+    tp.prefill_chunkwise_static(idx, eng2.state, chunk_size=2)
+    ref = tp.decode_token_static(
+        torch.tensor([3, 4, 0, 0]), eng2.state)[:2]
+    # Token-exact (the engine contract); logits may differ in low bits
+    # because GEMM reduction order depends on the batch width M.
+    assert got.argmax(dim=-1).tolist() == ref.argmax(dim=-1).tolist()
+    assert torch.allclose(got, ref, atol=1e-4, rtol=1e-4)
+    assert eng.state.position[:2].tolist() == eng2.state.position[:2].tolist()
+
+
+def test_bucket_capture_guard_fallback_and_pool_accounting():
+    tp = _tp()
+    eng = TPEngineCore(tp, tp.ctx, max_slots=4, max_seq_len=64, token_budget=8,
+                       graph_bucketed=True)
+    plan1 = eng._graph_capture_plan(1)
+    assert plan1["width"] == 1 and plan1["graph_out_bytes"] < \
+        eng._graph_capture_plan()["graph_out_bytes"]
+    assert 0 < plan1["graph_pool_estimate_bytes"] < \
+        eng._graph_capture_plan()["graph_pool_estimate_bytes"]
+    eng._bucket_graphs[1] = {}  # already-captured pool must be charged
+    assert eng._captured_pool_estimate() == eng._pool_estimate(1)
+    assert eng._graph_capture_plan(2)["captured_pool_estimate_bytes"] == \
+        eng._pool_estimate(1)
+    eng._bucket_graphs = {}
+    inp = torch.zeros(eng.max_slots, dtype=torch.long)
+    orig = torch.cuda.mem_get_info
+    torch.cuda.mem_get_info = lambda dev=None: (0, 1 << 30)  # noqa: E731
+    try:
+        assert eng._decode_bucketed_graph(inp, 1) is None  # guard -> fallback
+    finally:
+        torch.cuda.mem_get_info = orig
+    assert 1 in eng._bucket_blocked
+    # Capture failure also falls back (None), never raises into step().
+    eng2 = TPEngineCore(tp, tp.ctx, max_slots=4, max_seq_len=64, token_budget=8,
+                        graph_bucketed=True)
+    eng2._graph_capture_allowed = lambda plan=None: True  # noqa: E731
+    def _boom(bucket, inp_):
+        raise RuntimeError("CUDA out of memory")
+    eng2._capture_bucket_graph = _boom  # noqa: E731
+    assert eng2._decode_bucketed_graph(inp, 2) is None
+    assert 2 in eng2._bucket_blocked and eng2._bucket_graphs == {}
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_bucketed_graph_gpu_exact_occupancies_1_2_4():
+    from inference_from_scratch.tp_distributed import _LocalContext as LC
+    torch.manual_seed(7)
+    dense = TinyHybridLM(_tiny_cfg()).eval()
+    tp = DistributedHybridLM.from_dense(
+        dense, LC(0, 1, torch.device("cuda")), config=_tiny_cfg())
+    tp.eval()
+    refs = []
+    for p in PROMPTS[:4]:
+        s1 = tp.static_state(batch_size=1, max_seq_len=64)
+        refs.append(tp.generate_static_batched(
+            torch.tensor([p], device="cuda"), 6, s1, chunk_size=2)[0].tolist())
+    for occ, bucket in ((1, 1), (2, 2), (4, 4)):
+        # max_slots=8 so occupancy 4 is a real bucket, not the full graph.
+        eng = TPEngineCore(tp, tp.ctx, max_slots=8, max_seq_len=64,
+                           token_budget=16, decode_mode="graph",
+                           graph_bucketed=True)
+        ids = [eng.submit(PROMPTS[i], 6) for i in range(occ)]
+        eng.run()
+        assert [eng.poll(r)["token_ids"] for r in ids] == refs[:occ]
+        assert eng.graph_replays_by_bucket.get(bucket, 0) > 0, \
+            eng.graph_replays_by_bucket
+        assert eng.bucket_graph_captures == 1
+        eng.close()
+    # Scattered: middle request finishes first, planned slots become
+    # {0, 2}; the bucket path must stand down (full graph), tokens exact.
+    eng = TPEngineCore(tp, tp.ctx, max_slots=8, max_seq_len=64,
+                       token_budget=16, decode_mode="graph",
+                       graph_bucketed=True)
+    ids = [eng.submit(PROMPTS[0], 6), eng.submit(PROMPTS[1], 2),
+           eng.submit(PROMPTS[2], 6)]
+    eng.run()
+    assert eng.poll(ids[0])["token_ids"] == refs[0]
+    assert eng.poll(ids[1])["token_ids"] == refs[1][:2]
+    assert eng.poll(ids[2])["token_ids"] == refs[2]
+    assert eng.graph_replays > sum(eng.graph_replays_by_bucket.values())
+    eng.close()
+
+
 @pytest.mark.skipif(not (ROOT / "scripts/tp_engine_smoke.py").exists(),
                     reason="smoke script missing")
 def test_tp_engine_smoke_gloo_two_process():

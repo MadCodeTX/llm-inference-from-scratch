@@ -68,6 +68,27 @@ reset stateless (free / not-yet-prefilled) rows afterwards. Graph replay skips t
 in-kernel overflow check, so the engine relies on the ``submit``
 bound (``prompt + max_new - 1 <= max_seq_len``) plus finishing at
 ``max_new``/EOS -- a decoding row can never be fed past it.
+
+Right-sized bucketed graphs (``graph_bucketed=True``, opt-in; the
+default is the single full-width graph above, behaviour unchanged):
+one graph per occupancy bucket (default ``1/2/4/8/16`` bounded by
+``max_slots``), lazily captured, each over a *prefix view* of the
+same state -- ``TPStaticState`` buffers sliced ``[:bucket]`` share
+storage with the full state (no per-bucket state), and
+``decode_token_static`` derives every batch shape from the view, so
+an occupancy-``k`` step replays M=``bucket`` kernels (M=1 GEMV at
+c1) instead of M=``max_slots``. A bucket is used only when the
+planned rows are exactly the prefix ``[0, k)``: admission takes the
+lowest free slot, so single-request and lockstep-started batches
+are prefixes, but after a mid-batch finish the active rows scatter
+(e.g. ``{1, 3}``) and a prefix view would decode the wrong rows --
+those steps fall back to the full-width graph (exact, as today),
+and sampled/mixed/prefill steps stay eager. Bucket choice is a pure
+function of the planned slots, identical on every TP rank under
+lockstep submission, so all ranks capture/replay the same width
+and collectives stay shape-matched. Rows in ``[k, bucket)`` are
+free rows replayed with dummy input exactly as the full graph
+replays free rows; admission resets them before use.
 """
 from __future__ import annotations
 
@@ -145,7 +166,9 @@ class TPEngineCore:
                  decode_mode: str | None = None,
                  graph_capture_mode: str = "real-state",
                  graph_capture_guard: bool = True,
-                 graph_capture_reserve_bytes: int = 512 * 1024 * 1024):
+                 graph_capture_reserve_bytes: int = 512 * 1024 * 1024,
+                 graph_bucketed: bool = False,
+                 graph_buckets: tuple[int, ...] | None = None):
         if isinstance(max_slots, bool) or int(max_slots) <= 0:
             raise ValueError(f"max_slots must be positive, got {max_slots!r}")
         if isinstance(max_seq_len, bool) or int(max_seq_len) <= 0:
@@ -161,6 +184,19 @@ class TPEngineCore:
                 f"got {graph_capture_mode!r}")
         if int(graph_capture_reserve_bytes) < 0:
             raise ValueError("graph_capture_reserve_bytes must be >= 0")
+        if graph_buckets is None:
+            graph_buckets = (1, 2, 4, 8, 16)
+        if any(isinstance(b, bool) or int(b) != b for b in graph_buckets):
+            raise ValueError(f"graph_buckets must be ints, got {graph_buckets!r}")
+        buckets = tuple(int(b) for b in graph_buckets)
+        if not buckets or any(b <= 0 for b in buckets) \
+                or list(buckets) != sorted(set(buckets)):
+            raise ValueError(
+                f"graph_buckets must be positive, sorted, unique, got {graph_buckets!r}")
+        # Bounded by max_slots: wider buckets collapse onto max_slots,
+        # whose width is served by the existing full-width graph.
+        self.graph_buckets = tuple(sorted({min(b, int(max_slots)) for b in buckets}))
+        self.graph_bucketed = bool(graph_bucketed)
         self.graph_capture_mode = str(graph_capture_mode)
         self.graph_capture_guard = bool(graph_capture_guard)
         self.graph_capture_reserve_bytes = int(graph_capture_reserve_bytes)
@@ -186,6 +222,12 @@ class TPEngineCore:
         self._graph_out: torch.Tensor | None = None
         self.graph_captures = 0
         self.graph_replays = 0
+        # bucket -> {"graph", "input", "out", "state"}; views share the
+        # one full state's storage, so captures cost graph pools only.
+        self._bucket_graphs: dict[int, dict] = {}
+        self._bucket_blocked: set[int] = set()
+        self.bucket_graph_captures = 0
+        self.graph_replays_by_bucket: dict[int, int] = {}
         self.max_slots = int(max_slots)
         self.max_seq_len = int(max_seq_len)
         self.token_budget = int(token_budget)
@@ -299,6 +341,33 @@ class TPEngineCore:
         st.position_tensor = st.position
         return st
 
+    def _prefix_state(self, n: int) -> TPStaticState:
+        """First-``n``-rows view sharing storage with the full state.
+
+        Safe for ``decode_token_static``: it checks ``toks.shape[0]``
+        against ``state.batch_size`` and every block derives B from
+        the input / buffer row dim, writes KV at ``state.position``
+        rows, and advances ``state.position`` in place -- all views
+        onto the parent's buffers, so a replay mutates exactly parent
+        rows ``[0, n)``. Only valid for prefix occupancies; scattered
+        active rows must never be routed here.
+        """
+        if not (1 <= int(n) <= self.max_slots):
+            raise ValueError(f"prefix width must be in [1, {self.max_slots}], got {n!r}")
+        st, src = object.__new__(TPStaticState), self.state
+        st.config, st.batch_size, st.batch = src.config, int(n), int(n)
+        st.max_seq_len, st.device, st.dtype = src.max_seq_len, src.device, src.dtype
+        st.ctx, st.layer_types = src.ctx, list(src.layer_types)
+        st.hkv_local, st.vh_per, st.conv_dim_local = src.hkv_local, src.vh_per, src.conv_dim_local
+        sl = slice(0, int(n))
+        st.kv_k = [t[sl] if t is not None else None for t in src.kv_k]
+        st.kv_v = [t[sl] if t is not None else None for t in src.kv_v]
+        st.linear_S = [t[sl] if t is not None else None for t in src.linear_S]
+        st.linear_conv_buffers = [t[sl] if t is not None else None for t in src.linear_conv_buffers]
+        st.position = src.position[sl]
+        st.position_tensor = st.position
+        return st
+
     def _snapshot_rows(self, rows: list[int]):
         if not rows:
             return None
@@ -397,28 +466,65 @@ class TPEngineCore:
         planned = {id(r) for r in decode_planned}
         return all(r is None or id(r) in planned for r in self._slots)
 
-    def _graph_capture_plan(self) -> dict:
-        """Memory plan for capture: no second full state in real-state mode."""
+    def _bucket_choice(self, decode_planned) -> int | None:
+        """Bucket width for this step, or None to use the full graph.
+
+        Pure function of the planned rows (slots + sampled flags),
+        hence identical on every TP rank under lockstep submission.
+        Scattered/non-prefix planned slots and sampled rows get no
+        bucket: a prefix view would decode the wrong rows.
+        """
+        if not self.graph_bucketed or not decode_planned:
+            return None
+        if any(r.is_sampled for r in decode_planned):
+            return None
+        slots = sorted(int(r.slot) for r in decode_planned)
+        if slots != list(range(len(slots))):
+            return None  # scattered across slots: not a prefix view
+        for b in self.graph_buckets:
+            if b >= len(slots):
+                return int(b)
+        return None
+
+    def _pool_estimate(self, width: int) -> int:
+        vocab = int(self.model.config.vocab_size)
+        esize = torch.tensor(0, dtype=self.state.dtype).element_size()
+        out_bytes = int(width) * vocab * esize
+        return max(int(self._state_bytes()) * int(width) // (3 * self.max_slots),
+                   int(out_bytes))
+
+    def _captured_pool_estimate(self) -> int:
+        total = self._pool_estimate(self.max_slots) if self._graph is not None else 0
+        return int(total) + sum(self._pool_estimate(b) for b in self._bucket_graphs)
+
+    def _graph_capture_plan(self, bucket: int | None = None) -> dict:
+        """Memory plan for capture: no second full state in real-state mode.
+
+        With ``bucket``, the plan is for that bucket width: output and
+        pool scale with the width, and only occupied rows inside the
+        prefix are snapshotted for warmup.
+        """
+        width = self.max_slots if bucket is None else int(bucket)
         occupied = [i for i, r in enumerate(self._slots) if r is not None]
         vocab = int(self.model.config.vocab_size)
-        out_bytes = self.max_slots * vocab * int(self.state.dtype.itemsize) \
-            if hasattr(self.state.dtype, "itemsize") else \
-            self.max_slots * vocab * torch.tensor(0, dtype=self.state.dtype).element_size()
+        out_bytes = width * vocab * torch.tensor(0, dtype=self.state.dtype).element_size()
         if self.graph_capture_mode == "scratch":
             transient = self._state_bytes()
             snap_rows: list[int] = []
         else:
-            transient = self._state_bytes(occupied)
-            snap_rows = occupied
+            snap_rows = [i for i in occupied if i < width]
+            transient = self._state_bytes(snap_rows)
         # CUDA-graph private pools observed at 0.78-1.51 GiB scale with
         # state size; budget a third of the full state for the pool so
         # the guard does not under-count capture (activations + pool).
-        pool_est = max(int(self._state_bytes()) // 3, int(out_bytes))
+        pool_est = self._pool_estimate(width)
         return {"mode": self.graph_capture_mode, "occupied_rows": occupied,
+                "bucket": bucket, "width": width,
                 "snapshot_rows": snap_rows, "scratch_bytes": (
                     transient if self.graph_capture_mode == "scratch" else 0),
                 "transient_bytes": int(transient) + int(out_bytes),
                 "graph_pool_estimate_bytes": int(pool_est),
+                "captured_pool_estimate_bytes": int(self._captured_pool_estimate()),
                 "graph_out_bytes": int(out_bytes)}
 
     def _graph_capture_allowed(self, plan: dict | None = None) -> bool:
@@ -454,6 +560,7 @@ class TPEngineCore:
                 return False
         needed = (int(plan["transient_bytes"])
                   + int(plan.get("graph_pool_estimate_bytes", 0))
+                  + int(plan.get("captured_pool_estimate_bytes", 0))
                   + self.graph_capture_reserve_bytes)
         if int(free) < needed:
             self.graph_capture_blocked = True
@@ -463,7 +570,8 @@ class TPEngineCore:
             return False
         return True
 
-    def _warmup_on_real_state(self, inp: torch.Tensor, runs: int = 3) -> None:
+    def _warmup_on_real_state(self, inp: torch.Tensor, runs: int = 3,
+                              state=None, width: int | None = None) -> None:
         """Warm kernels on the real state, then restore it exactly.
 
         Occupied rows are snapshot/restored (only those rows are
@@ -471,13 +579,17 @@ class TPEngineCore:
         Raises ValueError before mutating when a warmup run would
         overflow an occupied row, so the caller can fall back eager.
         """
-        occupied = [i for i, r in enumerate(self._slots) if r is not None]
+        st = self.state if state is None else state
+        lim = self.max_slots if width is None else int(width)
+        occupied = [i for i, r in enumerate(self._slots)
+                    if r is not None and i < lim]
         if occupied:
             positions = self.state.position.tolist()
             if max(int(positions[i]) for i in occupied) + runs > self.max_seq_len:
                 raise ValueError("graph warmup would overflow an occupied row")
         snap = self._snapshot_rows(occupied)
-        free_rows = [i for i, r in enumerate(self._slots) if r is None]
+        free_rows = [i for i, r in enumerate(self._slots)
+                     if r is None and i < lim]
         warm_in = inp.clone()
         dev = self.ctx.device
         try:
@@ -486,11 +598,11 @@ class TPEngineCore:
                 side.wait_stream(torch.cuda.current_stream(dev))
                 with torch.cuda.stream(side):
                     for _ in range(runs):
-                        self.model.decode_token_static(warm_in, self.state)
+                        self.model.decode_token_static(warm_in, st)
                 torch.cuda.current_stream(dev).wait_stream(side)
             else:
                 for _ in range(runs):
-                    self.model.decode_token_static(warm_in, self.state)
+                    self.model.decode_token_static(warm_in, st)
         finally:
             self._restore_rows(snap)
             if free_rows:
@@ -564,14 +676,86 @@ class TPEngineCore:
         self.graph_replays += 1
         return self._graph_out.float().argmax(dim=-1).tolist()
 
+    def _capture_bucket_graph(self, bucket: int, inp: torch.Tensor) -> None:
+        dev = self.ctx.device
+        view = self._prefix_state(bucket)
+        if self.graph_capture_mode == "scratch":
+            scratch = self.model.static_state(
+                batch_size=int(bucket), max_seq_len=self.max_seq_len)
+            warm_in = inp[:bucket].clone()
+            side = torch.cuda.Stream(device=dev)
+            side.wait_stream(torch.cuda.current_stream(dev))
+            with torch.cuda.stream(side):
+                for _ in range(3):
+                    self.model.decode_token_static(warm_in, scratch)
+            torch.cuda.current_stream(dev).wait_stream(side)
+            del scratch
+        else:
+            self._warmup_on_real_state(inp[:bucket], state=view, width=bucket)
+        if int(getattr(self.ctx, "world_size", 1)) > 1:
+            self.ctx.barrier()
+        g_in = inp[:bucket].clone()
+        g_out = torch.empty(int(bucket), int(self.model.config.vocab_size),
+                            device=dev, dtype=self.state.dtype)
+        torch.cuda.synchronize(dev)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            self.model.decode_token_static(g_in, view, out=g_out)
+        torch.cuda.synchronize(dev)
+        if int(getattr(self.ctx, "world_size", 1)) > 1:
+            self.ctx.barrier()
+        self._bucket_graphs[int(bucket)] = {
+            "graph": graph, "input": g_in, "out": g_out, "state": view}
+        self.graph_captures += 1
+        self.bucket_graph_captures += 1
+
+    def _decode_bucketed_graph(self, inp: torch.Tensor,
+                               bucket: int) -> list[int] | None:
+        """Replay the ``bucket`` graph; None -> caller falls back.
+
+        Fallback chain is bucket -> full-width graph -> eager: a
+        blocked/failed bucket capture never wedges the step, and the
+        full graph (exact for any slot layout) remains available.
+        """
+        if int(bucket) in self._bucket_blocked:
+            return None
+        positions = self.state.position.tolist()
+        stale = [i for i in range(int(bucket))
+                 if self._slots[i] is None
+                 and int(positions[i]) >= self.max_seq_len - 1]
+        if stale:
+            self.state.reset(rows=stale)
+        entry = self._bucket_graphs.get(int(bucket))
+        if entry is None:
+            if not self._graph_capture_allowed(self._graph_capture_plan(bucket)):
+                self._bucket_blocked.add(int(bucket))
+                return None
+            try:
+                self._capture_bucket_graph(int(bucket), inp)
+            except (ValueError, RuntimeError):
+                self._bucket_blocked.add(int(bucket))
+                self._bucket_graphs.pop(int(bucket), None)
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
+                return None
+            entry = self._bucket_graphs[int(bucket)]
+        entry["input"].copy_(inp[:bucket])
+        entry["graph"].replay()
+        self.graph_replays += 1
+        self.graph_replays_by_bucket[int(bucket)] = \
+            self.graph_replays_by_bucket.get(int(bucket), 0) + 1
+        return entry["out"].float().argmax(dim=-1).tolist()
+
     def close(self) -> None:
-        """Drop the captured graph (sync first; NCCL teardown safety)."""
-        if self._graph is not None:
+        """Drop captured graphs (sync first; NCCL teardown safety)."""
+        if self._graph is not None or self._bucket_graphs:
             dev = getattr(self.ctx, "device", None)
             if dev is not None and torch.device(dev).type == "cuda":
                 torch.cuda.synchronize(dev)
-            del self._graph
             self._graph = None
+            self._bucket_graphs = {}
             if dev is not None and torch.device(dev).type == "cuda":
                 torch.cuda.synchronize(dev)
 
@@ -641,7 +825,11 @@ class TPEngineCore:
                     inp[int(r.slot)] = int(r.generated[-1])
                 nxt: list[int] | None = None
                 if self._graph_eligible(decode_planned):
-                    nxt = self._decode_graphed(inp)
+                    bucket = self._bucket_choice(decode_planned)
+                    if bucket is not None and bucket < self.max_slots:
+                        nxt = self._decode_bucketed_graph(inp, bucket)
+                    if nxt is None:
+                        nxt = self._decode_graphed(inp)
                 if nxt is None:
                     # Eager (also the fail-closed fallback when graph
                     # capture is blocked): snapshot only live

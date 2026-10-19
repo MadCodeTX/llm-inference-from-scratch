@@ -56,6 +56,33 @@
   infeasible. Diagnosis: `serving_overhead_diagnosis.md`.
 - **confidence**: high (ABBA + unit tests + fake-engine additive
   proof of the 50 ms quantum).
-- **applicability limits**: remaining c1 gap is graphed B=8
-  geometry (per-occupancy graphs unimplemented); numbers are
+- **applicability limits**: remaining c1 gap was graphed B=8
+  geometry (addressed by V4 per-occupancy graphs); numbers are
   short-shape `run_bench.py`, not a suite win vs vLLM.
+
+## V4 — Right-size the graph to the occupancy, fall back honestly
+
+- **cue**: c1 serving replays an M=8 graph (GEMM) while a single
+  request could replay M=1 (GEMV); scattered active rows after a
+  mid-batch finish make a naive prefix view decode the wrong rows.
+- **lesson**: capture one graph per occupancy bucket over a prefix
+  view sharing the one state's storage; take a bucket only when
+  planned rows are exactly the prefix `[0, k)` and none is sampled,
+  otherwise fall back bucket → full graph → eager. Bucket choice is
+  a pure function of lockstep-identical planned slots, so TP ranks
+  agree. Adopt as the serving default only after ABBA shows exact
+  hashes, a material c1 gain, and no >1% regression or capability
+  loss; keep the library default off and a script opt-out.
+- **evidence**: `benchmarks/harness/serving_occupancy_round1.json`
+  ABBA (8×8192, 27B TP2): c1 TPOT p50 63.86 -> 25.77 ms, c4 64.20
+  -> 46.95 ms, c8 64.91 -> 64.89 ms, greedy hashes identical in all
+  runs, sampled smoke OK, peak ~23.3–23.7 GiB/rank both arms; at
+  opt-in 16×4096 candidate c16 16/16 vs shipped 1/16. Adopted as
+  `scripts/serve_qwen38_tp2.py` default (`--no-graph-buckets`
+  opts out); `TPEngineCore(graph_bucketed=False)` unchanged.
+- **confidence**: high for exactness/fallback (unit + GPU tests,
+  ABBA hashes); bucket capture counts on the 27B are inferential
+  (counters not exposed via `/health`).
+- **applicability limits**: short-shape `run_bench.py` only — not
+  a suite win vs vLLM; 2-rank capture lockstep is proven by the
+  TP2 ABBA completing, not by a dedicated NCCL unit test.

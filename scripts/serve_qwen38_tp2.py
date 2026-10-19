@@ -9,7 +9,9 @@ collectives inside the batched decode stay in lockstep.
 Adopted local decode defaults preserved (explicit flags, no library
 default changed): --decode-mode graph, scale-cache on (graph-scoped
 resolver), --fp8-config gemv-bk512, gated-norm fused, norm fused,
-delta fused, lm_head vocab.
+delta fused, lm_head vocab, per-occupancy graph buckets on
+(serving_occupancy_round1 ABBA; --no-graph-buckets restores the
+single full-width graph).
 
 Run (approved GPU window, incumbent stopped):
   .venv-gpu/bin/torchrun --nproc_per_node=2 scripts/serve_qwen38_tp2.py \
@@ -58,6 +60,16 @@ def main() -> int:
                     help="graph warmup: real-state=snapshot/restore occupied "
                          "rows only (default, no second full state), "
                          "scratch=legacy full scratch state")
+    ap.add_argument("--graph-buckets", dest="graph_buckets",
+                    action="store_true", default=True,
+                    help="right-sized per-occupancy decode graphs "
+                         "(buckets 1/2/4/8/16 bounded by --max-slots; "
+                         "prefix occupancies only, full graph fallback; "
+                         "default, adopted in serving_occupancy_round1)")
+    ap.add_argument("--no-graph-buckets", dest="graph_buckets",
+                    action="store_false",
+                    help="disable per-occupancy graphs (single "
+                         "full-width graph, pre-round-1 behaviour)")
     ap.add_argument("--no-graph-capture-guard", action="store_true",
                     help="disable the fail-closed capture sizing guard "
                          "(capture may OOM instead of falling back to eager)")
@@ -97,7 +109,8 @@ def main() -> int:
                           max_seq_len=a.max_seq_len, token_budget=a.token_budget,
                           eos_id=eos, decode_mode="graph",
                           graph_capture_mode=a.graph_capture_mode,
-                          graph_capture_guard=not a.no_graph_capture_guard)
+                          graph_capture_guard=not a.no_graph_capture_guard,
+                          graph_bucketed=a.graph_buckets)
 
     def encode(text):
         try: ids = tok.encode(text, add_special_tokens=False)

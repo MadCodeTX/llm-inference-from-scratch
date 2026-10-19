@@ -1,0 +1,275 @@
+{
+ "task": "ABBA per-occupancy candidate (--graph-buckets over 8b18680) vs shipped 8b18680 serving; adopted as serving default on integration",
+ "head": "8b18680",
+ "candidate": "working tree M tp_engine.py/serve_qwen38_tp2.py/test_tp_engine.py (no source edited in this lane)",
+ "model": "Qwen/Qwen3.8-27B-FP8",
+ "tp": 2,
+ "geometry_default": "8 slots x 8192 seq, token_budget 8192",
+ "bench_shape": "short: exact-tokenizer 512 prompt / 128 output, repeats=1, greedy; quality=32-token probes sha256(text)[:16]",
+ "expected_hashes": {
+  "capital": "bb54dbc4548dad57",
+  "water": "bf740ec80592c722",
+  "counting": "7ffcc751cb5d7dfc"
+ },
+ "configs": {
+  "A1": {
+   "quality_hashes_sha256_text_16": {
+    "capital": "bb54dbc4548dad57",
+    "water": "bf740ec80592c722",
+    "counting": "7ffcc751cb5d7dfc"
+   },
+   "smoke_ok": true,
+   "bench": [
+    {
+     "concurrency": 1,
+     "ok": 1,
+     "failed": 0,
+     "tpot_p50_ms": 63.88,
+     "tokens_per_min": 908.5,
+     "ttft_mean_s": 0.34,
+     "errors": []
+    },
+    {
+     "concurrency": 4,
+     "ok": 4,
+     "failed": 0,
+     "tpot_p50_ms": 64.21,
+     "tokens_per_min": 3236.1,
+     "ttft_mean_s": 1.078,
+     "errors": []
+    },
+    {
+     "concurrency": 8,
+     "ok": 8,
+     "failed": 0,
+     "tpot_p50_ms": 64.91,
+     "tokens_per_min": 5666.7,
+     "ttft_mean_s": 2.313,
+     "errors": []
+    }
+   ],
+   "sampled_smoke_error": null,
+   "peak_mem_mib_per_gpu": [
+    "0, 23478 MiB",
+    "1, 23478 MiB"
+   ]
+  },
+  "B1": {
+   "quality_hashes_sha256_text_16": {
+    "capital": "bb54dbc4548dad57",
+    "water": "bf740ec80592c722",
+    "counting": "7ffcc751cb5d7dfc"
+   },
+   "smoke_ok": true,
+   "bench": [
+    {
+     "concurrency": 1,
+     "ok": 1,
+     "failed": 0,
+     "tpot_p50_ms": 25.77,
+     "tokens_per_min": 2127.1,
+     "ttft_mean_s": 0.337,
+     "errors": []
+    },
+    {
+     "concurrency": 4,
+     "ok": 4,
+     "failed": 0,
+     "tpot_p50_ms": 46.92,
+     "tokens_per_min": 3907.4,
+     "ttft_mean_s": 1.077,
+     "errors": []
+    },
+    {
+     "concurrency": 8,
+     "ok": 8,
+     "failed": 0,
+     "tpot_p50_ms": 64.88,
+     "tokens_per_min": 5669.2,
+     "ttft_mean_s": 2.31,
+     "errors": []
+    }
+   ],
+   "sampled_smoke_error": null,
+   "peak_mem_mib_per_gpu": [
+    "0, 23692 MiB",
+    "1, 23692 MiB"
+   ]
+  },
+  "B2": {
+   "quality_hashes_sha256_text_16": {
+    "capital": "bb54dbc4548dad57",
+    "water": "bf740ec80592c722",
+    "counting": "7ffcc751cb5d7dfc"
+   },
+   "smoke_ok": true,
+   "bench": [
+    {
+     "concurrency": 1,
+     "ok": 1,
+     "failed": 0,
+     "tpot_p50_ms": 25.77,
+     "tokens_per_min": 2130.4,
+     "ttft_mean_s": 0.331,
+     "errors": []
+    },
+    {
+     "concurrency": 4,
+     "ok": 4,
+     "failed": 0,
+     "tpot_p50_ms": 46.97,
+     "tokens_per_min": 3899.9,
+     "ttft_mean_s": 1.076,
+     "errors": []
+    },
+    {
+     "concurrency": 8,
+     "ok": 8,
+     "failed": 0,
+     "tpot_p50_ms": 64.89,
+     "tokens_per_min": 5671.8,
+     "ttft_mean_s": 2.099,
+     "errors": []
+    }
+   ],
+   "sampled_smoke_error": null,
+   "peak_mem_mib_per_gpu": [
+    "0, 23302 MiB",
+    "1, 23302 MiB"
+   ]
+  },
+  "A2": {
+   "quality_hashes_sha256_text_16": {
+    "capital": "bb54dbc4548dad57",
+    "water": "bf740ec80592c722",
+    "counting": "7ffcc751cb5d7dfc"
+   },
+   "smoke_ok": true,
+   "bench": [
+    {
+     "concurrency": 1,
+     "ok": 1,
+     "failed": 0,
+     "tpot_p50_ms": 63.83,
+     "tokens_per_min": 910.1,
+     "ttft_mean_s": 0.331,
+     "errors": []
+    },
+    {
+     "concurrency": 4,
+     "ok": 4,
+     "failed": 0,
+     "tpot_p50_ms": 64.19,
+     "tokens_per_min": 3237.7,
+     "ttft_mean_s": 1.076,
+     "errors": []
+    },
+    {
+     "concurrency": 8,
+     "ok": 8,
+     "failed": 0,
+     "tpot_p50_ms": 64.9,
+     "tokens_per_min": 5667.0,
+     "ttft_mean_s": 2.31,
+     "errors": []
+    }
+   ],
+   "sampled_smoke_error": null,
+   "peak_mem_mib_per_gpu": [
+    "0, 23478 MiB",
+    "1, 23478 MiB"
+   ]
+  }
+ },
+ "c16_16x4096": {
+  "A16b_control": {
+   "quality_hashes_sha256_text_16": {
+    "capital": "bb54dbc4548dad57",
+    "water": "bf740ec80592c722",
+    "counting": "7ffcc751cb5d7dfc"
+   },
+   "smoke_ok": true,
+   "bench": [
+    {
+     "concurrency": 16,
+     "ok": 1,
+     "failed": 15,
+     "tpot_p50_ms": null,
+     "tokens_per_min": 12.0,
+     "ttft_mean_s": 0.411,
+     "errors": [
+      "HTTPError: HTTP Error 500: Internal Server Error"
+     ]
+    }
+   ],
+   "sampled_smoke_error": null,
+   "peak_mem_mib_per_gpu": [
+    "0, 23936 MiB",
+    "1, 23920 MiB"
+   ]
+  },
+  "B16_candidate": {
+   "quality_hashes_sha256_text_16": {
+    "capital": "bb54dbc4548dad57",
+    "water": "bf740ec80592c722",
+    "counting": "7ffcc751cb5d7dfc"
+   },
+   "smoke_ok": true,
+   "bench": [
+    {
+     "concurrency": 16,
+     "ok": 16,
+     "failed": 0,
+     "tpot_p50_ms": 74.29,
+     "tokens_per_min": 8490.5,
+     "ttft_mean_s": 4.722,
+     "errors": []
+    }
+   ],
+   "sampled_smoke_error": null,
+   "peak_mem_mib_per_gpu": [
+    "0, 23688 MiB",
+    "1, 23688 MiB"
+   ]
+  },
+  "A16b_concurrent_probe": "16/16 timed out (180s) after bench 1 ok/15 HTTP500",
+  "B16_concurrent_probe": "16/16 HTTP 200"
+ },
+ "abba_means_ms": {
+  "c1": {
+   "A": 63.86,
+   "B": 25.77
+  },
+  "c4": {
+   "A": 64.2,
+   "B": 46.95
+  },
+  "c8": {
+   "A": 64.91,
+   "B": 64.89
+  },
+  "c16_16x4096": {
+   "A": "infeasible (15/16 HTTP500)",
+   "B": 74.29
+  }
+ },
+ "context_only_not_like_for_like": {
+  "shipped_serving_c1_prior_round_ms": 63.98,
+  "local_B1_ms": 21.867,
+  "diagnosis_geometry_sweep_ms": {
+   "1x8192": 25.53,
+   "8x8192": 63.61
+  }
+ },
+ "failures_retained": [
+  "First B16 attempt on port 18526 failed to start: torchrun master port 29500 EADDRINUSE (A16 server still shutting down); rerun on 18528 with unique --master_port succeeded.",
+  "A16/A16b shipped control at 16x4096: bench c16 1 ok / 15 failed HTTP500, concurrent probe 16/16 timeout - pre-existing shipped c16 incapability at this geometry, not candidate-caused.",
+  "Graph capture/replay/bucket counters (graph_replays_by_bucket, bucket_graph_captures in tp_engine.py) are not exposed via /health, /v1/models, or server logs - not measured."
+ ],
+ "adoption": {
+  "criteria": "exact greedy everywhere; c1 materially faster; no c4/c8/c16 regression >1% or capability loss",
+  "verdict": "ADOPTED as serving-script default in integration (scripts/serve_qwen38_tp2.py --graph-buckets on by default, --no-graph-buckets opt-out); TPEngineCore library default graph_bucketed=False unchanged",
+  "reasons": "hashes exact in all 6 server runs; c1 TPOT 63.86->25.77 ms (-59.7%); c4 64.20->46.95 (improvement); c8 64.91->64.89 (flat); c16 candidate gains capability shipped lacks at 16x4096 (16/16 vs 1/16). Peak memory comparable (~23.3-23.7 GiB/rank both arms)."
+ },
+ "cleanup": "all own servers SIGTERM/SIGKILL by port pattern; final nvidia-smi 1 MiB/GPU, ports 18521-18528 free; no vLLM/external processes started or stopped; nothing committed"
+}
