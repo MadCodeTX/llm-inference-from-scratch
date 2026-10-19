@@ -1,0 +1,216 @@
+{
+ "head_shipped": "7fbb4a7",
+ "fixed_tree": "uncommitted working tree over 7fbb4a7 (prior result 1 fixes; no source edited in this lane)",
+ "model": "Qwen/Qwen3.8-27B-FP8",
+ "tp": 2,
+ "protocol_default": "object",
+ "sse": "Connection: close",
+ "baselines": {
+  "local_tpot_ms": 21.867,
+  "prior_serving_c1_tpot_ms": 113.9,
+  "prior_serving_c4_tok_per_min": 1869
+ },
+ "quality_hashes_all_configs": {
+  "capital": "bb54dbc4548dad57",
+  "water": "bf740ec80592c722",
+  "counting": "7ffcc751cb5d7dfc"
+ },
+ "configs": {
+  "A1_shipped_8x8192": {
+   "server": "git worktree 7fbb4a7",
+   "peak_mib": 23310,
+   "smoke": {
+    "ok": true,
+    "tpot_p50_ms": 113.98
+   },
+   "quality": {
+    "capital": "bb54dbc4548dad57",
+    "water": "bf740ec80592c722",
+    "counting": "7ffcc751cb5d7dfc"
+   },
+   "c1": {
+    "ok": 1,
+    "failed": 0,
+    "tokens_per_min": 511.3,
+    "tpot_p50_ms": 113.89,
+    "tpot_mean_ms": 113.93,
+    "ttft_mean_s": 1.865,
+    "errors": []
+   },
+   "c4": {
+    "ok": 4,
+    "failed": 0,
+    "tokens_per_min": 1868.8,
+    "tpot_p50_ms": 114.04,
+    "tpot_mean_ms": 116.74,
+    "ttft_mean_s": 6.069,
+    "errors": []
+   },
+   "sampled_c1": {
+    "ok": 1,
+    "failed": 0,
+    "tokens_per_min": 441.1,
+    "tpot_p50_ms": 132.44,
+    "tpot_mean_ms": 132.59,
+    "ttft_mean_s": 1.893,
+    "errors": []
+   }
+  },
+  "B1_fixed_8x8192_real-state": {
+   "peak_mib": 23300,
+   "smoke": {
+    "ok": true,
+    "tpot_p50_ms": 63.94
+   },
+   "quality": {
+    "capital": "bb54dbc4548dad57",
+    "water": "bf740ec80592c722",
+    "counting": "7ffcc751cb5d7dfc"
+   },
+   "c1": {
+    "ok": 1,
+    "failed": 0,
+    "tokens_per_min": 888.8,
+    "tpot_p50_ms": 63.98,
+    "tpot_mean_ms": 63.99,
+    "ttft_mean_s": 1.866,
+    "errors": []
+   },
+   "c4": {
+    "ok": 4,
+    "failed": 0,
+    "tokens_per_min": 3036.2,
+    "tpot_p50_ms": 64.55,
+    "tpot_mean_ms": 67.29,
+    "ttft_mean_s": 6.039,
+    "errors": []
+   },
+   "sampled_c1": {
+    "ok": 1,
+    "failed": 0,
+    "tokens_per_min": 800.3,
+    "tpot_p50_ms": 71.36,
+    "tpot_mean_ms": 71.41,
+    "ttft_mean_s": 1.894,
+    "errors": []
+   }
+  },
+  "BSC_fixed_8x8192_scratch": {
+   "peak_mib": 22526,
+   "quality": {
+    "capital": "bb54dbc4548dad57",
+    "water": "bf740ec80592c722",
+    "counting": "7ffcc751cb5d7dfc"
+   },
+   "c1": {
+    "ok": 1,
+    "failed": 0,
+    "tokens_per_min": 889.9,
+    "tpot_p50_ms": 63.88,
+    "tpot_mean_ms": 63.89,
+    "ttft_mean_s": 1.871,
+    "errors": []
+   }
+  },
+  "A2_shipped_8x8192": {
+   "peak_mib": 22526,
+   "quality": {
+    "capital": "bb54dbc4548dad57",
+    "water": "bf740ec80592c722",
+    "counting": "7ffcc751cb5d7dfc"
+   },
+   "c1": {
+    "ok": 1,
+    "failed": 0,
+    "tokens_per_min": 511.0,
+    "tpot_p50_ms": 113.97,
+    "tpot_mean_ms": 113.99,
+    "ttft_mean_s": 1.865,
+    "errors": []
+   }
+  },
+  "B_fixed_8x16384_real-state": {
+   "peak_mib": 23806,
+   "smoke": {
+    "ok": true,
+    "tpot_p50_ms": 93.52
+   },
+   "quality": {
+    "capital": "bb54dbc4548dad57",
+    "water": "bf740ec80592c722",
+    "counting": "7ffcc751cb5d7dfc"
+   },
+   "c1_short": {
+    "ok": 0,
+    "failed": 1,
+    "tokens_per_min": 0.0,
+    "tpot_p50_ms": null,
+    "tpot_mean_ms": null,
+    "ttft_mean_s": null,
+    "errors": [
+     "HTTPError: HTTP Error 500: Internal Server Error"
+    ]
+   },
+   "medium_c1": {
+    "ok": 0,
+    "failed": 1,
+    "tokens_per_min": 0.0,
+    "tpot_p50_ms": null,
+    "tpot_mean_ms": null,
+    "ttft_mean_s": null,
+    "errors": [
+     "HTTPError: HTTP Error 500: Internal Server Error"
+    ]
+   },
+   "repro_500_body": "generation failed: CUDA out of memory. Tried to allocate 406.00 MiB. GPU 0 has a total capacity of 23.52 GiB of which 181.75 MiB is free. ... 1.51 GiB allocated in private pools (e.g., CUDA Graphs) (captured via curl on port 18516, ~2100-token prompt, 32 and 512 max_tokens both 500; 5-token prompt 200)"
+  },
+  "B_fixed_16x4096_c16": {
+   "peak_mib": 23132,
+   "smoke": {
+    "ok": true,
+    "tpot_p50_ms": 68.91
+   },
+   "quality": {
+    "capital": "bb54dbc4548dad57",
+    "water": "bf740ec80592c722",
+    "counting": "7ffcc751cb5d7dfc"
+   },
+   "c16_batch1_tok_per_min": 7453.1,
+   "c16_batch2": {
+    "ok": 16,
+    "failed": 0,
+    "tokens_per_min": 7450.6,
+    "tpot_p50_ms": 71.65,
+    "tpot_mean_ms": 93.77,
+    "ttft_mean_s": 17.908,
+    "errors": []
+   },
+   "note": "two consecutive c16 short batches, both 16/16 OK; batch1 file overwritten by batch2, batch1 tok/min from console log"
+  },
+  "B_fixed_1x65536_long_geometry": {
+   "peak_mib": 20410,
+   "smoke": {
+    "ok": true,
+    "tpot_p50_ms": 63.91
+   },
+   "quality": {
+    "capital": "bb54dbc4548dad57",
+    "water": "bf740ec80592c722",
+    "counting": "7ffcc751cb5d7dfc"
+   },
+   "note": "feasibility only (health/smoke/32-token greedy); full long bench not run"
+  }
+ },
+ "recommendations": {
+  "driver_idle_poll_fix": "adopt (ABBA c1 TPOT 113.89/113.97 shipped vs 63.98 fixed; c4 1868.8 -> 3036.2 tok/min; greedy hashes identical)",
+  "eager_snapshot_fix": "adopt (c16 16/16 twice vs shipped 1/16 + 15x500 in diagnosis; inseparable from driver fix in this ABBA, mechanism supported by prior unit tests)",
+  "graph_capture_real-state": "opt-in/adopt-as-default-candidate (c1 TPOT identical to scratch 63.98 vs 63.88 within fixed tree; no TPOT benefit at 8x8192, benefit is memory headroom only; does NOT make 8x16384 feasible)",
+  "graph_capture_guard": "keep (no false block observed at feasible sizes)",
+  "per-occupancy_right-sized_graphs": "not implemented, reject for now (remaining c1 gap 63.98 vs 21.867 local is graphed B=8 geometry)",
+  "incremental_detokenization": "skip (negligible, prior measurement)",
+  "8x16384_sizing": "reject on 24GiB/rank (still HTTP 500 OOM on ~2k-token prompts)",
+  "16x4096_c16": "adopt as feasible on fixed tree (7450 tok/min, 16/16 x2), shipped reject",
+  "sampled_arm": "works both trees; fixed faster (132.44 -> 71.36 ms TPOT c1) via driver fix, eager by design"
+ },
+ "cleanup": "all servers SIGTERM (no SIGKILL needed), GPUs 1 MiB and ports 18511-18518 down verified after each config; no vLLM/external process touched; nothing committed"
+}

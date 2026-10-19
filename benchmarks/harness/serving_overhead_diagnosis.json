@@ -1,0 +1,86 @@
+{
+  "task": "serving overhead diagnosis: real TPOT ~113.9ms vs local graphed 21.867ms; c16 500s; 8x16384 capture OOM",
+  "git_head": "7fbb4a7",
+  "committed": false,
+  "source_edits": "none (instrumentation lived in /tmp copies only)",
+  "model": "Qwen/Qwen3.8-27B-FP8",
+  "gpus": "2x RTX 4090 24564 MiB",
+  "serving_defaults": {"max_slots": 8, "max_seq_len": 8192, "token_budget": 8192, "tp_sync": "object", "decode_mode": "graph"},
+
+  "baselines_not_like_for_like": {
+    "local_runner_b1_graph_tpot_ms": 21.867,
+    "local_runner_source": "benchmarks/harness/decode_round5.json (greedy_generate_graph_tp, B=1)",
+    "throughput_engine_c1_graph": {"per_stream_tok_per_s": 38.9, "wall_ms_per_engine_step": 25.55, "geometry": "max_slots=1 max_seq_len=2560 token_budget=512, in-process, no driver/HTTP"},
+    "serving_c1_reproduced": {"tpot_p50_ms": 114.06, "tpot_mean_ms": 115.12, "n_inter_token": 511, "output_tokens": 512, "tokens_per_minute": 504.1, "ttft_s": 2.109, "wall_s": 60.93, "port": 18431}
+  },
+
+  "bucket_attribution_ms_per_token_c1": {
+    "driver_poll_quantum": {"ms": 50.27, "evidence": "fake instant engine through real BatchedEngineBackend: ITL p50 50.25 mean 50.27 (64 tok); with 22ms fake step: p50 72.52 (exactly additive); code: _pending.get(timeout=0.05) at top of every _drive iteration (openai_server.py:243)"},
+    "engine_step_serving_geometry": {"ms": 63.61, "evidence": "engine-only synced step p50 at slots=8 seq=8192; in-server instrumented mean ~69ms incl outliers"},
+    "tp_sync_object": {"ms_in_server": 0.54, "ms_isolated_nccl": 0.080, "evidence": "300-call 2-rank NCCL micro-bench; compact=0.036, object+2048-id submit=0.089"},
+    "tokenizer_full_redecode_per_token": {"ms": 0.035, "evidence": "in-server: 99 decode calls = 3.5ms total; CPU sweep: mean 0.004ms@32, 0.008@128, 0.016@512 ids; O(n^2) total = 8.2ms per 512-token request"},
+    "http_sse_flush_and_client": {"ms": "<0.2", "evidence": "HTTP loopback with instant engine: ITL p50 50.18ms = driver quantum alone"},
+    "sum_accounted_ms": 114.5,
+    "observed_p50_ms": 114.06
+  },
+
+  "engine_step_geometry_sweep_ms": {
+    "method": "TPEngineCore graph, 1 request x 2033 prompt ids, 64 decode steps, per-step cuda-synced wall, /tmp driver",
+    "slots1_seq2560": {"p50": 23.06, "mean": 29.94},
+    "slots1_seq8192": {"p50": 25.53, "mean": 32.32},
+    "slots8_seq2560": {"p50": 43.19, "mean": 50.29},
+    "slots8_seq8192": {"p50": 63.61, "mean": 71.79},
+    "captures_each": 1, "replays_each": 64
+  },
+
+  "graph_eligibility_serving_c1": {
+    "graph_captures": 1, "graph_replays": 99, "graphed_steps": 99, "decode_steps": 99,
+    "conclusion": "decode steps ARE graph-replayed at c1; eager fallback only on mixed prefill+decode steps and for sampled rows (by design)"
+  },
+
+  "sync_microbench_ms_per_call": {
+    "object_step_only_broadcast_object_list": 0.080,
+    "object_one_2048id_submit": 0.089,
+    "compact_two_tensor_broadcasts": 0.036,
+    "n": 300, "backend": "nccl 2-rank",
+    "conclusion": "explains prior ABBA object~=compact (113.82-113.89ms both); compact no-benefit confirmed a third time"
+  },
+
+  "prefill_ttft": {"prefill_step_s": [2.05, 2.21], "bench_ttft_s": 2.10, "note": "token_budget=8192 prefills whole 2033-token prompt in one step; TTFT only, not in TPOT"},
+
+  "c16_16x4096_root_cause": {
+    "repro_sequence_port_18435_stock_compact": [
+      {"batch": 1, "result": "16/16 HTTP 200", "peak_mib": 20474},
+      {"batch": 2, "client": "benchmarks/run_bench.py", "ok": 1, "failed": 15, "error": "HTTPError: HTTP Error 500", "wall_s": 9.29, "gpu_mib_after": 23702},
+      {"batch": 3, "client": "body-capturing probe", "http_500": 4, "client_timeouts": 12,
+       "body_sample": "generation failed: CUDA out of memory. Tried to allocate 40.00 MiB. GPU 0 has a total capacity of 23.52 GiB of which 9.75 MiB is free. Including non-PyTorch memory, this process has 23.50 GiB memory in use. Of the allocated memory 22.37 GiB is allocated by PyTorch, with 783.88 MiB allocated in private pools (e.g., CUDA Graphs), and 516.00 MiB is reserved by PyTorch but unallocated"}
+    ],
+    "mechanism": [
+      "static state 16x4096 = 3.12 GiB/rank (KV 2.00 GiB @32768 B/token + linear S 1.12 GiB @72 MiB/row) + weights 14.91 GiB + graph-capture scratch second state + 784 MiB retained CUDA-graph private pool",
+      "mixed prefill+decode steps (budget 8192 prefills ~4 rows/step) are graph-ineligible -> eager path clones full state of every non-decoding row (_snapshot_rows): ~200 MiB/row at seq4096 (128 MiB KV + 72 MiB S), up to ~3 GiB transient/step",
+      "allocator-history dependent: first batch passes, later batches OOM on a 20-40 MiB allocation at 23.5 GiB in use",
+      "OOM inside engine.step() -> driver _fail() fails ALL active jobs; no-first-token jobs -> HTTP 500 pre-headers; rank-1 left in collective -> remaining clients time out, shutdown can need SIGKILL"
+    ]
+  },
+
+  "capture_oom_8x16384": {
+    "mechanism": "weights 14.91 GiB + resident state 4.56 GiB (KV 4.00 + S 0.56) + _capture_graph scratch second full state 4.56 GiB + graph pool/activations > 24 GiB",
+    "prior_log": "first graphed decode: tried to allocate 128 MiB, 31.75 MiB free (serving_readiness_round1)",
+    "memory_math": {"kv_bytes_per_token_per_rank": 32768, "linear_S_mib_per_row": 72.0,
+      "state_gib": {"8x16384": 4.56, "8x8192": 2.56, "16x4096": 3.12, "1x65536": 2.07, "2x32768": 2.14}}
+  },
+
+  "ranked_fix_candidates": [
+    {"rank": 1, "fix": "driver: block on _pending only when idle; get_nowait/event<=1ms when active", "expected_gain": "-50 ms/token (TPOT ~64ms)", "exactness": "scheduling only"},
+    {"rank": 2, "fix": "per-occupancy graphs / right-sized max_slots / M=1 GEMV graph for c1", "expected_gain": "-20 to -41 ms/token at c1", "exactness": "needs scratch fix first at large geometries"},
+    {"rank": 3, "fix": "eliminate eager snapshot clones (reset free rows instead of restore; snapshot only mutable rows)", "expected_gain": "fixes c16 OOM class; removes mixed-step stalls", "exactness": "requires proof decode writes only planned rows"},
+    {"rank": 4, "fix": "graph capture without second full state (warmup on real state + reset, or reduced-seq scratch)", "expected_gain": "unblocks 8x16384; -3 to -4.5 GiB capture peak", "exactness": "reset completeness proof (KV/S/conv/position)"},
+    {"rank": 5, "fix": "incremental detokenization + incremental stop scan", "expected_gain": "-0.02 ms/token now; removes O(n^2) at long outputs", "exactness": "preserve multi-byte delta and stop-truncation semantics"},
+    {"rank": 6, "fix": "SSE coalescing", "expected_gain": "<0.2 ms/token", "exactness": "n/a"},
+    {"rank": 7, "fix": "tp-sync compact as default", "expected_gain": "~0.04 ms/token", "verdict": "rejected again; keep opt-in"}
+  ],
+
+  "projected_c1_tpot_after_fixes_1_2_ms": "23-26",
+
+  "cleanup_verified": {"gpus_mib_after": [1, 1], "ports_free": [18431, 18433, 18435], "server_processes_remaining": 0, "git_status": "clean except this report pair (uncommitted)", "vllm_or_external_touched": false}
+}

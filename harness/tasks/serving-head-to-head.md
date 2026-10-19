@@ -3,7 +3,7 @@ id: serving-head-to-head
 domain: serving
 status: open
 current_best:
-  result: "serving surface integrated (ch 30: openai_server + serve_qwen38_tp2, defects fixed/tested); no candidate measured through run_bench.py on the suite yet - blockers: TP broadcast overhead, static-KV sizing for medium/long/c16, greedy-only sampled arm"
+  result: "serving surface integrated (ch 30); serving-overhead round 1 ABBA via run_bench.py (short, not the full suite): c1 TPOT 113.89 -> 63.98 ms, c4 3036.2 tok/min, 16x4096/c16 feasible 16/16 twice, 8x16384 still infeasible; no same-harness suite win yet"
   artifact: docs/30_serving_openai.md
   exactness: "fake/stub contract tests pass; real-27B evidence is a tiny-prompt smoke only, no suite quality-gate run"
 arm_a:

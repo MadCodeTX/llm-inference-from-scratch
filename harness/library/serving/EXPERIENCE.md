@@ -38,3 +38,24 @@
 - **applicability limits**: until a `run_bench.py` suite run passes
   the WIN.md quality gate, every serving-speed statement is a
   blocker statement, not a result.
+
+## V3 — Poll only when idle; snapshot only live rows
+
+- **cue**: serving TPOT ~2x the in-process engine step at the same
+  geometry, and c16 collapses into HTTP 500s after the first batch.
+- **lesson**: block the driver on the pending queue only when no
+  job is active (a 50 ms poll quantum adds directly to every token);
+  eager steps snapshot only live non-planned rows and reset
+  stateless rows instead of cloning full state; graph capture
+  warmup runs on the real state and its sizing guard fails closed
+  to eager on any oracle/agreement/capture failure.
+- **evidence**: `benchmarks/harness/serving_overhead_round1.json`
+  ABBA: c1 TPOT p50 113.89 -> 63.98 ms, c4 1868.8 -> 3036.2
+  tok/min, greedy hashes identical; 16x4096 c16 16/16 twice
+  (~7452 tok/min) vs shipped 1/16 + 15x HTTP 500; 8x16384 still
+  infeasible. Diagnosis: `serving_overhead_diagnosis.md`.
+- **confidence**: high (ABBA + unit tests + fake-engine additive
+  proof of the 50 ms quantum).
+- **applicability limits**: remaining c1 gap is graphed B=8
+  geometry (per-occupancy graphs unimplemented); numbers are
+  short-shape `run_bench.py`, not a suite win vs vLLM.

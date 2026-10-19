@@ -204,11 +204,19 @@ class BatchedEngineBackend:
     greedy_only = False
 
     def __init__(self, model_id: str, engine, encode, decode,
-                 eos_id: int | None = None, sync_hook: Callable | None = None):
+                 eos_id: int | None = None, sync_hook: Callable | None = None,
+                 idle_poll_s: float = 0.05):
+        if not (0.0 < float(idle_poll_s) <= 1.0):
+            raise ValueError(f"idle_poll_s must be in (0, 1], got {idle_poll_s!r}")
         self.model_id, self.engine = model_id, engine
         self._encode, self._decode = encode, decode
         self.eos_id = eos_id if eos_id is not None else getattr(engine, "eos_id", None)
         self._sync_hook = sync_hook
+        # Blocking wait used ONLY while no request is active. While
+        # active, the driver drains the queue non-blockingly and steps
+        # immediately: a blocking poll there added idle_poll_s to every
+        # generated token (measured +50 ms/token at the 0.05 default).
+        self.idle_poll_s = float(idle_poll_s)
         self._pending: queue.Queue[_Job] = queue.Queue()
         self._active: dict[int, _Job] = {}
         self._seen: dict[int, int] = {}
@@ -238,12 +246,16 @@ class BatchedEngineBackend:
     def _drive(self):
         pending_submits: list[tuple] = []
         while not self._stop.is_set():
-            # Poll with a timeout even when idle so close() wakes us.
-            try:
-                job = self._pending.get(timeout=0.05)
-                jobs = [job]
-            except queue.Empty:
-                jobs = []
+            # Block only while idle (no active request), so close()
+            # still wakes us within idle_poll_s and an idle driver does
+            # not busy-spin. With work active, drain non-blockingly and
+            # step at once -- blocking here taxed every token.
+            jobs: list[_Job] = []
+            if not self._active:
+                try:
+                    jobs = [self._pending.get(timeout=self.idle_poll_s)]
+                except queue.Empty:
+                    jobs = []
             while True:
                 try:
                     jobs.append(self._pending.get_nowait())

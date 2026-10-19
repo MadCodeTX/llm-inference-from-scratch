@@ -53,6 +53,14 @@ def main() -> int:
                     help="lockstep transport: object=broadcast_object_list "
                          "(default), compact=flat-int tensor broadcast")
     ap.add_argument("--memory-guard-gib", type=float, default=runner.MEMORY_GUARD_GIB)
+    ap.add_argument("--graph-capture-mode", choices=("real-state", "scratch"),
+                    default="real-state",
+                    help="graph warmup: real-state=snapshot/restore occupied "
+                         "rows only (default, no second full state), "
+                         "scratch=legacy full scratch state")
+    ap.add_argument("--no-graph-capture-guard", action="store_true",
+                    help="disable the fail-closed capture sizing guard "
+                         "(capture may OOM instead of falling back to eager)")
     a = ap.parse_args()
     # Adopted defaults via existing explicit config helpers only.
     runner.validate_fp8_config("gemv-bk512")
@@ -87,7 +95,9 @@ def main() -> int:
     eos = int(tok.eos_token_id) if tok.eos_token_id is not None else 248044
     engine = TPEngineCore(model, ctx, max_slots=a.max_slots,
                           max_seq_len=a.max_seq_len, token_budget=a.token_budget,
-                          eos_id=eos, decode_mode="graph")
+                          eos_id=eos, decode_mode="graph",
+                          graph_capture_mode=a.graph_capture_mode,
+                          graph_capture_guard=not a.no_graph_capture_guard)
 
     def encode(text):
         try: ids = tok.encode(text, add_special_tokens=False)

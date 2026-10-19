@@ -269,6 +269,82 @@ def test_batched_backend_driver_error_does_not_hang():
             assert be._driver is None or not be._driver.is_alive()
 
 
+def test_batched_backend_no_per_token_poll_latency():
+    # Instant stub engine: with the old always-blocking 50 ms poll,
+    # 32 tokens took ~1.6 s. Active work must step immediately.
+    import time as _t
+    be = _batched(_StubEngine())
+    try:
+        t0 = _t.perf_counter()
+        got = list(be.stream_token_ids([120], 32, threading.Event(),
+                                       ignore_eos=True))
+        elapsed = _t.perf_counter() - t0
+        assert len(got) == 32 and elapsed < 0.5, elapsed
+    finally:
+        be.close()
+
+
+def test_batched_backend_idle_driver_blocks_and_close_is_prompt():
+    # Idle driver must not busy-step the engine, and close() must wake
+    # it promptly (within a few idle-poll quanta, not a hang).
+    import time as _t
+    eng = _StubEngine()
+    steps = []
+    orig_step = eng.step
+    eng.step = lambda: (steps.append(1), orig_step())[1]
+    be = _batched(eng)
+    be._ensure_driver()
+    _t.sleep(0.25)
+    assert steps == []  # no busy-spin stepping while idle
+    t0 = _t.perf_counter()
+    be.close()
+    assert _t.perf_counter() - t0 < 2.0
+    assert be._driver is not None and not be._driver.is_alive()
+
+
+def test_batched_backend_cancel_is_prompt():
+    import time as _t
+
+    class Slow(_StubEngine):
+        def step(self):
+            _t.sleep(0.02)
+            super().step()
+
+    be = _batched(Slow())
+    cancelled = threading.Event()
+    out = {}
+
+    def consume():
+        out["got"] = list(be.stream_token_ids([120], 100, cancelled,
+                                              ignore_eos=True))
+
+    t = threading.Thread(target=consume, daemon=True)
+    t.start()
+    _t.sleep(0.1)
+    cancelled.set()
+    t.join(timeout=3)
+    try:
+        assert not t.is_alive()  # consumer returns instead of hanging
+        assert len(out.get("got", [])) < 100
+    finally:
+        be.close()
+
+
+def test_batched_backend_sixteen_concurrent_contract():
+    # c16-shaped stub contract: 16 concurrent jobs through one driver
+    # all finish with their exact tokens; none error (HTTP 500 class).
+    be = _batched(_StubEngine())
+    try:
+        with ThreadPoolExecutor(16) as ex:
+            results = list(ex.map(
+                lambda _i: list(be.stream_token_ids(
+                    [120], 4, threading.Event(), ignore_eos=True)),
+                range(16)))
+        assert results == [[65, 99, 67, 68]] * 16
+    finally:
+        be.close()
+
+
 def test_batched_backend_close_wakes_idle_driver():
     be = _batched(_StubEngine())
     be._ensure_driver()

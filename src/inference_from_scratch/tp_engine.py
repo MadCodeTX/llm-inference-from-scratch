@@ -56,8 +56,15 @@ row fall back to the eager snapshot/restore step, token-identically.
 Free slots are replayed too; their state is discarded by the
 ``reset(rows=[slot])`` at next admission, which is the only reason
 skipping snapshot/restore on the graph path is exact. Capture is
-lazy (first eligible step), after a side-stream warmup over a scratch
-state and a TP barrier, mirroring the runner. Graph replay skips the
+lazy (first eligible step), after a side-stream warmup and a TP
+barrier, mirroring the runner. By default (``graph_capture_mode=
+"real-state"``) the warmup runs on the real state with an exact
+snapshot/restore of occupied rows only -- no second full state is
+allocated -- and a sizing guard (``graph_capture_guard``) falls back
+to token-identical eager decode instead of capturing into OOM;
+``graph_capture_mode="scratch"`` restores the legacy full-scratch
+warmup. Eager steps likewise snapshot only live non-planned rows and
+reset stateless (free / not-yet-prefilled) rows afterwards. Graph replay skips the
 in-kernel overflow check, so the engine relies on the ``submit``
 bound (``prompt + max_new - 1 <= max_seq_len``) plus finishing at
 ``max_new``/EOS -- a decoding row can never be fed past it.
@@ -131,9 +138,14 @@ class TPEngineCore:
 
     DECODE_MODES = ("eager", "graph")
 
+    GRAPH_CAPTURE_MODES = ("real-state", "scratch")
+
     def __init__(self, model, ctx, max_slots: int, max_seq_len: int,
                  token_budget: int, *, eos_id: int | None = None,
-                 decode_mode: str | None = None):
+                 decode_mode: str | None = None,
+                 graph_capture_mode: str = "real-state",
+                 graph_capture_guard: bool = True,
+                 graph_capture_reserve_bytes: int = 512 * 1024 * 1024):
         if isinstance(max_slots, bool) or int(max_slots) <= 0:
             raise ValueError(f"max_slots must be positive, got {max_slots!r}")
         if isinstance(max_seq_len, bool) or int(max_seq_len) <= 0:
@@ -143,6 +155,17 @@ class TPEngineCore:
         if decode_mode is not None and decode_mode not in self.DECODE_MODES:
             raise ValueError(
                 f"decode_mode must be one of {self.DECODE_MODES}, got {decode_mode!r}")
+        if graph_capture_mode not in self.GRAPH_CAPTURE_MODES:
+            raise ValueError(
+                f"graph_capture_mode must be one of {self.GRAPH_CAPTURE_MODES}, "
+                f"got {graph_capture_mode!r}")
+        if int(graph_capture_reserve_bytes) < 0:
+            raise ValueError("graph_capture_reserve_bytes must be >= 0")
+        self.graph_capture_mode = str(graph_capture_mode)
+        self.graph_capture_guard = bool(graph_capture_guard)
+        self.graph_capture_reserve_bytes = int(graph_capture_reserve_bytes)
+        self.graph_capture_blocked = False
+        self.graph_capture_block_reason: str | None = None
         self.model = model
         self.ctx = ctx if ctx is not None else model.ctx
         if decode_mode is None:
@@ -296,6 +319,44 @@ class TPEngineCore:
                     t[idx] = saved
         self.state.position[idx] = snap["position"]
 
+    def _state_bytes(self, rows: list[int] | None = None) -> int:
+        """Bytes of state buffers (all rows, or only ``rows``)."""
+        total = 0
+        for name in ("kv_k", "kv_v", "linear_S", "linear_conv_buffers"):
+            for t in getattr(self.state, name):
+                if t is None:
+                    continue
+                n = t.numel() if rows is None else t[rows].numel() if rows else 0
+                total += int(n) * int(t.element_size())
+        pos = self.state.position
+        total += (pos.numel() if rows is None else len(rows)) * pos.element_size()
+        return int(total)
+
+    def _eager_protected_rows(self, decode_planned):
+        """Split non-planned rows into (snapshot_rows, reset_rows).
+
+        A batched eager decode mutates every row. Rows with live state
+        that this step must not advance (partially prefilled rows, or
+        decoding rows excluded by the token budget) are snapshotted and
+        restored. Free rows and prefilling rows with ``prefill_done ==
+        0`` hold no live state -- admission reset them and every prior
+        eager step either restored or reset them -- so resetting them
+        after the step is exact and avoids cloning up to a full state
+        per mixed step (the c16 OOM mechanism).
+        """
+        planned = {id(r) for r in decode_planned}
+        snap_rows, reset_rows = [], []
+        for i, r in enumerate(self._slots):
+            if r is None:
+                reset_rows.append(i)
+            elif id(r) in planned:
+                continue
+            elif r.status == "prefilling" and r.prefill_done == 0:
+                reset_rows.append(i)
+            else:
+                snap_rows.append(i)
+        return snap_rows, reset_rows
+
     def _finish(self, req: EngineRequest, step: int, finished: list[int]) -> None:
         req.status = "finished"
         req.finish_step = step
@@ -336,18 +397,120 @@ class TPEngineCore:
         planned = {id(r) for r in decode_planned}
         return all(r is None or id(r) in planned for r in self._slots)
 
+    def _graph_capture_plan(self) -> dict:
+        """Memory plan for capture: no second full state in real-state mode."""
+        occupied = [i for i, r in enumerate(self._slots) if r is not None]
+        vocab = int(self.model.config.vocab_size)
+        out_bytes = self.max_slots * vocab * int(self.state.dtype.itemsize) \
+            if hasattr(self.state.dtype, "itemsize") else \
+            self.max_slots * vocab * torch.tensor(0, dtype=self.state.dtype).element_size()
+        if self.graph_capture_mode == "scratch":
+            transient = self._state_bytes()
+            snap_rows: list[int] = []
+        else:
+            transient = self._state_bytes(occupied)
+            snap_rows = occupied
+        # CUDA-graph private pools observed at 0.78-1.51 GiB scale with
+        # state size; budget a third of the full state for the pool so
+        # the guard does not under-count capture (activations + pool).
+        pool_est = max(int(self._state_bytes()) // 3, int(out_bytes))
+        return {"mode": self.graph_capture_mode, "occupied_rows": occupied,
+                "snapshot_rows": snap_rows, "scratch_bytes": (
+                    transient if self.graph_capture_mode == "scratch" else 0),
+                "transient_bytes": int(transient) + int(out_bytes),
+                "graph_pool_estimate_bytes": int(pool_est),
+                "graph_out_bytes": int(out_bytes)}
+
+    def _graph_capture_allowed(self, plan: dict | None = None) -> bool:
+        """Fail-closed sizing guard: block capture (eager fallback) pre-OOM."""
+        if self.graph_capture_blocked:
+            return False
+        if not self.graph_capture_guard:
+            return True
+        plan = plan or self._graph_capture_plan()
+        try:
+            free, _total = torch.cuda.mem_get_info(self.ctx.device)
+        except Exception:
+            # Fail closed: no memory oracle -> do not capture blind.
+            self.graph_capture_blocked = True
+            self.graph_capture_block_reason = (
+                "graph capture blocked: CUDA free-memory query failed; "
+                "falling back to eager decode")
+            return False
+        # Agree on the decision across TP ranks (min free): one rank
+        # capturing while another falls back would deadlock the
+        # capture barrier while both still step in lockstep.
+        if int(getattr(self.ctx, "world_size", 1)) > 1 \
+                and hasattr(self.ctx, "all_gather"):
+            try:
+                vals = self.ctx.all_gather(torch.tensor(
+                    [int(free)], dtype=torch.long, device=self.state.device))
+                free = min(int(v.reshape(-1)[0].item()) for v in vals)
+            except Exception:
+                self.graph_capture_blocked = True
+                self.graph_capture_block_reason = (
+                    "graph capture blocked: TP free-memory agreement "
+                    "failed; falling back to eager decode")
+                return False
+        needed = (int(plan["transient_bytes"])
+                  + int(plan.get("graph_pool_estimate_bytes", 0))
+                  + self.graph_capture_reserve_bytes)
+        if int(free) < needed:
+            self.graph_capture_blocked = True
+            self.graph_capture_block_reason = (
+                f"graph capture needs ~{needed} bytes transient+reserve "
+                f"but only {int(free)} free; falling back to eager decode")
+            return False
+        return True
+
+    def _warmup_on_real_state(self, inp: torch.Tensor, runs: int = 3) -> None:
+        """Warm kernels on the real state, then restore it exactly.
+
+        Occupied rows are snapshot/restored (only those rows are
+        cloned -- never a second full state); free rows are reset.
+        Raises ValueError before mutating when a warmup run would
+        overflow an occupied row, so the caller can fall back eager.
+        """
+        occupied = [i for i, r in enumerate(self._slots) if r is not None]
+        if occupied:
+            positions = self.state.position.tolist()
+            if max(int(positions[i]) for i in occupied) + runs > self.max_seq_len:
+                raise ValueError("graph warmup would overflow an occupied row")
+        snap = self._snapshot_rows(occupied)
+        free_rows = [i for i, r in enumerate(self._slots) if r is None]
+        warm_in = inp.clone()
+        dev = self.ctx.device
+        try:
+            if torch.device(dev).type == "cuda" and torch.cuda.is_available():
+                side = torch.cuda.Stream(device=dev)
+                side.wait_stream(torch.cuda.current_stream(dev))
+                with torch.cuda.stream(side):
+                    for _ in range(runs):
+                        self.model.decode_token_static(warm_in, self.state)
+                torch.cuda.current_stream(dev).wait_stream(side)
+            else:
+                for _ in range(runs):
+                    self.model.decode_token_static(warm_in, self.state)
+        finally:
+            self._restore_rows(snap)
+            if free_rows:
+                self.state.reset(rows=free_rows)
+
     def _capture_graph(self, inp: torch.Tensor) -> None:
         dev = self.ctx.device
-        scratch = self.model.static_state(
-            batch_size=self.max_slots, max_seq_len=self.max_seq_len)
-        warm_in = inp.clone()
-        side = torch.cuda.Stream(device=dev)
-        side.wait_stream(torch.cuda.current_stream(dev))
-        with torch.cuda.stream(side):
-            for _ in range(3):
-                self.model.decode_token_static(warm_in, scratch)
-        torch.cuda.current_stream(dev).wait_stream(side)
-        del scratch
+        if self.graph_capture_mode == "scratch":
+            scratch = self.model.static_state(
+                batch_size=self.max_slots, max_seq_len=self.max_seq_len)
+            warm_in = inp.clone()
+            side = torch.cuda.Stream(device=dev)
+            side.wait_stream(torch.cuda.current_stream(dev))
+            with torch.cuda.stream(side):
+                for _ in range(3):
+                    self.model.decode_token_static(warm_in, scratch)
+            torch.cuda.current_stream(dev).wait_stream(side)
+            del scratch
+        else:
+            self._warmup_on_real_state(inp)
         if int(getattr(self.ctx, "world_size", 1)) > 1:
             self.ctx.barrier()
         self._graph_input = inp.clone()
@@ -365,7 +528,8 @@ class TPEngineCore:
         self._graph = graph
         self.graph_captures += 1
 
-    def _decode_graphed(self, inp: torch.Tensor) -> list[int]:
+    def _decode_graphed(self, inp: torch.Tensor) -> list[int] | None:
+        """Replay the graph; ``None`` means capture was blocked -> eager."""
         # Free rows are replayed with dummy input; keep their positions
         # inside the buffers (admission resets them before real use).
         positions = self.state.position.tolist()
@@ -374,7 +538,25 @@ class TPEngineCore:
         if stale:
             self.state.reset(rows=stale)
         if self._graph is None:
-            self._capture_graph(inp)
+            if not self._graph_capture_allowed():
+                return None
+            try:
+                self._capture_graph(inp)
+            except (ValueError, RuntimeError) as exc:
+                # ValueError: warmup unsafe at current positions.
+                # RuntimeError includes capture-time CUDA OOM: without
+                # this catch it would fail every active request and
+                # risk wedging TP ranks. Fail closed to eager instead.
+                self.graph_capture_blocked = True
+                self.graph_capture_block_reason = (
+                    f"graph capture failed ({type(exc).__name__}); "
+                    "falling back to eager decode")
+                self._graph = None
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
+                return None
         assert self._graph is not None and self._graph_input is not None
         assert self._graph_out is not None
         self._graph_input.copy_(inp)
@@ -457,18 +639,20 @@ class TPEngineCore:
                 inp = torch.zeros(self.max_slots, dtype=torch.long, device=self.ctx.device)
                 for r in decode_planned:
                     inp[int(r.slot)] = int(r.generated[-1])
+                nxt: list[int] | None = None
                 if self._graph_eligible(decode_planned):
-                    nxt: list[int] | None = self._decode_graphed(inp)
-                else:
-                    planned = {id(r) for r in decode_planned}
-                    protected = [i for i, r in enumerate(self._slots)
-                                 if r is None or id(r) not in planned]
-                    # Finished-this-step slots are already None in _slots but their
-                    # requests left the slot; every non-planned row is protected.
-                    snap = self._snapshot_rows(protected)
+                    nxt = self._decode_graphed(inp)
+                if nxt is None:
+                    # Eager (also the fail-closed fallback when graph
+                    # capture is blocked): snapshot only live
+                    # non-planned rows, reset stateless rows after.
+                    snap_rows, reset_rows = self._eager_protected_rows(
+                        decode_planned)
+                    snap = self._snapshot_rows(snap_rows)
                     logits = self.model.decode_token_static(inp, self.state)
                     self._restore_rows(snap)
-                    nxt = None
+                    if reset_rows:
+                        self.state.reset(rows=reset_rows)
                 for req in decode_planned:
                     token = (int(nxt[int(req.slot)]) if nxt is not None
                              else self._pick_token(

@@ -213,6 +213,125 @@ def test_graph_eligibility_requires_all_occupied_slots_decoding():
     assert eng.poll(r0)["status"] in ("decoding", "finished")
 
 
+def test_eager_protected_rows_classification():
+    tp = _tp()
+    eng = TPEngineCore(tp, tp.ctx, max_slots=4, max_seq_len=64, token_budget=8)
+    rids = [eng.submit(PROMPTS[i], 4) for i in range(3)]
+    reqs = [eng._requests[r] for r in rids]
+    for i, req in enumerate(reqs):
+        req.slot = i
+        eng._slots[i] = req
+    reqs[0].status = "decoding"                       # planned below
+    reqs[1].status, reqs[1].prefill_done = "prefilling", 0   # stateless
+    reqs[2].status, reqs[2].prefill_done = "prefilling", 2   # live state
+    # slot 3 stays free (stateless)
+    snap_rows, reset_rows = eng._eager_protected_rows([reqs[0]])
+    assert snap_rows == [2]
+    assert reset_rows == [1, 3]
+
+
+def test_mixed_steps_exact_with_reduced_snapshots():
+    # Budget forces mixed prefill+decode steps; reduced snapshot/reset
+    # handling must stay token-identical to independent B=1 runs, and
+    # no snapshot taken during the run may include a free row clone of
+    # the old full width (snapshotted rows are at most the live rows).
+    tp = _tp()
+    refs = [_b1(tp, p, 5) for p in PROMPTS[:3]]
+    eng = TPEngineCore(tp, tp.ctx, max_slots=3, max_seq_len=64, token_budget=3)
+    seen = []
+    orig = eng._snapshot_rows
+
+    def spy(rows):
+        seen.append(list(rows))
+        return orig(rows)
+
+    eng._snapshot_rows = spy
+    ids = [eng.submit(p, 5) for p in PROMPTS[:3]]
+    eng.run()
+    assert [eng.poll(r)["token_ids"] for r in ids] == refs
+    assert seen and all(len(rows) < 3 for rows in seen)
+
+
+def test_graph_capture_plan_no_second_full_state_and_guard():
+    tp = _tp()
+    eng = TPEngineCore(tp, tp.ctx, max_slots=4, max_seq_len=64, token_budget=8)
+    rid = eng.submit(PROMPTS[0], 4)
+    eng.step()  # admits + prefills -> one occupied row
+    plan = eng._graph_capture_plan()
+    assert plan["mode"] == "real-state" and plan["scratch_bytes"] == 0
+    assert plan["snapshot_rows"] == [eng._requests[rid].slot]
+    assert plan["transient_bytes"] < eng._state_bytes()  # not a 2nd state
+    scratch_eng = TPEngineCore(tp, tp.ctx, max_slots=4, max_seq_len=64,
+                               token_budget=8, graph_capture_mode="scratch")
+    assert scratch_eng._graph_capture_plan()["scratch_bytes"] == \
+        scratch_eng._state_bytes()
+    # Guard fails closed (capture blocked -> eager) before any OOM.
+    orig = torch.cuda.mem_get_info
+    torch.cuda.mem_get_info = lambda dev=None: (0, 1 << 30)  # noqa: E731
+    try:
+        assert eng._graph_capture_allowed() is False
+    finally:
+        torch.cuda.mem_get_info = orig
+    assert eng.graph_capture_blocked and eng.graph_capture_block_reason
+    assert plan["graph_pool_estimate_bytes"] > 0
+    # Fail closed when the memory oracle itself fails.
+    eng2 = TPEngineCore(tp, tp.ctx, max_slots=2, max_seq_len=64, token_budget=8)
+    orig_info = torch.cuda.mem_get_info
+
+    def _boom(dev=None):
+        raise RuntimeError("no oracle")
+
+    torch.cuda.mem_get_info = _boom  # noqa: E731
+    try:
+        assert eng2._graph_capture_allowed() is False
+    finally:
+        torch.cuda.mem_get_info = orig_info
+    assert eng2.graph_capture_blocked
+    # Capture-time RuntimeError (incl. CUDA OOM) -> eager, not a crash.
+    eng3 = TPEngineCore(tp, tp.ctx, max_slots=2, max_seq_len=64, token_budget=8)
+    eng3._graph_capture_allowed = lambda plan=None: True  # noqa: E731
+
+    def _oom(inp):
+        raise RuntimeError("CUDA out of memory")
+
+    eng3._capture_graph = _oom  # noqa: E731
+    inp = torch.zeros(eng3.max_slots, dtype=torch.long)
+    assert eng3._decode_graphed(inp) is None and eng3.graph_capture_blocked
+    with pytest.raises(ValueError):
+        TPEngineCore(tp, tp.ctx, max_slots=2, max_seq_len=64, token_budget=8,
+                     graph_capture_mode="bogus")
+
+
+def test_real_state_warmup_restores_exactly_and_allocates_no_state():
+    tp = _tp()
+    ref = _b1(tp, PROMPTS[0], 6)
+    eng = TPEngineCore(tp, tp.ctx, max_slots=2, max_seq_len=64, token_budget=16)
+    rid = eng.submit(PROMPTS[0], 6)
+    eng.step()  # prefill -> decoding, one generated token
+    before_pos = eng.state.position.clone()
+    before = {}
+    for name in ("kv_k", "kv_v", "linear_S", "linear_conv_buffers"):
+        before[name] = [t.clone() if t is not None else None
+                        for t in getattr(eng.state, name)]
+    calls = []
+    orig_static = tp.static_state
+    tp.static_state = lambda **kw: (calls.append(kw), orig_static(**kw))[1]
+    try:
+        inp = torch.zeros(eng.max_slots, dtype=torch.long)
+        inp[int(eng._requests[rid].slot)] = eng._requests[rid].generated[-1]
+        eng._warmup_on_real_state(inp)
+    finally:
+        tp.static_state = orig_static
+    assert calls == []  # no scratch / second full state allocated
+    assert torch.equal(eng.state.position, before_pos)
+    for name, saved in before.items():
+        for cur, old in zip(getattr(eng.state, name), saved):
+            if old is not None:
+                assert torch.equal(cur, old), name
+    eng.run()  # generation after warmup+restore is still exact
+    assert eng.poll(rid)["token_ids"] == ref
+
+
 @pytest.mark.skipif(not (ROOT / "scripts/tp_engine_smoke.py").exists(),
                     reason="smoke script missing")
 def test_tp_engine_smoke_gloo_two_process():

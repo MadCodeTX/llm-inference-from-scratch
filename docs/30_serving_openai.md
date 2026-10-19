@@ -102,17 +102,23 @@ Measured in `benchmarks/harness/serving_readiness_round1.json`
 
 | Config | Resident / peak MiB/rank | Result |
 |---|---|---|
-| 8×16384 | 20928 / 24050 | INFEASIBLE — graph-capture OOM, both protocols |
+| 8×16384 | 20928 / 24050 | INFEASIBLE — still HTTP 500 OOM on the fixed tree (`serving_overhead_round1.json`) |
 | 8×8192 (now the default) | 18880 / 23304 | FEASIBLE — c1/c4 short all OK |
-| 16×4096 | 19468 / 24042 | NOT READY — c16 bench 15/16 HTTP 500, cause unresolved |
+| 16×4096 | — / 23132 (fixed tree) | FEASIBLE — c16 16/16 twice, 7453/7451 tok/min (was 1/16, 15× HTTP 500) |
 | 1×65536 | 18292 / 20410 | health/smoke/greedy only — long shape opt-in |
 | 2×32768 | 18454 / 19998 | health/smoke/greedy only — medium shape at c≤2, opt-in |
 
 - **No same-harness suite result exists yet**, so **no win vs vLLM
   Arm A or Arm B is claimed** until a `run_bench.py` run on
   `benchmarks/suite.json` passes the `benchmarks/WIN.md` thresholds
-  and quality gate. Serving TPOT at 8×8192 was ≈113.9 ms (c1) —
-  context only, not comparable to the 21.867 ms local-runner best.
+  and quality gate. Serving TPOT at 8×8192 (short greedy, ABBA in
+  `benchmarks/harness/serving_overhead_round1.json`): 113.89 ms
+  shipped → 63.98 ms after the serving-overhead fixes (driver
+  idle-only poll, eager snapshot only live rows, real-state graph
+  capture with a fail-closed sizing guard; c4 1868.8 → 3036.2
+  tok/min, greedy hashes identical). Still 2.9× the 21.867 ms
+  local-runner best — the remainder is graphed B=8 geometry, not
+  transport. Context only.
 - Compact lockstep (`--tp-sync compact`, opt-in): real-27B ABBA at
   8×8192 showed no measurable benefit (TPOT p50 113.82–113.89 ms,
   tokens/min c4 1868.7–1869.8, both protocols, ~0.1%). It stays
@@ -131,12 +137,14 @@ Measured in `benchmarks/harness/serving_readiness_round1.json`
 - Cancellation of an in-flight engine request discards its output
   but cannot preempt its engine slot until it finishes (bounded by
   `max_tokens`).
-- The sampled arm is implemented (temperature/top_p/top_k/seed) but
-  has no real-27B benchmark yet; sampled steps run eager, so sampled
-  TPOT is not comparable to the graphed greedy TPOT. c16 is not
-  ready (above), and graceful TP shutdown exit was not demonstrated
-  (round-1 recorded `shutdown_rc_torchrun=1`; only port-free +
-  GPU-idle after-state was verified).
+- The sampled arm (temperature/top_p/top_k/seed) is benchmarked at
+  c1 on the fixed tree: TPOT 132.44 → 71.36 ms vs shipped; sampled
+  steps run eager, so sampled TPOT is not comparable to the graphed
+  greedy TPOT. The graph-capture guard fails closed (blocked
+  capture, oracle/agreement failure, or capture OOM all fall back
+  to token-identical eager decode). Graceful TP shutdown exit was
+  not demonstrated (round-1 recorded `shutdown_rc_torchrun=1`;
+  only port-free + GPU-idle after-state was verified).
 
 Local decode context, not a serving claim: best local TPOT is
 21.867 ms (graphed TP2, fused defaults), still above vLLM Arm A
