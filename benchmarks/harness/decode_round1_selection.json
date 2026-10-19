@@ -1,0 +1,111 @@
+{
+  "frontier": [
+    "C1_scale_cache_on"
+  ],
+  "results": [
+    {
+      "artifacts": {},
+      "candidate_name": "C0_base",
+      "delivered": true,
+      "errors": [],
+      "exact": true,
+      "label": "C0_base",
+      "metrics": {
+        "latency_ms": 23.726399837722703,
+        "throughput": 42.147144397781574
+      },
+      "run_dir": "",
+      "trajectory": ""
+    },
+    {
+      "artifacts": {},
+      "candidate_name": "C1_scale_cache_on",
+      "delivered": true,
+      "errors": [],
+      "exact": true,
+      "label": "C1_scale_cache_on",
+      "metrics": {
+        "latency_ms": 22.865673737420188,
+        "throughput": 43.73367745396793
+      },
+      "run_dir": "",
+      "trajectory": ""
+    },
+    {
+      "artifacts": {},
+      "candidate_name": "C2_lm_head_replicated",
+      "delivered": true,
+      "errors": [],
+      "exact": true,
+      "label": "C2_lm_head_replicated",
+      "metrics": {
+        "latency_ms": 24.98655157884763,
+        "throughput": 40.0215290551158
+      },
+      "run_dir": "",
+      "trajectory": ""
+    },
+    {
+      "artifacts": {},
+      "candidate_name": "C3_norm_manual",
+      "delivered": true,
+      "errors": [],
+      "exact": true,
+      "label": "C3_norm_manual",
+      "metrics": {
+        "latency_ms": 24.312150784798206,
+        "throughput": 41.13169619798819
+      },
+      "run_dir": "",
+      "trajectory": ""
+    },
+    {
+      "artifacts": {},
+      "candidate_name": "C4_fp8_config_old",
+      "delivered": true,
+      "errors": [],
+      "exact": true,
+      "label": "C4_fp8_config_old",
+      "metrics": {
+        "latency_ms": 28.183126551730016,
+        "throughput": 35.4822236689923
+      },
+      "run_dir": "",
+      "trajectory": ""
+    },
+    {
+      "artifacts": {},
+      "candidate_name": "C5_delta_ref",
+      "delivered": true,
+      "errors": [],
+      "exact": true,
+      "label": "C5_delta_ref",
+      "metrics": {
+        "latency_ms": 24.52966992953612,
+        "throughput": 40.766957030917986
+      },
+      "run_dir": "",
+      "trajectory": ""
+    }
+  ],
+  "selection": {
+    "chosen_candidate": "C1_scale_cache_on",
+    "chosen_id": "A",
+    "chosen_label": "C1_scale_cache_on",
+    "drop_reasons": {},
+    "dropped": [],
+    "error": "",
+    "frontier_labels": [
+      "C1_scale_cache_on"
+    ],
+    "id_map": {
+      "A": "C1_scale_cache_on",
+      "B": "C0_base",
+      "C": "C2_lm_head_replicated",
+      "D": "C4_fp8_config_old",
+      "E": "C5_delta_ref",
+      "F": "C3_norm_manual"
+    },
+    "ok": true
+  }
+}

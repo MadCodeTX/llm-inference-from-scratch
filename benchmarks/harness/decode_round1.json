@@ -1,0 +1,589 @@
+{
+  "task_id": "decode-tpot",
+  "domain": "llm-inference decode TPOT (TP2 graph runner, local harness)",
+  "git_head": "c263db243f47c69d8fec1e77f1dad50917962aee",
+  "git_head_short": "c263db2 Continuous batching engine core (TPEngineCore) + throughput ladder docs",
+  "command_environment": {
+    "cwd": "/home/nick/muse/llm-inference-from-scratch",
+    "torchrun": ".venv-gpu/bin/torchrun --nproc_per_node=2",
+    "python": ".venv-gpu/bin/python (Python 3.12.3)",
+    "torch": "2.11.0+cu128",
+    "cuda": "12.8",
+    "driver": "580.159.03",
+    "gpus": [
+      "NVIDIA GeForce RTX 4090",
+      "NVIDIA GeForce RTX 4090"
+    ],
+    "snapshot": "/home/nick/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B-FP8/snapshots/017b9c7af6b5689d5dd426a76e0bc077eb5ca20a",
+    "probe": "capital: 'The capital of France is' (5 prompt tokens), --max-new-tokens 32, greedy",
+    "exactness_reference": "runner compares vs_bridge (benchmarks/baseline/ours_pipeline_fastfp8.json) and vs_arm_a (benchmarks/baseline/arm_a_quality_probes.json recorded vLLM probe output_token_ids); both must be exact_match=true (32/32) to be selectable",
+    "flags_source": "scripts/run_qwen38_tp2.py build_parser() / --help; only existing flags used, none invented; no source code edited",
+    "process_wall_note": "Runner JSON carries prefill_s/decode_s/capture_s and load_time_s_by_rank; /usr/bin/time WALL_S was captured for C1-C5 first probes (23.7-25.9s incl. ~17.5s load) in raw logs; repeats did not re-wrap with /usr/bin/time, so per-repeat wall is load+prefill+capture+decode components, not a separate process wall."
+  },
+  "gpu_state_before": {
+    "nvidia_smi_query": "0, NVIDIA GeForce RTX 4090, 1 MiB, 24564 MiB, 0 %; 1, NVIDIA GeForce RTX 4090, 1 MiB, 24564 MiB, 0 %",
+    "compute_apps": "none",
+    "occupied": false,
+    "raw": "/tmp/harness_r1/gpu_before.txt"
+  },
+  "gpu_state_after": {
+    "nvidia_smi_query": "0, NVIDIA GeForce RTX 4090, 1 MiB, 24564 MiB, 0 %; 1, NVIDIA GeForce RTX 4090, 1 MiB, 24564 MiB, 0 %",
+    "compute_apps": "none",
+    "probe_processes_remaining": "none (ps grep torchrun|run_qwen38 empty)",
+    "raw": "/tmp/harness_r1/gpu_after.csv"
+  },
+  "base_candidate": "C0_base",
+  "candidates": [
+    {
+      "candidate_id": "C0_base",
+      "description": "current best: TP2 graph + fused delta + shipped defaults (norm fused, lm-head vocab, scale-cache off, fp8-config new, fp8-path triton, speculative off)",
+      "varied_flag": null,
+      "command": ".venv-gpu/bin/torchrun --nproc_per_node=2 scripts/run_qwen38_tp2.py --decode-mode graph --probe capital --max-new-tokens 32 --out /tmp/harness_r1/c0_base.json",
+      "return_code": 0,
+      "failure_text": null,
+      "probe_runs": {
+        "c0_base": {
+          "tpot_ms": 23.72738993876884,
+          "decode_tok_per_s": 42.14538567371341,
+          "prefill_s": 0.8093968769535422,
+          "decode_s": 0.7355490881018341,
+          "capture_s": 0.0561005137860775,
+          "peak_memory_bytes_rank_local": 16336568832,
+          "peak_memory_bytes_by_rank": {
+            "0": 16336568832,
+            "1": 16336568832
+          },
+          "generated_token_ids": [
+            11751,
+            13,
+            198,
+            760,
+            6511,
+            314,
+            9564,
+            369,
+            19241,
+            13,
+            198,
+            760,
+            6511,
+            314,
+            14898,
+            369,
+            21047,
+            13,
+            198,
+            760,
+            6511,
+            314,
+            17163,
+            369,
+            23327,
+            13,
+            198,
+            760,
+            6511,
+            314,
+            32208,
+            369
+          ],
+          "vs_bridge": {
+            "exact_match": true,
+            "matching_positions": 32,
+            "compared_tokens": 32,
+            "first_divergence": null,
+            "generated_at_divergence": null,
+            "reference_at_divergence": null
+          },
+          "vs_arm_a_recorded_vllm_probe": {
+            "exact_match": true,
+            "matching_positions": 32,
+            "compared_tokens": 32,
+            "first_divergence": null,
+            "generated_at_divergence": null,
+            "reference_at_divergence": null
+          },
+          "logits_finite": true
+        }
+      },
+      "raw_log": "/tmp/harness_r1/c0_base.log",
+      "raw_json": "/tmp/harness_r1/c0_base.json"
+    },
+    {
+      "candidate_id": "C1_scale_cache_on",
+      "description": "single-variable: --scale-cache on (cached FP32 FP8 scales); all else = C0",
+      "varied_flag": "--scale-cache on (base: off)",
+      "command": ".venv-gpu/bin/torchrun --nproc_per_node=2 scripts/run_qwen38_tp2.py --decode-mode graph --probe capital --max-new-tokens 32 --scale-cache on --out /tmp/harness_r1/c1_scalecache_on.json",
+      "return_code": 0,
+      "failure_text": null,
+      "probe_runs": {
+        "c1_scalecache_on": {
+          "tpot_ms": 22.875767516633196,
+          "decode_tok_per_s": 43.71438026168478,
+          "prefill_s": 0.7763607269152999,
+          "decode_s": 0.709148793015629,
+          "capture_s": 0.05603705300018191,
+          "peak_memory_bytes_rank_local": 16339665408,
+          "peak_memory_bytes_by_rank": {
+            "0": 16339665408,
+            "1": 16339665408
+          },
+          "generated_token_ids": [
+            11751,
+            13,
+            198,
+            760,
+            6511,
+            314,
+            9564,
+            369,
+            19241,
+            13,
+            198,
+            760,
+            6511,
+            314,
+            14898,
+            369,
+            21047,
+            13,
+            198,
+            760,
+            6511,
+            314,
+            17163,
+            369,
+            23327,
+            13,
+            198,
+            760,
+            6511,
+            314,
+            32208,
+            369
+          ],
+          "vs_bridge": {
+            "exact_match": true,
+            "matching_positions": 32,
+            "compared_tokens": 32,
+            "first_divergence": null,
+            "generated_at_divergence": null,
+            "reference_at_divergence": null
+          },
+          "vs_arm_a_recorded_vllm_probe": {
+            "exact_match": true,
+            "matching_positions": 32,
+            "compared_tokens": 32,
+            "first_divergence": null,
+            "generated_at_divergence": null,
+            "reference_at_divergence": null
+          },
+          "logits_finite": true
+        }
+      },
+      "raw_log": "/tmp/harness_r1/c1_scalecache_on.log",
+      "raw_json": "/tmp/harness_r1/c1_scalecache_on.json"
+    },
+    {
+      "candidate_id": "C2_lm_head_replicated",
+      "description": "single-variable: --lm-head replicated; all else = C0",
+      "varied_flag": "--lm-head replicated (base: vocab)",
+      "command": ".venv-gpu/bin/torchrun --nproc_per_node=2 scripts/run_qwen38_tp2.py --decode-mode graph --probe capital --max-new-tokens 32 --lm-head replicated --out /tmp/harness_r1/c2_lmhead_replicated.json",
+      "return_code": 0,
+      "failure_text": null,
+      "probe_runs": {
+        "c2_lmhead_replicated": {
+          "tpot_ms": 24.98655157884763,
+          "decode_tok_per_s": 40.0215290551158,
+          "prefill_s": 0.8154502520337701,
+          "decode_s": 0.7745830989442766,
+          "capture_s": 0.05676607880741358,
+          "peak_memory_bytes_rank_local": 17608285184,
+          "peak_memory_bytes_by_rank": {
+            "0": 17608285184,
+            "1": 17608285184
+          },
+          "generated_token_ids": [
+            11751,
+            13,
+            198,
+            760,
+            6511,
+            314,
+            9564,
+            369,
+            19241,
+            13,
+            198,
+            760,
+            6511,
+            314,
+            14898,
+            369,
+            21047,
+            13,
+            198,
+            760,
+            6511,
+            314,
+            17163,
+            369,
+            23327,
+            13,
+            198,
+            760,
+            6511,
+            314,
+            32208,
+            369
+          ],
+          "vs_bridge": {
+            "exact_match": true,
+            "matching_positions": 32,
+            "compared_tokens": 32,
+            "first_divergence": null,
+            "generated_at_divergence": null,
+            "reference_at_divergence": null
+          },
+          "vs_arm_a_recorded_vllm_probe": {
+            "exact_match": true,
+            "matching_positions": 32,
+            "compared_tokens": 32,
+            "first_divergence": null,
+            "generated_at_divergence": null,
+            "reference_at_divergence": null
+          },
+          "logits_finite": true
+        }
+      },
+      "raw_log": "/tmp/harness_r1/c2_lmhead_replicated.log",
+      "raw_json": "/tmp/harness_r1/c2_lmhead_replicated.json"
+    },
+    {
+      "candidate_id": "C3_norm_manual",
+      "description": "single-variable: --norm manual; all else = C0",
+      "varied_flag": "--norm manual (base: fused)",
+      "command": ".venv-gpu/bin/torchrun --nproc_per_node=2 scripts/run_qwen38_tp2.py --decode-mode graph --probe capital --max-new-tokens 32 --norm manual --out /tmp/harness_r1/c3_norm_manual.json",
+      "return_code": 0,
+      "failure_text": null,
+      "probe_runs": {
+        "c3_norm_manual": {
+          "tpot_ms": 24.312150784798206,
+          "decode_tok_per_s": 41.13169619798819,
+          "prefill_s": 0.7743944898247719,
+          "decode_s": 0.7536766743287444,
+          "capture_s": 0.0628527351655066,
+          "peak_memory_bytes_rank_local": 16336568832,
+          "peak_memory_bytes_by_rank": {
+            "0": 16336568832,
+            "1": 16336568832
+          },
+          "generated_token_ids": [
+            11751,
+            13,
+            198,
+            760,
+            6511,
+            314,
+            9564,
+            369,
+            19241,
+            13,
+            198,
+            760,
+            6511,
+            314,
+            14898,
+            369,
+            21047,
+            13,
+            198,
+            760,
+            6511,
+            314,
+            17163,
+            369,
+            23327,
+            13,
+            198,
+            760,
+            6511,
+            314,
+            32208,
+            369
+          ],
+          "vs_bridge": {
+            "exact_match": true,
+            "matching_positions": 32,
+            "compared_tokens": 32,
+            "first_divergence": null,
+            "generated_at_divergence": null,
+            "reference_at_divergence": null
+          },
+          "vs_arm_a_recorded_vllm_probe": {
+            "exact_match": true,
+            "matching_positions": 32,
+            "compared_tokens": 32,
+            "first_divergence": null,
+            "generated_at_divergence": null,
+            "reference_at_divergence": null
+          },
+          "logits_finite": true
+        }
+      },
+      "raw_log": "/tmp/harness_r1/c3_norm_manual.log",
+      "raw_json": "/tmp/harness_r1/c3_norm_manual.json"
+    },
+    {
+      "candidate_id": "C4_fp8_config_old",
+      "description": "single-variable: --fp8-config old (legacy BLOCK_N=128); all else = C0",
+      "varied_flag": "--fp8-config old (base: new)",
+      "command": ".venv-gpu/bin/torchrun --nproc_per_node=2 scripts/run_qwen38_tp2.py --decode-mode graph --probe capital --max-new-tokens 32 --fp8-config old --out /tmp/harness_r1/c4_fp8old.json",
+      "return_code": 0,
+      "failure_text": null,
+      "probe_runs": {
+        "c4_fp8old": {
+          "tpot_ms": 28.183126551730016,
+          "decode_tok_per_s": 35.4822236689923,
+          "prefill_s": 0.8289626408368349,
+          "decode_s": 0.8736769231036305,
+          "capture_s": 0.05524667166173458,
+          "peak_memory_bytes_rank_local": 16336568832,
+          "peak_memory_bytes_by_rank": {
+            "0": 16336568832,
+            "1": 16336568832
+          },
+          "generated_token_ids": [
+            11751,
+            13,
+            198,
+            760,
+            6511,
+            314,
+            9564,
+            369,
+            19241,
+            13,
+            198,
+            760,
+            6511,
+            314,
+            14898,
+            369,
+            21047,
+            13,
+            198,
+            760,
+            6511,
+            314,
+            17163,
+            369,
+            23327,
+            13,
+            198,
+            760,
+            6511,
+            314,
+            32208,
+            369
+          ],
+          "vs_bridge": {
+            "exact_match": true,
+            "matching_positions": 32,
+            "compared_tokens": 32,
+            "first_divergence": null,
+            "generated_at_divergence": null,
+            "reference_at_divergence": null
+          },
+          "vs_arm_a_recorded_vllm_probe": {
+            "exact_match": true,
+            "matching_positions": 32,
+            "compared_tokens": 32,
+            "first_divergence": null,
+            "generated_at_divergence": null,
+            "reference_at_divergence": null
+          },
+          "logits_finite": true
+        }
+      },
+      "raw_log": "/tmp/harness_r1/c4_fp8old.log",
+      "raw_json": "/tmp/harness_r1/c4_fp8old.json"
+    },
+    {
+      "candidate_id": "C5_delta_ref",
+      "description": "single-variable: --delta ref (multi-op gated-delta); all else = C0",
+      "varied_flag": "--delta ref (base: fused)",
+      "command": ".venv-gpu/bin/torchrun --nproc_per_node=2 scripts/run_qwen38_tp2.py --decode-mode graph --probe capital --max-new-tokens 32 --delta ref --out /tmp/harness_r1/c5_delta_ref.json",
+      "return_code": 0,
+      "failure_text": null,
+      "probe_runs": {
+        "c5_delta_ref": {
+          "tpot_ms": 24.52966992953612,
+          "decode_tok_per_s": 40.766957030917986,
+          "prefill_s": 0.7226555407978594,
+          "decode_s": 0.7604197678156197,
+          "capture_s": 0.05824819998815656,
+          "peak_memory_bytes_rank_local": 16337042944,
+          "peak_memory_bytes_by_rank": {
+            "0": 16337042944,
+            "1": 16337042944
+          },
+          "generated_token_ids": [
+            11751,
+            13,
+            198,
+            760,
+            6511,
+            314,
+            9564,
+            369,
+            19241,
+            13,
+            198,
+            760,
+            6511,
+            314,
+            14898,
+            369,
+            21047,
+            13,
+            198,
+            760,
+            6511,
+            314,
+            17163,
+            369,
+            23327,
+            13,
+            198,
+            760,
+            6511,
+            314,
+            32208,
+            369
+          ],
+          "vs_bridge": {
+            "exact_match": true,
+            "matching_positions": 32,
+            "compared_tokens": 32,
+            "first_divergence": null,
+            "generated_at_divergence": null,
+            "reference_at_divergence": null
+          },
+          "vs_arm_a_recorded_vllm_probe": {
+            "exact_match": true,
+            "matching_positions": 32,
+            "compared_tokens": 32,
+            "first_divergence": null,
+            "generated_at_divergence": null,
+            "reference_at_divergence": null
+          },
+          "logits_finite": true
+        }
+      },
+      "raw_log": "/tmp/harness_r1/c5_delta_ref.log",
+      "raw_json": "/tmp/harness_r1/c5_delta_ref.json"
+    }
+  ],
+  "repeats": {
+    "C0_base": {
+      "order_note": "ABBA cycles: C0,C1,C1,C0 then C0,C1,C1,C0 (plus initial probe runs listed first); each entry is a separate torchrun process",
+      "runs": [
+        "c0_base",
+        "r_c0_a",
+        "r_c0_b",
+        "r_c0_c",
+        "r_c0_d"
+      ],
+      "tpot_ms_all": [
+        23.72738993876884,
+        23.72653689235449,
+        23.726399837722703,
+        23.72576560704939,
+        23.67464032384657
+      ],
+      "decode_tok_per_s_all": [
+        42.14538567371341,
+        42.14690093783702,
+        42.147144397781574,
+        42.14827106371145,
+        42.2392900724552
+      ],
+      "tpot_ms_median": 23.726399837722703,
+      "decode_tok_per_s_median": 42.147144397781574,
+      "all_exact_vs_bridge_and_arm_a": true
+    },
+    "C1_scale_cache_on": {
+      "order_note": "ABBA cycles: C0,C1,C1,C0 then C0,C1,C1,C0 (plus initial probe runs listed first); each entry is a separate torchrun process",
+      "runs": [
+        "c1_scalecache_on",
+        "r_c1_a",
+        "r_c1_b",
+        "r_c1_c",
+        "r_c1_d"
+      ],
+      "tpot_ms_all": [
+        22.875767516633196,
+        22.865397675383477,
+        22.865673737420188,
+        22.868847414370506,
+        22.851509507745504
+      ],
+      "decode_tok_per_s_all": [
+        43.71438026168478,
+        43.73420546613034,
+        43.73367745396793,
+        43.72760821219228,
+        43.76078524095096
+      ],
+      "tpot_ms_median": 22.865673737420188,
+      "decode_tok_per_s_median": 43.73367745396793,
+      "all_exact_vs_bridge_and_arm_a": true
+    }
+  },
+  "selected_candidate": "C1_scale_cache_on",
+  "is_new_best": true,
+  "selection_reason": "C1 (--scale-cache on) is token-exact (32/32 vs bridge and vs recorded Arm-A vLLM probe on every run) and fastest by median TPOT in ABBA repeats: median 22.866 ms (43.73 tok/s) vs C0 median 23.726 ms (42.15 tok/s), delta -0.86 ms (-3.6%). All other single-variable variants were exact but slower on first probe (C2 24.99 ms, C3 24.31 ms, C5 24.53 ms, C4 28.18 ms) and were not repeated. Non-exact candidates would have been excluded regardless of speed; none occurred. NOTE: this contradicts the earlier paired in-process micro-opts finding in ours_tp2_microopts_ab.json (scale-cache no consistent winner on eager path); this round measures the graph decode path \u2014 treat as graph-path-specific and worth a confirming multi-probe round before changing the shipped default.",
+  "vllm_win_claim": "NO \u2014 selected median 22.866 ms is above the Arm-A 20.3 ms bar; no vLLM win claimed. Even below 20.3 ms this local-runner result would be labelled local-runner, not a same-harness suite win.",
+  "arm_a_reference_tpot_ms": 20.3,
+  "roofline_floor_ms": 19.17,
+  "comparability_caveats": [
+    "Local TP2 runner (batch=1, capital prompt x32 greedy, graph decode) vs Arm-A vLLM serving harness (greedy short c1, streamed client wall): different harness/shape \u2014 TPOT comparison is indicative only, not a same-harness suite win.",
+    "Single prompt (capital) and single length (32) per task design; no multi-probe or length sweep in this round.",
+    "Scale-cache benefit observed here is on the graph path; prior eager paired ABBA (ours_tp2_microopts_ab.json) found no consistent scale-cache winner \u2014 do not generalize across decode modes without re-measurement.",
+    "Peak memory is runner-reported torch.cuda.max_memory_allocated per rank (~15.2 GiB); C2 replicated lm-head is higher (~16.4 GiB) as expected.",
+    "All runs sequential on otherwise-idle GPUs (1 MiB before/after); no concurrent load, but no clock locking was applied."
+  ],
+  "raw_log_paths": [
+    "/tmp/harness_r1/c0_base.log",
+    "/tmp/harness_r1/c1_scalecache_on.log",
+    "/tmp/harness_r1/c2_lmhead_replicated.log",
+    "/tmp/harness_r1/c3_norm_manual.log",
+    "/tmp/harness_r1/c4_fp8old.log",
+    "/tmp/harness_r1/c5_delta_ref.log",
+    "/tmp/harness_r1/r_c0_a.log",
+    "/tmp/harness_r1/r_c0_b.log",
+    "/tmp/harness_r1/r_c0_c.log",
+    "/tmp/harness_r1/r_c0_d.log",
+    "/tmp/harness_r1/r_c1_a.log",
+    "/tmp/harness_r1/r_c1_b.log",
+    "/tmp/harness_r1/r_c1_c.log",
+    "/tmp/harness_r1/r_c1_d.log"
+  ],
+  "raw_json_paths": [
+    "/tmp/harness_r1/c0_base.json",
+    "/tmp/harness_r1/c1_scalecache_on.json",
+    "/tmp/harness_r1/c2_lmhead_replicated.json",
+    "/tmp/harness_r1/c3_norm_manual.json",
+    "/tmp/harness_r1/c4_fp8old.json",
+    "/tmp/harness_r1/c5_delta_ref.json",
+    "/tmp/harness_r1/r_c0_a.json",
+    "/tmp/harness_r1/r_c0_b.json",
+    "/tmp/harness_r1/r_c0_c.json",
+    "/tmp/harness_r1/r_c0_d.json",
+    "/tmp/harness_r1/r_c1_a.json",
+    "/tmp/harness_r1/r_c1_b.json",
+    "/tmp/harness_r1/r_c1_c.json",
+    "/tmp/harness_r1/r_c1_d.json"
+  ]
+}
