@@ -47,6 +47,19 @@ Returns `(logits, n_reused, stats_delta)`; delta includes
 `snapshots`/`blocks_stored` (snapshot events), `entries`, and
 `snapshot_interval_tokens`.
 
+**Shipped bench defaults (prefill round 2, integrated):**
+`scripts/prefix_ttft_bench.py` now defaults to `--chunk 512
+--snapshot-interval 512` (`prefix-chunk512`); the v2 baseline is
+reproduced with `--chunk 128 --snapshot-interval 256`. ABBAAB
+evidence (`benchmarks/harness/prefill_round2.json`): cold/warm
+−17.5%/−15.8% (512+256), −18.1%/−14.8% (2048+256), −15.0%/−12.4%
+(8192+512 cpu storage), warm `n_reused` == shared and last-token
+argmax identical everywhere; the 128/256 base OOMs at 8192+512 on
+gpu storage (all 3 runs) while 512/512 completes. Tradeoff: a
+non-512-aligned shared prefix may recompute <512 extra tokens vs
+interval 256. The library default `snapshot_interval_tokens=256`
+above is unchanged — only the measured bench surface adopted 512.
+
 ## Byte accounting (real Qwen3.8 config, world=2, `tensor_parallel.state_bytes`)
 
 - Per-16-token-block marginal (KV growth per snapshot step):

@@ -142,7 +142,16 @@ flattened rows 1..1024 (`TRITON_MAX_M=1024`), reference above.
 Chunk 512 is the measured best external chunk (+21-23%); chunk 128
 itself improved 1306 → 1413 tok/s at 2048 from the BLOCK_N=32 tile
 retune alone. The API default stays `chunk_size=128` (callers choose
-512 explicitly) — changing the default is a separate decision.
+512 explicitly).
+
+**Prefill round 2 (2026-10-18, integrated):** ABBAAB on
+`scripts/prefix_ttft_bench.py` + `scripts/prefill_bench_tp2.py`
+(`benchmarks/harness/prefill_round2.json`): chunk512 vs chunk128 pure
+prefill +22.1%/+21.9%/+20.0% tok/s at 512/2048/8192, argmax equal,
+peak +≤0.17 GiB/rank; prefix candidate `--chunk 512
+--snapshot-interval 512` beat the 128/256 baseline on every cold/warm
+cell (see ch. 27). The bench defaults are now 512/512; the library
+API default above is unchanged.
 Remaining gap to Arm A's ~2.9-3.4k tok/s prompt rate: collectives
 (29%) and non-FP8 elementwise work dominate after the GEMM fix;
 batched prefill (docs/28) amortises them across sequences.

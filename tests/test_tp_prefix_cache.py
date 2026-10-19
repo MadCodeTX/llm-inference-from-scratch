@@ -141,6 +141,26 @@ def test_interval_partial_reuse_exact():
         s2 = tp.static_state(batch_size=1, max_seq_len=640); prefill_with_prefix_cache(tp, promptA[:, :300], s2, c2, chunk_size=16)
         assert c2.stored_lengths() == [256]
 
+def test_candidate_chunk_equals_interval_exact_and_reuse():
+    # Scaled prefix-chunk512 shape: chunk_size == snapshot_interval, so
+    # pieces run at the full candidate chunk. Shared prefix must be
+    # reused exactly and logits must be bit-equal to a fresh cache.
+    tp = _tp(); torch.manual_seed(31)
+    shared = torch.randint(0,97,(1,64)); promptA = torch.cat([shared, torch.randint(0,97,(1,16))],1)
+    promptB = torch.cat([shared, torch.randint(0,97,(1,16))],1)
+    with torch.no_grad():
+        cache = TPBlockPrefixCache(block_size=16, snapshot_interval_tokens=32)
+        sA = tp.static_state(batch_size=1, max_seq_len=128)
+        prefill_with_prefix_cache(tp, promptA, sA, cache, chunk_size=32)
+        assert cache.stored_lengths() == [32, 64, 80]
+        sB = tp.static_state(batch_size=1, max_seq_len=128)
+        lB, nB, _ = prefill_with_prefix_cache(tp, promptB, sB, cache, chunk_size=32)
+        assert nB == 64
+        cacheF = TPBlockPrefixCache(block_size=16, snapshot_interval_tokens=32)
+        sF = tp.static_state(batch_size=1, max_seq_len=128)
+        lF, _, _ = prefill_with_prefix_cache(tp, promptB, sF, cacheF, chunk_size=32)
+        assert torch.equal(lB, lF)
+
 @pytest.mark.skipif(not (ROOT/"scripts/tp2_prefix_cache_check.py").exists(), reason="missing")
 def test_tp2_prefix_cache_gloo():
     proc = subprocess.run([sys.executable,"-m","torch.distributed.run","--standalone","--nproc_per_node=2",

@@ -126,3 +126,25 @@
 - **applicability limits**: local TP2 graph runner only; 22.112 ms
   still exceeds Arm A 20.3 ms — no vLLM/suite win claimed. Next lever
   is elementwise fusion (~4.5 ms/token), not GEMV tuning.
+
+## D9 — Fused gated RMSNorm promoted (decode round 5)
+
+- **cue**: round-4 profile elementwise/copy/reduce bucket
+  (~4.5 ms/token, ~3507 kernels/token); the gated norm
+  (`RMSNormGated`, 48 linear layers/token) was its largest unfused
+  norm cluster.
+- **lesson**: fuse the gated norm to one `F.rms_norm` kernel/layer
+  (`--gated-norm fused`, now the runner default; `manual` is the A/B
+  baseline), preserving the intermediate dtype round-trip. Module
+  flag stays off by default for direct callers.
+- **evidence**: `benchmarks/harness/decode_round5.json` (ABBA
+  B,C,C,B,B,C, 3 runs/candidate/shape): aggregate 21.867 vs
+  22.106 ms (-1.08%, 45.73 tok/s), per-shape -1.07% to -1.10%,
+  exact everywhere (x32 32/32 vs bridge + Arm A; x128 128/128 vs
+  base), peak memory identical.
+- **confidence**: high (ABBA 12 runs/candidate, exact, uniform gain;
+  verifier recomputed medians/exactness from raw runs).
+- **applicability limits**: local TP2 graph runner only; fused
+  reduction order makes logits tolerance-equal in general (greedy
+  tokens bit-identical on all measured runs); 21.867 ms still
+  exceeds Arm A 20.3 ms — no vLLM/suite win claimed.

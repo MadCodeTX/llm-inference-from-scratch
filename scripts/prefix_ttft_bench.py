@@ -5,6 +5,22 @@ Shape labelled: 2048 shared + 256 unique = 2304 tokens (scaled down from
 8192+512 agent shape). Cold = fresh cache; warm = cache populated by a
 prompt sharing the 2048 prefix. Median of 3. Ours-vs-ours only; Arm A
 agent TTFT 1.81s at 8704 tokens noted as context, no win claim.
+
+Bench-surface controls: ``--fp8-config`` (shipped ``gemv-bk512``),
+``--chunk`` / ``--snapshot-interval`` (shipped defaults 512/512 since
+prefill round 2; the v2 baseline is ``--chunk 128
+--snapshot-interval 256``), and ``--shared/--unique`` so the
+agent-like 8192+512 shape is expressible directly.
+
+Shipped ``prefix-chunk512``: ``--chunk 512 --snapshot-interval 512``.
+Prefill pieces are snapshot-interval sized, so the effective chunk is
+``min(chunk, snapshot_interval)``; both at 512 keeps stored boundaries
+at 512-token multiples (a 512/2048/8192-token shared prefix is still
+reused exactly) while running the chunk512 prefill family. Tradeoff:
+a non-512-aligned shared prefix may recompute <512 extra tokens vs
+interval 256. The library defaults in ``tp_prefix_cache`` /
+``prefill_chunkwise_static`` stay 256/128; only this bench surface
+adopted 512/512, where it was measured.
 """
 from __future__ import annotations
 import argparse, json, statistics, sys, time
@@ -20,10 +36,36 @@ from inference_from_scratch.tp_prefix_cache import TPBlockPrefixCache, prefill_w
 from run_bench import build_token_ids, load_tokenizer  # noqa: E402
 DEFAULT_SNAPSHOT = "/home/nick/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B-FP8/snapshots/017b9c7af6b5689d5dd426a76e0bc077eb5ca20a"
 
-def _run(model, idx, cache, dev):
+def _positive_int(v):
+    iv = int(v)
+    if iv <= 0: raise argparse.ArgumentTypeError(f"must be positive int, got {v!r}")
+    return iv
+
+def effective_chunk_size(chunk_size: int, snapshot_interval: int) -> int:
+    """Actual prefill chunk: suffix pieces are interval-sized, each
+    piece is then chunked by chunk_size, so neither bound can exceed
+    the other in effect."""
+    return min(int(chunk_size), int(snapshot_interval))
+
+def build_parser():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--snapshot", default=DEFAULT_SNAPSHOT)
+    ap.add_argument("--out", default="benchmarks/baseline/ours_prefix_ttft_v2.json")
+    ap.add_argument("--storage", default="both", choices=["cpu","gpu","both"])
+    ap.add_argument("--snapshot-interval", type=_positive_int, default=512)
+    ap.add_argument("--shared", type=_positive_int, default=2048); ap.add_argument("--unique", type=_positive_int, default=256)
+    ap.add_argument("--chunk", type=_positive_int, default=512,
+                    help="prefill chunk size (default 512, shipped "
+                         "prefix-chunk512; v2 baseline: --chunk 128 "
+                         "--snapshot-interval 256)")
+    ap.add_argument("--fp8-config", choices=["old","new","gemv","gemv-bk512"], default="gemv-bk512",
+                    help="Triton FP8 tile mode (default gemv-bk512, shipped baseline)")
+    return ap
+
+def _run(model, idx, cache, dev, chunk_size=128):
     state = model.static_state(batch_size=1, max_seq_len=int(idx.shape[1])+8)
     torch.cuda.synchronize(dev); t0=time.perf_counter(); wall=time.time()
-    logits, n_reused, delta = prefill_with_prefix_cache(model, idx, state, cache, chunk_size=128)
+    logits, n_reused, delta = prefill_with_prefix_cache(model, idx, state, cache, chunk_size=int(chunk_size))
     torch.cuda.synchronize(dev)
     return {"s": time.perf_counter()-t0, "wall_start": wall, "argmax": int(logits.float().argmax(-1).item()),
             "n_reused": int(n_reused), "delta": {k: v for k, v in delta.items()}, "cache_stats": cache.stats()}
@@ -32,12 +74,13 @@ def _mk(storage, interval):
     return TPBlockPrefixCache(block_size=16, storage=storage, snapshot_interval_tokens=interval)
 
 def main() -> int:
-    ap = argparse.ArgumentParser(); ap.add_argument("--snapshot", default=DEFAULT_SNAPSHOT)
-    ap.add_argument("--out", default="benchmarks/baseline/ours_prefix_ttft_v2.json")
-    ap.add_argument("--storage", default="both", choices=["cpu","gpu","both"])
-    ap.add_argument("--snapshot-interval", type=int, default=256)
-    ap.add_argument("--shared", type=int, default=2048); ap.add_argument("--unique", type=int, default=256)
-    a = ap.parse_args()
+    a = build_parser().parse_args()
+    from inference_from_scratch.fp8_triton import set_config_mode
+    set_config_mode(a.fp8_config)
+    if a.chunk > a.snapshot_interval:
+        print(f"note: --chunk {a.chunk} > --snapshot-interval {a.snapshot_interval}; "
+              f"effective chunk is {effective_chunk_size(a.chunk, a.snapshot_interval)} "
+              f"(pass --snapshot-interval {a.chunk} for the full chunk)", flush=True)
     ctx = DistributedTPContext.from_env(backend="nccl", device_type="cuda"); rank, dev = ctx.rank, ctx.device
     snap = Path(a.snapshot); config = HybridConfig.from_text_config(snap); manifest = build_manifest(snap)
     tok = load_tokenizer(snap)
@@ -53,20 +96,21 @@ def main() -> int:
     storages = ["cpu","gpu"] if a.storage=="both" else [a.storage]
     results = {"shape_label": f"scaled agent: {a.shared} shared + {a.unique} unique = {a.shared+a.unique} tokens",
         "shared_tokens": a.shared, "unique_tokens": a.unique, "total_tokens": a.shared+a.unique,
-        "block_size": 16, "chunk_size": 128, "snapshot_interval_tokens": a.snapshot_interval, "reps": 3,
+        "block_size": 16, "chunk_size": a.chunk, "effective_chunk_size": effective_chunk_size(a.chunk, a.snapshot_interval),
+        "fp8_config": a.fp8_config, "snapshot_interval_tokens": a.snapshot_interval, "reps": 3,
         "context_only": "Arm A agent-shared-prefix TTFT 1.81s at 8704 tokens (different shape; no win claim)",
         "prior_outlier_note": "v1 warm rep 1339.99s has no per-rep timestamps/GPU log; cannot attribute vs exclude external contention from available data",
         "configs": {}}
     with torch.inference_mode():
-        _run(model, promptA[:, :128], _mk("cpu", a.snapshot_interval), dev)  # warmup
+        _run(model, promptA[:, :128], _mk("cpu", a.snapshot_interval), dev, chunk_size=a.chunk)  # warmup
         for storage in storages:
             cold, warm = [], []
             for _ in range(3):
-                cold.append(_run(model, promptB, _mk(storage, a.snapshot_interval), dev))
+                cold.append(_run(model, promptB, _mk(storage, a.snapshot_interval), dev, chunk_size=a.chunk))
             for _ in range(3):
                 cache = _mk(storage, a.snapshot_interval)
-                _run(model, promptA, cache, dev)  # populate (untimed)
-                warm.append(_run(model, promptB, cache, dev))
+                _run(model, promptA, cache, dev, chunk_size=a.chunk)  # populate (untimed)
+                warm.append(_run(model, promptB, cache, dev, chunk_size=a.chunk))
             cs=[r["s"] for r in cold]; ws=[r["s"] for r in warm]
             results["configs"][storage] = {
                 "storage": storage, "cold_ttft_s_median": statistics.median(cs), "cold_ttft_s": cs, "cold_reps": cold,

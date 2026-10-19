@@ -60,6 +60,7 @@ MEMORY_GUARD_GIB = 23.0
 
 
 NORM_MODES = ("fused", "manual")
+GATED_NORM_MODES = ("manual", "fused")
 LM_HEAD_MODES = ("replicated", "vocab")
 SCALE_CACHE_MODES = ("off", "on")
 DECODE_MODES = ("eager", "graph")
@@ -156,6 +157,25 @@ def apply_delta_mode(model, mode: str) -> int:
     for mod in model.modules():
         if isinstance(mod, DistributedGatedDeltaNet):
             mod.use_fused_delta = mode == "fused"
+            n += 1
+    return n
+
+
+def apply_gated_norm_mode(model, mode: str) -> int:
+    """Set the RMSNormGated implementation on every gated-delta norm.
+
+    ``fused`` (shipped default, decode round 5) uses the single
+    ``F.rms_norm`` kernel, preserving the intermediate dtype
+    round-trip; ``manual`` keeps the multi-op pow/mean/rsqrt chain
+    as the A/B baseline. Returns the number of norms switched.
+    """
+    if mode not in GATED_NORM_MODES:
+        raise ValueError(f"unknown gated-norm mode {mode!r}, expected {GATED_NORM_MODES}")
+    from inference_from_scratch.linear_attention import RMSNormGated
+    n = 0
+    for mod in model.modules():
+        if isinstance(mod, RMSNormGated):
+            mod.use_fused_rmsnorm = mode == "fused"
             n += 1
     return n
 
@@ -400,6 +420,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "greedy speculation on the eager static path) or "
                          "mtp1-graph (chunk+draft CUDA-graph speculation) or mtp1-graph2 "
                          "(one merged graph/cycle, 1 sync/cycle); loads mtp.*")
+    ap.add_argument("--gated-norm", choices=list(GATED_NORM_MODES), default="fused",
+                    help="RMSNormGated (gated-delta output norm): fused "
+                         "(default, round 5; one F.rms_norm kernel/layer, "
+                         "same intermediate dtype round-trip) or manual "
+                         "(A/B baseline; multi-op pow/mean/rsqrt chain)")
     ap.add_argument("--delta", choices=list(DELTA_MODES), default="fused",
                     help="gated-delta recurrence: fused (default; one Triton "
                          "kernel/layer, measured 24.48 -> 23.67 ms TPOT exact "
@@ -464,10 +489,11 @@ def main() -> int:
     torch.cuda.synchronize(dev)
     load_s = time.perf_counter() - t0
     n_norms = apply_norm_mode(model, args.norm)
+    n_gated = apply_gated_norm_mode(model, args.gated_norm)
     n_delta = apply_delta_mode(model, args.delta)
     n_scale = apply_scale_cache_mode(model, args.scale_cache) if args.scale_cache != "on" else report.get("scale_cache_modules", 0)
     if rank == 0:
-        print(f"norm_mode={args.norm} norms_switched={n_norms} delta={args.delta} delta_switched={n_delta} lm_head={args.lm_head} "
+        print(f"norm_mode={args.norm} norms_switched={n_norms} gated_norm={args.gated_norm} gated_switched={n_gated} delta={args.delta} delta_switched={n_delta} lm_head={args.lm_head} "
               f"scale_cache={args.scale_cache} scale_modules={n_scale}", flush=True)
     resident_gib = report["resident_bytes"] / (1024 ** 3)
     print(f"[rank {rank}] load {load_s:.1f}s loaded={report['loaded_count']} "
@@ -548,6 +574,7 @@ def main() -> int:
             "parallelism": "tensor_parallel_tp2",
             "fp8_path": args.fp8_path,
             "norm_mode": args.norm,
+            "gated_norm_mode": args.gated_norm,
             "lm_head_mode": args.lm_head,
             "scale_cache": args.scale_cache,
             "decode_mode": args.decode_mode,

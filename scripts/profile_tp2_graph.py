@@ -69,6 +69,8 @@ def main() -> int:
     ap.add_argument("--tokens", type=int, default=32, help="generated tokens (capital)")
     ap.add_argument("--profile-replays", type=int, default=16)
     ap.add_argument("--delta", choices=list(runner.DELTA_MODES), default="fused")
+    ap.add_argument("--gated-norm", choices=list(runner.GATED_NORM_MODES),
+                    default="fused")
     ap.add_argument("--fp8-config", choices=list(runner.FP8_CONFIG_MODES),
                     default="gemv-bk512")
     ap.add_argument("--scale-cache", choices=list(runner.SCALE_CACHE_MODES),
@@ -103,8 +105,10 @@ def main() -> int:
         lm_head_mode="vocab", use_scale_cache=(args.scale_cache == "on"))
     torch.cuda.synchronize(dev)
     runner.apply_norm_mode(model, "fused")
+    n_gated = runner.apply_gated_norm_mode(model, args.gated_norm)
     n_delta = runner.apply_delta_mode(model, args.delta)
     print(f"[rank {rank}] loaded delta={args.delta} layers={n_delta} "
+          f"gated_norm={args.gated_norm} gated_switched={n_gated} "
           f"fp8_config={args.fp8_config} scale_cache={args.scale_cache}",
           flush=True)
 
@@ -187,6 +191,7 @@ def main() -> int:
             "script": "scripts/profile_tp2_graph.py",
             "snapshot": str(snapshot), "world": ctx.world_size,
             "probe": "capital", "tokens": args.tokens, "delta_mode": args.delta,
+            "gated_norm_mode": args.gated_norm,
             "fp8_config": args.fp8_config, "scale_cache": args.scale_cache,
             "norm_mode": "fused", "lm_head_mode": "vocab",
             "profile_replays": args.profile_replays,

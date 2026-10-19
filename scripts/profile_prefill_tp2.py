@@ -20,6 +20,24 @@ from run_bench import build_token_ids, load_tokenizer  # noqa: E402
 DEFAULT_SNAPSHOT = ("/home/nick/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B-FP8"
                     "/snapshots/017b9c7af6b5689d5dd426a76e0bc077eb5ca20a")
 
+_NON_KERNEL_EVENTS = ("Command Buffer Full",)
+
+def is_device_kernel(key: str) -> bool:
+    """True for real device work; False for host/runtime profiler events.
+
+    At chunk>=512 torch.profiler reports ``cudaLaunchKernel`` and
+    ``Command Buffer Full`` with large device_time_total values; counting
+    them inflates total CUDA past wall time (observed chunk1024: 8.13s
+    counted vs 1.57s wall). Memcpy and NCCL device kernels are real work.
+    """
+    if key in _NON_KERNEL_EVENTS:
+        return False
+    if key.startswith(("cudaLaunchKernel", "cudaMemcpy", "cudaMemset", "cudaStream")):
+        # cudaMemcpy*/cudaMemset* here are runtime API events; device-side
+        # copies appear as 'Memcpy DtoD/HtoD' kernel names, kept above.
+        return False
+    return True
+
 def _cat(name: str) -> str:
     n = name.lower()
     if "fp8_dequant" in n or "_fp8_" in n: return "triton_fp8"
@@ -71,6 +89,7 @@ def main() -> int:
             # Leaf CUDA kernels only: wrapper ops (aten::/c10d::/nccl:/
             # record_*) nest the same device time and would double-count.
             if evt.key.startswith(("aten::", "c10d::", "nccl:", "record_")): continue
+            if not is_device_kernel(evt.key): continue
             ct = float(getattr(evt, "device_time_total", 0) or getattr(evt, "cuda_time_total", 0) or 0)
             if ct <= 0: continue
             total_cuda += ct

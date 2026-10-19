@@ -3,8 +3,8 @@ id: prefill-ttft
 domain: prefill
 status: open
 current_best:
-  result: "chunk512 1731.6 tok/s @2048 (chunk128 1412.8, chunk1024 1596.0); @8192 chunk512 1631.3 tok/s"
-  artifact: benchmarks/baseline/ours_tp2_prefill_v2.json
+  result: "prefix-chunk512 bench defaults (round 2): pure-prefill 1745.0/1731.8/1631.8 tok/s @512/2048/8192; prefix 2048+256 cold 1.3460s / warm 0.1562s (gpu storage)"
+  artifact: benchmarks/harness/prefill_round2.json
   exactness: "last-argmax equal across chunk sizes (argmax_equal true)"
 arm_a:
   result: "effective prompt rate ~2.9-3.4k tok/s (from TTFT); short c1 TTFT p50 0.79 s @2048"
@@ -36,5 +36,13 @@ warning: dispatch path matters more than chunk size alone. Prefill round 1
 (`benchmarks/harness/prefill_round1.json`) rejected the `prefill-s2`
 (`num_stages=2`) candidate — slower at every shape/chunk (-1.3% to -7.5%,
 argmax equal) — and its code was removed; the shipped prefill family
-(`num_stages=3`, chunk512 best) is unchanged. No TTFT/serving win is
-claimed from the local prefill runner.
+(`num_stages=3`, chunk512 best) is unchanged. Prefill round 2
+(`benchmarks/harness/prefill_round2.json`, ABBAAB) promoted
+`prefix-chunk512` on the bench surface: `scripts/prefix_ttft_bench.py`
+defaults are now `--chunk 512 --snapshot-interval 512` (pure-prefill
++20–22% tok/s; prefix cold/warm −12–18%; argmax + reuse exact; base
+OOMs at 8192+512 gpu storage, candidate completes). Library defaults
+(`prefill_chunkwise_static` chunk 128, `TPBlockPrefixCache` interval
+256) are unchanged. Tradeoff: non-512-aligned shared prefixes may
+recompute <512 extra tokens. No TTFT/serving win is claimed from the
+local prefill runner.

@@ -1,0 +1,1062 @@
+{
+  "task": "prefill_round2: prefix-chunk512 candidate (--chunk 512 --snapshot-interval 512) vs shipped prefill defaults",
+  "git_head": "f73525a9da79fdfe419435353c23eed8946b8da4",
+  "baseline_preserved": "HEAD f73525a shipped baseline: graph decode, graph-scoped scale-cache on, --fp8-config gemv-bk512 default, exact local TPOT 22.112 ms (decode not re-measured; no default changed; no commit).",
+  "dirty_files_at_bench": [
+    "M scripts/prefix_ttft_bench.py",
+    " M scripts/profile_prefill_tp2.py",
+    " M scripts/profile_tp2_graph.py",
+    " M scripts/run_qwen38_tp2.py",
+    " M src/inference_from_scratch/linear_attention.py",
+    " M tests/test_tp_prefix_cache.py",
+    "?? benchmarks/harness/decode_round5.json",
+    "?? benchmarks/harness/decode_round5_summary.md",
+    "?? benchmarks/harness/prefill_round2_summary.md",
+    "?? tests/test_prefix_ttft_bench.py",
+    "?? tests/test_profile_prefill_tp2.py",
+    "?? tests/test_rmsnorm_gated_fused.py"
+  ],
+  "command_templates": {
+    "prefill_A_shipped_chunk128": ".venv-gpu/bin/torchrun --nproc_per_node=2 scripts/prefill_bench_tp2.py --lengths 512,2048,8192 --chunks 128 --no-static --out /tmp/pr2_pfb_A_r<N>.json",
+    "prefill_B_chunk512": ".venv-gpu/bin/torchrun --nproc_per_node=2 scripts/prefill_bench_tp2.py --lengths 512,2048,8192 --chunks 512 --no-static --out /tmp/pr2_pfb_B_r<N>.json",
+    "prefix_A_shipped_defaults": ".venv-gpu/bin/torchrun --nproc_per_node=2 scripts/prefix_ttft_bench.py --storage gpu --shared <S> --unique <U> --out /tmp/pr2_pre_<shape>_A_r<N>.json  (no chunk/interval/fp8 flags: defaults chunk128 interval256 gemv-bk512)",
+    "prefix_B_candidate_prefix-chunk512": ".venv-gpu/bin/torchrun --nproc_per_node=2 scripts/prefix_ttft_bench.py --storage gpu --shared <S> --unique <U> --chunk 512 --snapshot-interval 512 --out /tmp/pr2_pre_<shape>_B_r<N>.json"
+  },
+  "order": "ABBAAB per bench/shape: A,B,B,A,A,B (3 process runs per arm; prefix bench each run internally median-of-3 cold and median-of-3 warm). 30 torchrun processes total: 27 rc=0, 3 base GPU-storage agent runs rc=1 OOM (retained, not discarded); no other runs discarded.",
+  "gpu_before": "both RTX 4090 1 MiB used, 0%, no compute processes (nvidia-smi before first run; driver re-checked <500 MiB before every run)",
+  "gpu_after": "both RTX 4090 1 MiB used, 0%, no compute processes (nvidia-smi after final run); driver re-checked <500 MiB before every run",
+  "definitions": "prefill_s / TTFT proxy = model-only B=1 prefill seconds (no server, queue, sampling). Prefix warm = second prompt sharing the shared prefix; n_reused from bench JSON. Peak mem: prefill bench peak_mem_gib_rank (torch allocator, per rank) plus driver nvidia-smi device peak per run. No generated tokens in either bench (prefill-only): exactness = last-token argmax equality; no decode-token exactness claimed.",
+  "candidate": "prefix-chunk512 (opt-in): --chunk 512 --snapshot-interval 512 on scripts/prefix_ttft_bench.py; effective_chunk_size=512. Supporting pure-prefill arm B is chunk512 without snapshot coupling on scripts/prefill_bench_tp2.py.",
+  "prefill_medians": {
+    "A|len512": {
+      "arm": "A",
+      "config": "shipped chunk128",
+      "prompt_tokens": 512,
+      "chunk_size": 128,
+      "n_runs": 3,
+      "prefill_s_median": 0.3583760103210807,
+      "prefill_s_all": [
+        0.35968767665326595,
+        0.3571759257465601,
+        0.3583760103210807
+      ],
+      "tok_per_s_median": 1428.667057098165,
+      "tok_per_s_all": [
+        1423.4571636257672,
+        1433.467272268786,
+        1428.667057098165
+      ],
+      "ttft_proxy_s_median": 0.3583760103210807,
+      "peak_mem_gib_rank_max": 15.188405990600586,
+      "last_argmax_values": [
+        30876
+      ]
+    },
+    "A|len2048": {
+      "arm": "A",
+      "config": "shipped chunk128",
+      "prompt_tokens": 2048,
+      "chunk_size": 128,
+      "n_runs": 3,
+      "prefill_s_median": 1.440969716757536,
+      "prefill_s_all": [
+        1.4421052350662649,
+        1.4406815459951758,
+        1.440969716757536
+      ],
+      "tok_per_s_median": 1421.2651218017274,
+      "tok_per_s_all": [
+        1420.1460130653325,
+        1421.549408814915,
+        1421.2651218017274
+      ],
+      "ttft_proxy_s_median": 1.440969716757536,
+      "peak_mem_gib_rank_max": 15.243696212768555,
+      "last_argmax_values": [
+        2336
+      ]
+    },
+    "A|len8192": {
+      "arm": "A",
+      "config": "shipped chunk128",
+      "prompt_tokens": 8192,
+      "chunk_size": 128,
+      "n_runs": 3,
+      "prefill_s_median": 6.023645739071071,
+      "prefill_s_all": [
+        6.030234859324992,
+        6.01799805695191,
+        6.023645739071071
+      ],
+      "tok_per_s_median": 1359.9737359825745,
+      "tok_per_s_all": [
+        1358.4877191527812,
+        1361.250024090106,
+        1359.9737359825745
+      ],
+      "ttft_proxy_s_median": 6.023645739071071,
+      "peak_mem_gib_rank_max": 15.58483600616455,
+      "last_argmax_values": [
+        310
+      ]
+    },
+    "B|len512": {
+      "arm": "B",
+      "config": "chunk512",
+      "prompt_tokens": 512,
+      "chunk_size": 512,
+      "n_runs": 3,
+      "prefill_s_median": 0.2934014177881181,
+      "prefill_s_all": [
+        0.29342475486919284,
+        0.2934014177881181,
+        0.2931403941474855
+      ],
+      "tok_per_s_median": 1745.0495088259743,
+      "tok_per_s_all": [
+        1744.9107190299837,
+        1745.0495088259743,
+        1746.603368972757
+      ],
+      "ttft_proxy_s_median": 0.2934014177881181,
+      "peak_mem_gib_rank_max": 15.356470108032227,
+      "last_argmax_values": [
+        30876
+      ]
+    },
+    "B|len2048": {
+      "arm": "B",
+      "config": "chunk512",
+      "prompt_tokens": 2048,
+      "chunk_size": 512,
+      "n_runs": 3,
+      "prefill_s_median": 1.1825575837865472,
+      "prefill_s_all": [
+        1.1829959130845964,
+        1.1825575837865472,
+        1.1819688300602138
+      ],
+      "tok_per_s_median": 1731.8395552817883,
+      "tok_per_s_all": [
+        1731.1978658150672,
+        1731.8395552817883,
+        1732.7022066188222
+      ],
+      "ttft_proxy_s_median": 1.1825575837865472,
+      "peak_mem_gib_rank_max": 15.411323547363281,
+      "last_argmax_values": [
+        2336
+      ]
+    },
+    "B|len8192": {
+      "arm": "B",
+      "config": "chunk512",
+      "prompt_tokens": 8192,
+      "chunk_size": 512,
+      "n_runs": 3,
+      "prefill_s_median": 5.020346502773464,
+      "prefill_s_all": [
+        5.020346502773464,
+        5.022565401159227,
+        5.017055803909898
+      ],
+      "tok_per_s_median": 1631.759878620803,
+      "tok_per_s_all": [
+        1631.759878620803,
+        1631.0389901760673,
+        1632.8301538156704
+      ],
+      "ttft_proxy_s_median": 5.020346502773464,
+      "peak_mem_gib_rank_max": 15.74947738647461,
+      "last_argmax_values": [
+        310
+      ]
+    }
+  },
+  "prefill_comparisons": [
+    {
+      "prompt_tokens": 512,
+      "tok_per_s_pct_B_vs_A": 22.145289215979336,
+      "prefill_s_pct_B_vs_A": -18.130285136761724,
+      "argmax_values": [
+        30876
+      ]
+    },
+    {
+      "prompt_tokens": 2048,
+      "tok_per_s_pct_B_vs_A": 21.851970383002705,
+      "prefill_s_pct_B_vs_A": -17.933210529397293,
+      "argmax_values": [
+        2336
+      ]
+    },
+    {
+      "prompt_tokens": 8192,
+      "tok_per_s_pct_B_vs_A": 19.984661133316983,
+      "prefill_s_pct_B_vs_A": -16.656013314161633,
+      "argmax_values": [
+        310
+      ]
+    }
+  ],
+  "prefill_argmax_by_length": {
+    "512": [
+      30876
+    ],
+    "2048": [
+      2336
+    ],
+    "8192": [
+      310
+    ]
+  },
+  "prefix_medians": {
+    "s512|A": {
+      "shape": "s512",
+      "arm": "A",
+      "config": "shipped defaults chunk128/interval256",
+      "shared_tokens": 512,
+      "unique_tokens": 256,
+      "total_tokens": 768,
+      "n_runs": 3,
+      "cold_ttft_proxy_s_median": 0.5416218750178814,
+      "cold_ttft_proxy_s_run_medians": [
+        0.5416218750178814,
+        0.5416578096337616,
+        0.5414565899409354
+      ],
+      "warm_ttft_proxy_s_median": 0.18212781893089414,
+      "warm_ttft_proxy_s_run_medians": [
+        0.18207508185878396,
+        0.18212781893089414,
+        0.18225826602429152
+      ],
+      "cold_tok_per_s_median": 1417.9634084658137,
+      "warm_n_reused_values": [
+        512,
+        512,
+        512
+      ],
+      "warm_n_reused_expected": 512,
+      "last_argmax_cold_values": [
+        12356
+      ],
+      "last_argmax_warm_values": [
+        12356
+      ]
+    },
+    "s512|B": {
+      "shape": "s512",
+      "arm": "B",
+      "config": "candidate prefix-chunk512 chunk512/interval512",
+      "shared_tokens": 512,
+      "unique_tokens": 256,
+      "total_tokens": 768,
+      "n_runs": 3,
+      "cold_ttft_proxy_s_median": 0.44690211908891797,
+      "cold_ttft_proxy_s_run_medians": [
+        0.44690211908891797,
+        0.4470644579268992,
+        0.4461666541174054
+      ],
+      "warm_ttft_proxy_s_median": 0.1534128482453525,
+      "warm_ttft_proxy_s_run_medians": [
+        0.1535768248140812,
+        0.1534128482453525,
+        0.1530618229880929
+      ],
+      "cold_tok_per_s_median": 1718.497109760168,
+      "warm_n_reused_values": [
+        512,
+        512,
+        512
+      ],
+      "warm_n_reused_expected": 512,
+      "last_argmax_cold_values": [
+        12356
+      ],
+      "last_argmax_warm_values": [
+        12356
+      ]
+    },
+    "s2048|A": {
+      "shape": "s2048",
+      "arm": "A",
+      "config": "shipped defaults chunk128/interval256",
+      "shared_tokens": 2048,
+      "unique_tokens": 256,
+      "total_tokens": 2304,
+      "n_runs": 3,
+      "cold_ttft_proxy_s_median": 1.6436842791736126,
+      "cold_ttft_proxy_s_run_medians": [
+        1.6436842791736126,
+        1.641873441170901,
+        1.6438545538112521
+      ],
+      "warm_ttft_proxy_s_median": 0.18344568321481347,
+      "warm_ttft_proxy_s_run_medians": [
+        0.18461252003908157,
+        0.1832089559175074,
+        0.18344568321481347
+      ],
+      "cold_tok_per_s_median": 1401.7290480860297,
+      "warm_n_reused_values": [
+        2048,
+        2048,
+        2048
+      ],
+      "warm_n_reused_expected": 2048,
+      "last_argmax_cold_values": [
+        12356
+      ],
+      "last_argmax_warm_values": [
+        12356
+      ]
+    },
+    "s2048|B": {
+      "shape": "s2048",
+      "arm": "B",
+      "config": "candidate prefix-chunk512 chunk512/interval512",
+      "shared_tokens": 2048,
+      "unique_tokens": 256,
+      "total_tokens": 2304,
+      "n_runs": 3,
+      "cold_ttft_proxy_s_median": 1.3460161411203444,
+      "cold_ttft_proxy_s_run_medians": [
+        1.345518209040165,
+        1.3460161411203444,
+        1.347749704029411
+      ],
+      "warm_ttft_proxy_s_median": 0.15621290169656277,
+      "warm_ttft_proxy_s_run_medians": [
+        0.1562173068523407,
+        0.15554160624742508,
+        0.15621290169656277
+      ],
+      "cold_tok_per_s_median": 1711.7179576184624,
+      "warm_n_reused_values": [
+        2048,
+        2048,
+        2048
+      ],
+      "warm_n_reused_expected": 2048,
+      "last_argmax_cold_values": [
+        12356
+      ],
+      "last_argmax_warm_values": [
+        12356
+      ]
+    },
+    "agentcpu|A": {
+      "arm": "A",
+      "storage": "cpu",
+      "n_runs": 3,
+      "cold_ttft_proxy_s_median": 7.511340457946062,
+      "cold_ttft_proxy_s_run_medians": [
+        7.505445298738778,
+        7.511340457946062,
+        7.5185088980942965
+      ],
+      "warm_ttft_proxy_s_median": 0.5344063998199999,
+      "warm_ttft_proxy_s_run_medians": [
+        0.5348771018907428,
+        0.5321912239305675,
+        0.5344063998199999
+      ],
+      "warm_n_reused_values": [
+        8192,
+        8192,
+        8192
+      ],
+      "last_argmax_cold_values": [
+        43221
+      ],
+      "last_argmax_warm_values": [
+        43221
+      ],
+      "shape": "agent",
+      "shared_tokens": 8192,
+      "unique_tokens": 512,
+      "total_tokens": 8704,
+      "config": "shipped defaults chunk128/interval256, cpu storage"
+    },
+    "agentcpu|B": {
+      "arm": "B",
+      "storage": "cpu",
+      "n_runs": 3,
+      "cold_ttft_proxy_s_median": 6.38648382993415,
+      "cold_ttft_proxy_s_run_medians": [
+        6.415284201968461,
+        6.38648382993415,
+        6.277032623067498
+      ],
+      "warm_ttft_proxy_s_median": 0.46801908081397414,
+      "warm_ttft_proxy_s_run_medians": [
+        0.46769977966323495,
+        0.4682842600159347,
+        0.46801908081397414
+      ],
+      "warm_n_reused_values": [
+        8192,
+        8192,
+        8192
+      ],
+      "last_argmax_cold_values": [
+        43221
+      ],
+      "last_argmax_warm_values": [
+        43221
+      ],
+      "shape": "agent",
+      "shared_tokens": 8192,
+      "unique_tokens": 512,
+      "total_tokens": 8704,
+      "config": "candidate prefix-chunk512 chunk512/interval512, cpu storage"
+    }
+  },
+  "prefix_comparisons": [
+    {
+      "shape": "s512",
+      "total_tokens": 768,
+      "cold_pct_B_vs_A": -17.488170308083717,
+      "warm_pct_B_vs_A": -15.766383660717487,
+      "argmax_match": true,
+      "reused_match": true
+    },
+    {
+      "shape": "s2048",
+      "total_tokens": 2304,
+      "cold_pct_B_vs_A": -18.109812317662698,
+      "warm_pct_B_vs_A": -14.84514709804391,
+      "argmax_match": true,
+      "reused_match": true
+    },
+    {
+      "shape": "agentcpu",
+      "total_tokens": 8704,
+      "cold_pct_B_vs_A": -14.975444586884013,
+      "warm_pct_B_vs_A": -12.42262799030598,
+      "argmax_match": true,
+      "reused_match": true
+    }
+  ],
+  "agent_shape": {
+    "shared_tokens": 8192,
+    "unique_tokens": 512,
+    "total_tokens": 8704,
+    "gpu_storage_base": {
+      "status": "OOM all 3 runs (rc=1, torch.OutOfMemoryError both ranks, peak 24056 MiB); no JSON written",
+      "logs": [
+        "/tmp/pr2_pre_agent_A_r1.log",
+        "/tmp/pr2_pre_agent_A_r2.log",
+        "/tmp/pr2_pre_agent_A_r3.log"
+      ]
+    },
+    "gpu_storage_candidate_B": {
+      "arm": "B",
+      "storage": "gpu",
+      "n_runs": 3,
+      "cold_ttft_proxy_s_median": 5.392653273884207,
+      "cold_ttft_proxy_s_run_medians": [
+        5.3874348709359765,
+        5.393196238204837,
+        5.392653273884207
+      ],
+      "warm_ttft_proxy_s_median": 0.3237285618670285,
+      "warm_ttft_proxy_s_run_medians": [
+        0.32359316013753414,
+        0.32395661482587457,
+        0.3237285618670285
+      ],
+      "warm_n_reused_values": [
+        8192,
+        8192,
+        8192
+      ],
+      "last_argmax_cold_values": [
+        43221
+      ],
+      "last_argmax_warm_values": [
+        43221
+      ]
+    },
+    "cpu_storage_A": {
+      "arm": "A",
+      "storage": "cpu",
+      "n_runs": 3,
+      "cold_ttft_proxy_s_median": 7.511340457946062,
+      "cold_ttft_proxy_s_run_medians": [
+        7.505445298738778,
+        7.511340457946062,
+        7.5185088980942965
+      ],
+      "warm_ttft_proxy_s_median": 0.5344063998199999,
+      "warm_ttft_proxy_s_run_medians": [
+        0.5348771018907428,
+        0.5321912239305675,
+        0.5344063998199999
+      ],
+      "warm_n_reused_values": [
+        8192,
+        8192,
+        8192
+      ],
+      "last_argmax_cold_values": [
+        43221
+      ],
+      "last_argmax_warm_values": [
+        43221
+      ]
+    },
+    "cpu_storage_B": {
+      "arm": "B",
+      "storage": "cpu",
+      "n_runs": 3,
+      "cold_ttft_proxy_s_median": 6.38648382993415,
+      "cold_ttft_proxy_s_run_medians": [
+        6.415284201968461,
+        6.38648382993415,
+        6.277032623067498
+      ],
+      "warm_ttft_proxy_s_median": 0.46801908081397414,
+      "warm_ttft_proxy_s_run_medians": [
+        0.46769977966323495,
+        0.4682842600159347,
+        0.46801908081397414
+      ],
+      "warm_n_reused_values": [
+        8192,
+        8192,
+        8192
+      ],
+      "last_argmax_cold_values": [
+        43221
+      ],
+      "last_argmax_warm_values": [
+        43221
+      ]
+    }
+  },
+  "exactness": {
+    "all_argmax_equal_and_reuse_exact": true,
+    "note": "Any argmax or n_reused mismatch rejects the candidate outright."
+  },
+  "aggregate": {
+    "median_cold_pct_B_vs_A": -17.488170308083717,
+    "median_warm_pct_B_vs_A": -14.84514709804391,
+    "prefix_regressions_over_1pct": [],
+    "prefill_regressions_over_1pct": []
+  },
+  "recommend_default_change": true,
+  "runs": [
+    {
+      "tag": "pfb_A_r1",
+      "bench": "prefill_bench_tp2",
+      "arm": "A",
+      "run_index": 1,
+      "out": "/tmp/pr2_pfb_A_r1.json",
+      "log": "/tmp/pr2_pfb_A_r1.log",
+      "rc": 0,
+      "chunk_size": 128,
+      "peak_device_mib_nvidia_smi": 16816
+    },
+    {
+      "tag": "pfb_A_r2",
+      "bench": "prefill_bench_tp2",
+      "arm": "A",
+      "run_index": 2,
+      "out": "/tmp/pr2_pfb_A_r2.json",
+      "log": "/tmp/pr2_pfb_A_r2.log",
+      "rc": 0,
+      "chunk_size": 128,
+      "peak_device_mib_nvidia_smi": 16816
+    },
+    {
+      "tag": "pfb_A_r3",
+      "bench": "prefill_bench_tp2",
+      "arm": "A",
+      "run_index": 3,
+      "out": "/tmp/pr2_pfb_A_r3.json",
+      "log": "/tmp/pr2_pfb_A_r3.log",
+      "rc": 0,
+      "chunk_size": 128,
+      "peak_device_mib_nvidia_smi": 16816
+    },
+    {
+      "tag": "pfb_B_r1",
+      "bench": "prefill_bench_tp2",
+      "arm": "B",
+      "run_index": 1,
+      "out": "/tmp/pr2_pfb_B_r1.json",
+      "log": "/tmp/pr2_pfb_B_r1.log",
+      "rc": 0,
+      "chunk_size": 512,
+      "peak_device_mib_nvidia_smi": 17172
+    },
+    {
+      "tag": "pfb_B_r2",
+      "bench": "prefill_bench_tp2",
+      "arm": "B",
+      "run_index": 2,
+      "out": "/tmp/pr2_pfb_B_r2.json",
+      "log": "/tmp/pr2_pfb_B_r2.log",
+      "rc": 0,
+      "chunk_size": 512,
+      "peak_device_mib_nvidia_smi": 17172
+    },
+    {
+      "tag": "pfb_B_r3",
+      "bench": "prefill_bench_tp2",
+      "arm": "B",
+      "run_index": 3,
+      "out": "/tmp/pr2_pfb_B_r3.json",
+      "log": "/tmp/pr2_pfb_B_r3.log",
+      "rc": 0,
+      "chunk_size": 512,
+      "peak_device_mib_nvidia_smi": 17172
+    },
+    {
+      "tag": "pre_s512_A_r1",
+      "bench": "prefix_ttft_bench",
+      "arm": "A",
+      "run_index": 1,
+      "shape": "s512",
+      "shared": 512,
+      "unique": 256,
+      "total": 768,
+      "chunk_size": 128,
+      "effective_chunk_size": 128,
+      "snapshot_interval_tokens": 256,
+      "fp8_config": "gemv-bk512",
+      "out": "/tmp/pr2_pre_s512_A_r1.json",
+      "log": "/tmp/pr2_pre_s512_A_r1.log",
+      "rc": 0,
+      "peak_device_mib_nvidia_smi": 16524
+    },
+    {
+      "tag": "pre_s512_A_r2",
+      "bench": "prefix_ttft_bench",
+      "arm": "A",
+      "run_index": 2,
+      "shape": "s512",
+      "shared": 512,
+      "unique": 256,
+      "total": 768,
+      "chunk_size": 128,
+      "effective_chunk_size": 128,
+      "snapshot_interval_tokens": 256,
+      "fp8_config": "gemv-bk512",
+      "out": "/tmp/pr2_pre_s512_A_r2.json",
+      "log": "/tmp/pr2_pre_s512_A_r2.log",
+      "rc": 0,
+      "peak_device_mib_nvidia_smi": 16524
+    },
+    {
+      "tag": "pre_s512_A_r3",
+      "bench": "prefix_ttft_bench",
+      "arm": "A",
+      "run_index": 3,
+      "shape": "s512",
+      "shared": 512,
+      "unique": 256,
+      "total": 768,
+      "chunk_size": 128,
+      "effective_chunk_size": 128,
+      "snapshot_interval_tokens": 256,
+      "fp8_config": "gemv-bk512",
+      "out": "/tmp/pr2_pre_s512_A_r3.json",
+      "log": "/tmp/pr2_pre_s512_A_r3.log",
+      "rc": 0,
+      "peak_device_mib_nvidia_smi": 16524
+    },
+    {
+      "tag": "pre_s512_B_r1",
+      "bench": "prefix_ttft_bench",
+      "arm": "B",
+      "run_index": 1,
+      "shape": "s512",
+      "shared": 512,
+      "unique": 256,
+      "total": 768,
+      "chunk_size": 512,
+      "effective_chunk_size": 512,
+      "snapshot_interval_tokens": 512,
+      "fp8_config": "gemv-bk512",
+      "out": "/tmp/pr2_pre_s512_B_r1.json",
+      "log": "/tmp/pr2_pre_s512_B_r1.log",
+      "rc": 0,
+      "peak_device_mib_nvidia_smi": 16672
+    },
+    {
+      "tag": "pre_s512_B_r2",
+      "bench": "prefix_ttft_bench",
+      "arm": "B",
+      "run_index": 2,
+      "shape": "s512",
+      "shared": 512,
+      "unique": 256,
+      "total": 768,
+      "chunk_size": 512,
+      "effective_chunk_size": 512,
+      "snapshot_interval_tokens": 512,
+      "fp8_config": "gemv-bk512",
+      "out": "/tmp/pr2_pre_s512_B_r2.json",
+      "log": "/tmp/pr2_pre_s512_B_r2.log",
+      "rc": 0,
+      "peak_device_mib_nvidia_smi": 16672
+    },
+    {
+      "tag": "pre_s512_B_r3",
+      "bench": "prefix_ttft_bench",
+      "arm": "B",
+      "run_index": 3,
+      "shape": "s512",
+      "shared": 512,
+      "unique": 256,
+      "total": 768,
+      "chunk_size": 512,
+      "effective_chunk_size": 512,
+      "snapshot_interval_tokens": 512,
+      "fp8_config": "gemv-bk512",
+      "out": "/tmp/pr2_pre_s512_B_r3.json",
+      "log": "/tmp/pr2_pre_s512_B_r3.log",
+      "rc": 0,
+      "peak_device_mib_nvidia_smi": 16672
+    },
+    {
+      "tag": "pre_s2048_A_r1",
+      "bench": "prefix_ttft_bench",
+      "arm": "A",
+      "run_index": 1,
+      "shape": "s2048",
+      "shared": 2048,
+      "unique": 256,
+      "total": 2304,
+      "chunk_size": 128,
+      "effective_chunk_size": 128,
+      "snapshot_interval_tokens": 256,
+      "fp8_config": "gemv-bk512",
+      "out": "/tmp/pr2_pre_s2048_A_r1.json",
+      "log": "/tmp/pr2_pre_s2048_A_r1.log",
+      "rc": 0,
+      "peak_device_mib_nvidia_smi": 17394
+    },
+    {
+      "tag": "pre_s2048_A_r2",
+      "bench": "prefix_ttft_bench",
+      "arm": "A",
+      "run_index": 2,
+      "shape": "s2048",
+      "shared": 2048,
+      "unique": 256,
+      "total": 2304,
+      "chunk_size": 128,
+      "effective_chunk_size": 128,
+      "snapshot_interval_tokens": 256,
+      "fp8_config": "gemv-bk512",
+      "out": "/tmp/pr2_pre_s2048_A_r2.json",
+      "log": "/tmp/pr2_pre_s2048_A_r2.log",
+      "rc": 0,
+      "peak_device_mib_nvidia_smi": 17394
+    },
+    {
+      "tag": "pre_s2048_A_r3",
+      "bench": "prefix_ttft_bench",
+      "arm": "A",
+      "run_index": 3,
+      "shape": "s2048",
+      "shared": 2048,
+      "unique": 256,
+      "total": 2304,
+      "chunk_size": 128,
+      "effective_chunk_size": 128,
+      "snapshot_interval_tokens": 256,
+      "fp8_config": "gemv-bk512",
+      "out": "/tmp/pr2_pre_s2048_A_r3.json",
+      "log": "/tmp/pr2_pre_s2048_A_r3.log",
+      "rc": 0,
+      "peak_device_mib_nvidia_smi": 17394
+    },
+    {
+      "tag": "pre_s2048_B_r1",
+      "bench": "prefix_ttft_bench",
+      "arm": "B",
+      "run_index": 1,
+      "shape": "s2048",
+      "shared": 2048,
+      "unique": 256,
+      "total": 2304,
+      "chunk_size": 512,
+      "effective_chunk_size": 512,
+      "snapshot_interval_tokens": 512,
+      "fp8_config": "gemv-bk512",
+      "out": "/tmp/pr2_pre_s2048_B_r1.json",
+      "log": "/tmp/pr2_pre_s2048_B_r1.log",
+      "rc": 0,
+      "peak_device_mib_nvidia_smi": 16944
+    },
+    {
+      "tag": "pre_s2048_B_r2",
+      "bench": "prefix_ttft_bench",
+      "arm": "B",
+      "run_index": 2,
+      "shape": "s2048",
+      "shared": 2048,
+      "unique": 256,
+      "total": 2304,
+      "chunk_size": 512,
+      "effective_chunk_size": 512,
+      "snapshot_interval_tokens": 512,
+      "fp8_config": "gemv-bk512",
+      "out": "/tmp/pr2_pre_s2048_B_r2.json",
+      "log": "/tmp/pr2_pre_s2048_B_r2.log",
+      "rc": 0,
+      "peak_device_mib_nvidia_smi": 16944
+    },
+    {
+      "tag": "pre_s2048_B_r3",
+      "bench": "prefix_ttft_bench",
+      "arm": "B",
+      "run_index": 3,
+      "shape": "s2048",
+      "shared": 2048,
+      "unique": 256,
+      "total": 2304,
+      "chunk_size": 512,
+      "effective_chunk_size": 512,
+      "snapshot_interval_tokens": 512,
+      "fp8_config": "gemv-bk512",
+      "out": "/tmp/pr2_pre_s2048_B_r3.json",
+      "log": "/tmp/pr2_pre_s2048_B_r3.log",
+      "rc": 0,
+      "peak_device_mib_nvidia_smi": 16944
+    },
+    {
+      "tag": "pre_agent_B_r1",
+      "bench": "prefix_ttft_bench",
+      "arm": "B",
+      "run_index": 1,
+      "shape": "agent",
+      "storage": "gpu",
+      "shared": 8192,
+      "unique": 512,
+      "total": 8704,
+      "chunk_size": 512,
+      "effective_chunk_size": 512,
+      "snapshot_interval_tokens": 512,
+      "fp8_config": "gemv-bk512",
+      "out": "/tmp/pr2_pre_agent_B_r1.json",
+      "log": "/tmp/pr2_pre_agent_B_r1.log",
+      "rc": 0,
+      "peak_device_mib_nvidia_smi": 20686
+    },
+    {
+      "tag": "pre_agent_B_r2",
+      "bench": "prefix_ttft_bench",
+      "arm": "B",
+      "run_index": 2,
+      "shape": "agent",
+      "storage": "gpu",
+      "shared": 8192,
+      "unique": 512,
+      "total": 8704,
+      "chunk_size": 512,
+      "effective_chunk_size": 512,
+      "snapshot_interval_tokens": 512,
+      "fp8_config": "gemv-bk512",
+      "out": "/tmp/pr2_pre_agent_B_r2.json",
+      "log": "/tmp/pr2_pre_agent_B_r2.log",
+      "rc": 0,
+      "peak_device_mib_nvidia_smi": 20686
+    },
+    {
+      "tag": "pre_agent_B_r3",
+      "bench": "prefix_ttft_bench",
+      "arm": "B",
+      "run_index": 3,
+      "shape": "agent",
+      "storage": "gpu",
+      "shared": 8192,
+      "unique": 512,
+      "total": 8704,
+      "chunk_size": 512,
+      "effective_chunk_size": 512,
+      "snapshot_interval_tokens": 512,
+      "fp8_config": "gemv-bk512",
+      "out": "/tmp/pr2_pre_agent_B_r3.json",
+      "log": "/tmp/pr2_pre_agent_B_r3.log",
+      "rc": 0,
+      "peak_device_mib_nvidia_smi": 20686
+    },
+    {
+      "tag": "pre_agentcpu_A_r1",
+      "bench": "prefix_ttft_bench",
+      "arm": "A",
+      "run_index": 1,
+      "shape": "agent",
+      "storage": "cpu",
+      "shared": 8192,
+      "unique": 512,
+      "total": 8704,
+      "chunk_size": 128,
+      "effective_chunk_size": 128,
+      "snapshot_interval_tokens": 256,
+      "fp8_config": "gemv-bk512",
+      "out": "/tmp/pr2_pre_agentcpu_A_r1.json",
+      "log": "/tmp/pr2_pre_agentcpu_A_r1.log",
+      "rc": 0,
+      "peak_device_mib_nvidia_smi": 16812
+    },
+    {
+      "tag": "pre_agentcpu_A_r2",
+      "bench": "prefix_ttft_bench",
+      "arm": "A",
+      "run_index": 2,
+      "shape": "agent",
+      "storage": "cpu",
+      "shared": 8192,
+      "unique": 512,
+      "total": 8704,
+      "chunk_size": 128,
+      "effective_chunk_size": 128,
+      "snapshot_interval_tokens": 256,
+      "fp8_config": "gemv-bk512",
+      "out": "/tmp/pr2_pre_agentcpu_A_r2.json",
+      "log": "/tmp/pr2_pre_agentcpu_A_r2.log",
+      "rc": 0,
+      "peak_device_mib_nvidia_smi": 16812
+    },
+    {
+      "tag": "pre_agentcpu_A_r3",
+      "bench": "prefix_ttft_bench",
+      "arm": "A",
+      "run_index": 3,
+      "shape": "agent",
+      "storage": "cpu",
+      "shared": 8192,
+      "unique": 512,
+      "total": 8704,
+      "chunk_size": 128,
+      "effective_chunk_size": 128,
+      "snapshot_interval_tokens": 256,
+      "fp8_config": "gemv-bk512",
+      "out": "/tmp/pr2_pre_agentcpu_A_r3.json",
+      "log": "/tmp/pr2_pre_agentcpu_A_r3.log",
+      "rc": 0,
+      "peak_device_mib_nvidia_smi": 16812
+    },
+    {
+      "tag": "pre_agentcpu_B_r1",
+      "bench": "prefix_ttft_bench",
+      "arm": "B",
+      "run_index": 1,
+      "shape": "agent",
+      "storage": "cpu",
+      "shared": 8192,
+      "unique": 512,
+      "total": 8704,
+      "chunk_size": 512,
+      "effective_chunk_size": 512,
+      "snapshot_interval_tokens": 512,
+      "fp8_config": "gemv-bk512",
+      "out": "/tmp/pr2_pre_agentcpu_B_r1.json",
+      "log": "/tmp/pr2_pre_agentcpu_B_r1.log",
+      "rc": 0,
+      "peak_device_mib_nvidia_smi": 17184
+    },
+    {
+      "tag": "pre_agentcpu_B_r2",
+      "bench": "prefix_ttft_bench",
+      "arm": "B",
+      "run_index": 2,
+      "shape": "agent",
+      "storage": "cpu",
+      "shared": 8192,
+      "unique": 512,
+      "total": 8704,
+      "chunk_size": 512,
+      "effective_chunk_size": 512,
+      "snapshot_interval_tokens": 512,
+      "fp8_config": "gemv-bk512",
+      "out": "/tmp/pr2_pre_agentcpu_B_r2.json",
+      "log": "/tmp/pr2_pre_agentcpu_B_r2.log",
+      "rc": 0,
+      "peak_device_mib_nvidia_smi": 17184
+    },
+    {
+      "tag": "pre_agentcpu_B_r3",
+      "bench": "prefix_ttft_bench",
+      "arm": "B",
+      "run_index": 3,
+      "shape": "agent",
+      "storage": "cpu",
+      "shared": 8192,
+      "unique": 512,
+      "total": 8704,
+      "chunk_size": 512,
+      "effective_chunk_size": 512,
+      "snapshot_interval_tokens": 512,
+      "fp8_config": "gemv-bk512",
+      "out": "/tmp/pr2_pre_agentcpu_B_r3.json",
+      "log": "/tmp/pr2_pre_agentcpu_B_r3.log",
+      "rc": 0,
+      "peak_device_mib_nvidia_smi": 17184
+    },
+    {
+      "tag": "pre_agent_A_r1",
+      "bench": "prefix_ttft_bench",
+      "arm": "A",
+      "run_index": 1,
+      "shape": "agent",
+      "storage": "gpu",
+      "shared": 8192,
+      "unique": 512,
+      "total": 8704,
+      "out": null,
+      "log": "/tmp/pr2_pre_agent_A_r1.log",
+      "rc": 1,
+      "status": "OOM",
+      "peak_device_mib_nvidia_smi": 24056
+    },
+    {
+      "tag": "pre_agent_A_r2",
+      "bench": "prefix_ttft_bench",
+      "arm": "A",
+      "run_index": 2,
+      "shape": "agent",
+      "storage": "gpu",
+      "shared": 8192,
+      "unique": 512,
+      "total": 8704,
+      "out": null,
+      "log": "/tmp/pr2_pre_agent_A_r2.log",
+      "rc": 1,
+      "status": "OOM",
+      "peak_device_mib_nvidia_smi": 24056
+    },
+    {
+      "tag": "pre_agent_A_r3",
+      "bench": "prefix_ttft_bench",
+      "arm": "A",
+      "run_index": 3,
+      "shape": "agent",
+      "storage": "gpu",
+      "shared": 8192,
+      "unique": 512,
+      "total": 8704,
+      "out": null,
+      "log": "/tmp/pr2_pre_agent_A_r3.log",
+      "rc": 1,
+      "status": "OOM",
+      "peak_device_mib_nvidia_smi": 24056
+    }
+  ],
+  "raw_logs": "per-run stdout/stderr in /tmp/pr2_*.log, raw bench JSON in /tmp/pr2_*.json, nvidia-smi samples in /tmp/pr2_*.mem",
+  "serving_note": "Ours-vs-ours local B=1 only. No serving TTFT or vLLM win claimed; Arm A/B figures are context unless measured in the same serving harness.",
+  "import_metrics": {
+    "file": "/tmp/pr2_import_metrics.json",
+    "command": ".venv/bin/python scripts/opt_harness.py import-metrics /tmp/pr2_import_metrics.json",
+    "selection": "chosen_candidate=cand512_512 (frontier: cand512_512_s512) from cold-throughput/latency entries for s512/s2048/agentcpu only",
+    "limits": "Importer pools per-shape entries as separate candidates and sees only imported cold metrics; warm times, pure-prefill rows, peak memory and the GPU-storage agent OOM are not represented. Paired ABBA medians in this file remain the verdict basis."
+  }
+}

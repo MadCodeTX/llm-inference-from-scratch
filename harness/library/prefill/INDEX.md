@@ -6,3 +6,4 @@ Read before proposing on the `prefill-ttft` card. Entries: [EXPERIENCE.md](EXPER
 |---|---|---|
 | P1 chunkwise prefill + dispatch threshold | token-by-token prefill ~23 tok/s | adopted (chunk512 best @2048) |
 | P2 prefill num_stages=2 (prefill-s2) | unmeasured stages axis | rejected (-1.3% to -7.5% everywhere; code removed) |
+| P3 prefix-chunk512 bench defaults | round-2 profile: launch/gap + FP8 launch count | adopted (bench `--chunk 512 --snapshot-interval 512`; library defaults unchanged) |

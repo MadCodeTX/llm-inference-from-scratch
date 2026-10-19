@@ -119,9 +119,28 @@ class RMSNormGated(nn.Module):
         self.d = d
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(d))
+        # Fused path (F.rms_norm); off at module level so direct
+        # callers keep the manual maths. The TP2 runner enables it
+        # by default via --gated-norm fused (shipped, decode round 5;
+        # --gated-norm manual is the A/B baseline).
+        self.use_fused_rmsnorm = False
+        # Eager-call counter proving the fused branch executed (graph
+        # replays do not re-run Python, so this counts captures/eager
+        # calls, not replays).
+        self.fused_rmsnorm_calls = 0
 
     def forward(self, core: torch.Tensor, gate: torch.Tensor) -> torch.Tensor:
         input_dtype = core.dtype
+        if self.use_fused_rmsnorm:
+            self.fused_rmsnorm_calls += 1
+            # Same maths and intermediate dtype round-trip as the
+            # manual path: rms*weight is cast to input_dtype before
+            # the float SiLU-gate multiply, then cast back.
+            y = F.rms_norm(
+                core.float(), [self.d], self.weight.float(), self.eps,
+            ).to(input_dtype)
+            y = y * F.silu(gate.float())
+            return y.to(input_dtype)
         xf = core.float()
         var = xf.pow(2).mean(dim=-1, keepdim=True)
         y = xf * torch.rsqrt(var + self.eps)
