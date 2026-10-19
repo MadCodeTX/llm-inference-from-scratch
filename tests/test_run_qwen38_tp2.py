@@ -54,9 +54,13 @@ def test_norm_mode_flag():
 
 def test_microopt_flags():
     args = _mod.build_parser().parse_args([])
-    # Defaults are measured A/B winners only: vocab won paired A/B;
-    # scale-cache showed no consistent gain, so it stays off.
-    assert args.lm_head == "vocab" and args.scale_cache == "off" and args.probe is None
+    # Defaults are measured winners only: vocab won paired A/B;
+    # scale-cache is graph-scoped (round-2 confirmed on graph only).
+    assert args.lm_head == "vocab" and args.scale_cache is None and args.probe is None
+    assert _mod.resolve_scale_cache_mode(args.scale_cache, "graph") == "on"
+    assert _mod.resolve_scale_cache_mode(args.scale_cache, "eager") == "off"
+    assert _mod.resolve_scale_cache_mode("off", "graph") == "off"
+    assert _mod.resolve_scale_cache_mode("on", "eager") == "on"
     args = _mod.build_parser().parse_args(
         ["--lm-head", "vocab", "--scale-cache", "on", "--probe", "capital"])
     assert args.lm_head == "vocab" and args.scale_cache == "on" and args.probe == "capital"
@@ -93,11 +97,17 @@ def test_decode_mode_flag_and_plan():
 
 def test_fp8_config_flag():
     args = _mod.build_parser().parse_args([])
-    assert args.fp8_config == "new"
+    assert args.fp8_config == "gemv"
     args = _mod.build_parser().parse_args(["--fp8-config", "old"])
     assert args.fp8_config == "old"
-    assert _mod.validate_fp8_config("old") == "old"
-    assert _mod.validate_fp8_config("new") == "new"
+    args = _mod.build_parser().parse_args(["--fp8-config", "gemv"])
+    assert args.fp8_config == "gemv"
+    try:
+        assert _mod.validate_fp8_config("old") == "old"
+        assert _mod.validate_fp8_config("gemv") == "gemv"
+        assert _mod.validate_fp8_config("new") == "new"
+    finally:
+        _mod.validate_fp8_config("gemv")
     with pytest.raises(ValueError):
         _mod.validate_fp8_config("bogus")
 

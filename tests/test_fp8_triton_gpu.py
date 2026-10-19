@@ -61,6 +61,71 @@ def test_triton_prefill_configs_match_reference(m):
     assert rel < 0.02, (m, rel)
 
 
+@pytest.mark.parametrize("m,n,k", [(1, 512, 512), (1, 17408, 5120), (1, 5120, 8704),
+                                   (1, 200, 300)])
+def test_triton_gemv_m1_matches_reference(m, n, k):
+    """Opt-in gemv (BLOCK_N=16/BLOCK_K=256) M=1 candidate vs reference."""
+    from inference_from_scratch.fp8_triton import M1_GEMV_CONFIG, gemv_enabled
+    assert gemv_enabled(m, mode="gemv") is True
+    assert M1_GEMV_CONFIG["BLOCK_N"] == 16 and M1_GEMV_CONFIG["BLOCK_K"] == 256
+    torch.manual_seed(0)
+    w = torch.randn(n, k) * 0.05
+    wq, ws = quantize_block_fp8(w.float(), block=(128, 128))
+    wq, ws = wq.cuda(), ws.cuda().to(torch.bfloat16)
+    x = torch.randn(m, k, dtype=torch.bfloat16, device="cuda")
+    ref = F.linear(x, dequantize_block_fp8(wq, ws, out_dtype=torch.bfloat16))
+    got = fp8_triton_linear(x, wq, ws, config_mode="gemv")
+    assert got.shape == (m, n) and got.dtype == torch.bfloat16
+    rel = (got.float() - ref.float()).abs().max().item() / ref.float().abs().max().item()
+    assert rel < 0.02, (m, n, k, rel)
+
+
+def test_triton_gemv_m1_with_bias_matches_reference():
+    """GEMV bias path (verifier gap): HAS_BIAS branch vs dequant ref."""
+    torch.manual_seed(0)
+    n, k = 512, 512
+    w = torch.randn(n, k) * 0.05
+    wq, ws = quantize_block_fp8(w.float(), block=(128, 128))
+    wq, ws = wq.cuda(), ws.cuda().to(torch.bfloat16)
+    x = torch.randn(1, k, dtype=torch.bfloat16, device="cuda")
+    bias = torch.randn(n, dtype=torch.bfloat16, device="cuda")
+    ref = F.linear(x, dequantize_block_fp8(wq, ws, out_dtype=torch.bfloat16), bias)
+    got = fp8_triton_linear(x, wq, ws, bias=bias, config_mode="gemv")
+    rel = (got.float() - ref.float()).abs().max().item() / ref.float().abs().max().item()
+    assert rel < 0.02, rel
+
+
+def test_triton_gemv_explicit_config_bypasses_gemv():
+    """Explicit config keeps the dot kernel even in gemv mode."""
+    from inference_from_scratch.fp8_triton import choose_config
+    torch.manual_seed(0)
+    n, k = 512, 512
+    w = torch.randn(n, k) * 0.05
+    wq, ws = quantize_block_fp8(w.float(), block=(128, 128))
+    wq, ws = wq.cuda(), ws.cuda().to(torch.bfloat16)
+    x = torch.randn(1, k, dtype=torch.bfloat16, device="cuda")
+    ref = F.linear(x, dequantize_block_fp8(wq, ws, out_dtype=torch.bfloat16))
+    got = fp8_triton_linear(x, wq, ws, config=choose_config(1, n, k, mode="new"),
+                            config_mode="gemv")
+    rel = (got.float() - ref.float()).abs().max().item() / ref.float().abs().max().item()
+    assert rel < 0.02, rel
+
+
+def test_triton_gemv_m_gt1_falls_back_to_new():
+    from inference_from_scratch.fp8_triton import choose_config
+    torch.manual_seed(0)
+    n, k = 512, 512
+    w = torch.randn(n, k) * 0.05
+    wq, ws = quantize_block_fp8(w.float(), block=(128, 128))
+    wq, ws = wq.cuda(), ws.cuda().to(torch.bfloat16)
+    x = torch.randn(4, k, dtype=torch.bfloat16, device="cuda")
+    assert choose_config(4, n, k, mode="gemv") == choose_config(4, n, k, mode="new")
+    ref = F.linear(x, dequantize_block_fp8(wq, ws, out_dtype=torch.bfloat16))
+    got = fp8_triton_linear(x, wq, ws, config_mode="gemv")
+    rel = (got.float() - ref.float()).abs().max().item() / ref.float().abs().max().item()
+    assert rel < 0.02, rel
+
+
 def test_block_fp8_linear_triton_dispatch_cuda():
     torch.manual_seed(0)
     dense = torch.nn.Linear(512, 512, bias=True)

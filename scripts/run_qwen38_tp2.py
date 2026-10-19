@@ -63,7 +63,7 @@ NORM_MODES = ("fused", "manual")
 LM_HEAD_MODES = ("replicated", "vocab")
 SCALE_CACHE_MODES = ("off", "on")
 DECODE_MODES = ("eager", "graph")
-FP8_CONFIG_MODES = ("old", "new")
+FP8_CONFIG_MODES = ("old", "new", "gemv")
 SPECULATIVE_MODES = ("off", "mtp1", "mtp1-graph", "mtp1-graph2")
 DELTA_MODES = ("ref", "fused")
 
@@ -73,6 +73,21 @@ def validate_fp8_config(mode: str) -> str:
         raise ValueError(f"unknown fp8-config {mode!r}, expected {FP8_CONFIG_MODES}")
     from inference_from_scratch.fp8_triton import set_config_mode
     return set_config_mode(mode)
+
+
+def resolve_scale_cache_mode(mode: str | None, decode_mode: str) -> str:
+    """Resolve --scale-cache: explicit wins; default is graph-scoped.
+
+    Round 2 (benchmarks/harness/decode_round2.json) confirmed 'on'
+    on the graph path only (exact everywhere, -3.58% aggregate);
+    the eager paired result showed no consistent gain, so eager
+    keeps 'off' unless explicitly requested.
+    """
+    if mode is not None:
+        if mode not in SCALE_CACHE_MODES:
+            raise ValueError(f"unknown scale-cache mode {mode!r}, expected {SCALE_CACHE_MODES}")
+        return mode
+    return "on" if decode_mode == "graph" else "off"
 
 
 def validate_decode_mode(mode: str) -> str:
@@ -369,11 +384,13 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--lm-head", choices=list(LM_HEAD_MODES), default="vocab",
                     help="lm_head: vocab-parallel shard (default; measured winner in "
                          "benchmarks/baseline/ours_tp2_microopts_ab.json) or replicated")
-    ap.add_argument("--scale-cache", choices=list(SCALE_CACHE_MODES), default="off",
-                    help="cached FP32 FP8 scales: off (default until A/B) or on")
-    ap.add_argument("--fp8-config", choices=list(FP8_CONFIG_MODES), default="new",
-                    help="Triton FP8 tile config: new (default, M=1 BLOCK_N=32 tuned) "
-                         "or old (legacy BLOCK_N=128 heuristic; A/B baseline)")
+    ap.add_argument("--scale-cache", choices=list(SCALE_CACHE_MODES), default=None,
+                    help="cached FP32 FP8 scales: on/off; default on for "
+                         "--decode-mode graph (round-2 confirmed), off for eager")
+    ap.add_argument("--fp8-config", choices=list(FP8_CONFIG_MODES), default="gemv",
+                    help="Triton FP8 tile config: gemv (default, M=1 GEMV; "
+                         "M>1 as new; round-3 confirmed), new (M=1 BLOCK_N=32 "
+                         "tuned dot) or old (legacy BLOCK_N=128; A/B baseline)")
     ap.add_argument("--decode-mode", choices=list(DECODE_MODES), default="eager",
                     help="decode: eager (default until graph is measured) or graph "
                          "(one captured decode_token_static step replayed per token)")
@@ -397,6 +414,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
+    args.scale_cache = resolve_scale_cache_mode(args.scale_cache, args.decode_mode)
     validate_fp8_config(args.fp8_config)
     validate_speculative_mode(args.speculative, args.decode_mode)
     ctx = DistributedTPContext.from_env(backend="nccl", device_type="cuda")

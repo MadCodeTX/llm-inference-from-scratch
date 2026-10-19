@@ -60,10 +60,12 @@ __all__ = [
     "TUNED_CONFIGS",
     "PREFILL_TUNED",
     "PREFILL_MIN_M",
+    "M1_GEMV_CONFIG",
+    "gemv_enabled",
     "fp8_triton_linear",
 ]
 
-CONFIG_MODES = ("old", "new")
+CONFIG_MODES = ("old", "new", "gemv")
 
 
 def m_bucket(m: int) -> int:
@@ -108,6 +110,15 @@ def _legacy_config(m: int, n: int, k: int) -> dict:
 # buckets fall back to the legacy heuristic.
 _M1_TUNED = {"BLOCK_M": 16, "BLOCK_N": 32, "BLOCK_K": 128,
              "num_warps": 4, "num_stages": 3}
+# Default M=1 GEMV (mode "gemv"): a dedicated vector GEMV kernel
+# instead of the padded BLOCK_M=16 tl.dot, with BLOCK_N=16
+# (split-N grid) and BLOCK_K=256 (two block-scale columns per step).
+# Promoted to default after Harness round 3 (benchmarks/harness/
+# decode_round3.json): exact everywhere, aggregate median 22.270 vs
+# 22.820 ms (-2.41%), no per-shape regression. Same maths (BF16
+# dequant, FP32 accumulate, BF16 out); M>1 selects exactly as "new".
+M1_GEMV_CONFIG = {"BLOCK_N": 16, "BLOCK_K": 256,
+                  "num_warps": 4, "num_stages": 3}
 # Prefill family (M >= 64), from benchmarks/fp8_prefill_sweep.py
 # (RTX 4090, M=64/128/512, TP2 shard + full shapes): BLOCK_M=64/
 # BLOCK_N=32/num_warps=8 won or tied on every measured shape.
@@ -128,9 +139,9 @@ TUNED_CONFIGS: dict[tuple[int, int, int], dict] = {
     (1, 5120, 8704): dict(_M1_TUNED),
 }
 
-_CONFIG_MODE = os.environ.get("INFERENCE_FP8_TILE_CONFIG", "new").strip().lower()
+_CONFIG_MODE = os.environ.get("INFERENCE_FP8_TILE_CONFIG", "gemv").strip().lower()
 if _CONFIG_MODE not in CONFIG_MODES:
-    _CONFIG_MODE = "new"
+    _CONFIG_MODE = "gemv"
 
 
 def config_mode() -> str:
@@ -138,7 +149,7 @@ def config_mode() -> str:
 
 
 def set_config_mode(mode: str) -> str:
-    """Select 'old' (legacy heuristic) or 'new' (tuned map) configs.
+    """Select 'old', 'new' or 'gemv' (default, M=1 GEMV) configs.
 
     Fixed selection only -- no runtime autotune, so CUDA-graph capture
     sees one deterministic config per shape.
@@ -177,15 +188,19 @@ def choose_config(m: int, n: int, k: int, mode: str | None = None) -> dict:
 
     ``BLOCK_K`` is always 128 so one K-tile is exactly one block-scale
     column; ``BLOCK_N`` divides 128 so one N-tile lies in one scale
-    row. Mode 'old' is the legacy heuristic; mode 'new' (default)
-    consults TUNED_CONFIGS keyed by (m_bucket, N, K) and falls back
-    to the legacy heuristic for unmeasured shapes.
+    row. Mode 'old' is the legacy heuristic; mode 'new' consults
+    TUNED_CONFIGS keyed by (m_bucket, N, K) and falls back to the
+    legacy heuristic for unmeasured shapes. Mode 'gemv' (default)
+    is the M=1 GEMV path: the dot-kernel selection here is its M>1
+    fallback and is exactly the 'new' selection; M=1 itself is
+    dispatched to the GEMV kernel by :func:`fp8_triton_linear`
+    (see :func:`gemv_enabled`).
     """
     m, n, k = int(m), int(n), int(k)
     mode = config_mode() if mode is None else str(mode)
     if mode not in CONFIG_MODES:
         raise ValueError(f"unknown fp8 tile config mode {mode!r}, expected {CONFIG_MODES}")
-    if mode == "new":
+    if mode in ("new", "gemv"):
         if m >= PREFILL_MIN_M:
             # Prefill buckets (64/128/512/1024): one measured family
             # config for every (N, K); see PREFILL_TUNED note.
@@ -197,6 +212,19 @@ def choose_config(m: int, n: int, k: int, mode: str | None = None) -> dict:
             # M=1 family: measured winner on all six swept shapes.
             return dict(_M1_TUNED)
     return _legacy_config(m, n, k)
+
+
+def gemv_enabled(m: int, mode: str | None = None) -> bool:
+    """True when the M=1 GEMV kernel handles this call.
+
+    Only mode 'gemv' (the default) at exactly M=1; every other
+    (mode, M) keeps the dot kernel with the :func:`choose_config`
+    selection, so all M>1 behaviour is unchanged.
+    """
+    mode = config_mode() if mode is None else str(mode)
+    if mode not in CONFIG_MODES:
+        raise ValueError(f"unknown fp8 tile config mode {mode!r}, expected {CONFIG_MODES}")
+    return mode == "gemv" and int(m) == 1
 
 
 if _TRITON_AVAILABLE:
@@ -247,6 +275,44 @@ if _TRITON_AVAILABLE:
             mask=mask_m[:, None] & mask_n[None, :],
         )
 
+    @triton.jit
+    def _fp8_dequant_gemv_kernel(
+        x_ptr, w_ptr, s_ptr, b_ptr, out_ptr,
+        N, K,
+        stride_wn, stride_wk,
+        stride_sn, stride_sk,
+        HAS_BIAS: tl.constexpr,
+        BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
+    ):
+        # M=1 only: one program owns BLOCK_N outputs and reduces over
+        # K as a vector sum (no padded BLOCK_M=16 dot). BLOCK_N
+        # divides 128 (one scale row); BLOCK_K may span two scale
+        # columns, so the scale is loaded per K element block index.
+        pid_n = tl.program_id(0)
+        offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+        mask_n = offs_n < N
+        offs_k = tl.arange(0, BLOCK_K)
+        scale_row = (pid_n * BLOCK_N) // 128
+        acc = tl.zeros((BLOCK_N,), dtype=tl.float32)
+        for k_idx in range(0, tl.cdiv(K, BLOCK_K)):
+            k_off = k_idx * BLOCK_K + offs_k
+            mask_k = k_off < K
+            x_tile = tl.load(x_ptr + k_off, mask=mask_k, other=0.0)
+            w_tile = tl.load(
+                w_ptr + offs_n[:, None] * stride_wn + k_off[None, :] * stride_wk,
+                mask=mask_n[:, None] & mask_k[None, :], other=0.0,
+            )
+            scales = tl.load(
+                s_ptr + scale_row * stride_sn + (k_off // 128) * stride_sk,
+                mask=mask_k, other=0.0,
+            )
+            w_deq = (w_tile.to(tl.float32) * scales[None, :]).to(tl.bfloat16)
+            acc += tl.sum(w_deq.to(tl.float32) * x_tile.to(tl.float32)[None, :], axis=1)
+        if HAS_BIAS:
+            bias = tl.load(b_ptr + offs_n, mask=mask_n, other=0.0)
+            acc = acc + bias.to(tl.float32)
+        tl.store(out_ptr + offs_n, acc.to(tl.bfloat16), mask=mask_n)
+
 
 def fp8_triton_linear(
     x: torch.Tensor,
@@ -286,6 +352,23 @@ def fp8_triton_linear(
     w2 = weight.contiguous()
     s2 = scale_inv.to(torch.float32).contiguous()
     out = torch.empty((m, n), device=x.device, dtype=torch.bfloat16)
+    if config is None and gemv_enabled(m, mode=config_mode):
+        # Default M=1 GEMV; an explicit config keeps the dot kernel
+        # (tile-sweep compatibility).
+        gcfg = M1_GEMV_CONFIG
+        with torch.cuda.device(x.device):
+            _fp8_dequant_gemv_kernel[(triton.cdiv(n, gcfg["BLOCK_N"]),)](
+                x2, w2, s2,
+                bias if bias is not None else x2,
+                out,
+                n, k,
+                w2.stride(0), w2.stride(1),
+                s2.stride(0), s2.stride(1),
+                HAS_BIAS=bias is not None,
+                BLOCK_N=gcfg["BLOCK_N"], BLOCK_K=gcfg["BLOCK_K"],
+                num_warps=gcfg["num_warps"], num_stages=gcfg["num_stages"],
+            )
+        return out
     cfg = validate_config(config) if config is not None else choose_config(m, n, k, mode=config_mode)
     grid = (
         triton.cdiv(m, cfg["BLOCK_M"]),

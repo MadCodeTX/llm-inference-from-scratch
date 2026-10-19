@@ -26,7 +26,9 @@ Integration smoke re-check (this window, incumbent stopped first via `launch.sh 
 | ours TP2 + MTP mtp1-graph (chunk+draft graphs) | 30.6 eff (capital 128) | 32.51 ms eff | 128/128 exact vs graph-nonspec; 32/32 x3 |
 | ours TP2 + MTP mtp1-graph2 (merged graph, 1 sync/cycle) | 30.4 eff (capital 128) | 32.90 ms eff | 128/128 exact vs graph-nonspec; 32/32 x3 |
 | ours TP2 graph + fused gated-delta (nonspec, best) | 42.25 | 23.67 ms | 32/32 exact x3 |
-| ours TP2 graph + `--scale-cache on` (Harness² round 1, local runner, not shipped) | 43.73 | 22.87 ms | 32/32 exact, ABBA ×5 vs base 23.73 ms |
+| ours TP2 graph + `--scale-cache on` (Harness² round 1, local runner) | 43.73 | 22.87 ms | 32/32 exact, ABBA ×5 vs base 23.73 ms |
+| ours TP2 graph + scale-cache on (round 2 confirmed, graph default) | 43.76 | 22.850 ms | exact all shapes, ABBA vs 23.698 ms |
+| ours TP2 graph + scale-cache + `--fp8-config gemv` (round 3, shipped default) | 44.90 | 22.270 ms | exact everywhere, ABBA vs 22.820 ms |
 | vLLM Arm B (MTP K=1, 256608) | ~71/stream c1 short (4272-4291 tok/min) | n/a (chunk TPOT) | 32/32 exact x3; MEASURED-WITH-DEVIATION |
 | Roofline floor (TP2 batch-1, bound only) | 52.2 ceiling | 19.17 ms floor | n/a — not a measurement |
 
@@ -46,9 +48,11 @@ Prefill tok/s v2 (`ours_tp2_prefill_v2.json`, ours-vs-ours): 2048 chunk128 1,412
 
 Prefix TTFT v2 (`ours_prefix_ttft_v2.json`, 2048+256=2304, interval 256): cpu cold 1.926s / warm 0.252s; gpu cold 1.643s / warm 0.184s; n_reused=2048, argmax 12356 cold==warm. v1 was cold 10.66s / warm 1.31s. Arm A agent TTFT 1.81s @8704 is a different shape — **no TTFT win claimed**. Ours MTP graph2 (~32.9 ms eff.) stays slower than nonspec graphed (23.67 ms) and is not defaulted.
 
-**Where we do/don't beat:** per-stream decode — lose to Arm A (23.67 vs 20.3 ms) and Arm B (~71 tok/s); prefill rate — lose; prefix TTFT — no comparable-shape claim; aggregate tok/min — B=8/B=16 cross the c4 bars numerically on a different shape only. **No candidate is a win vs Arm A or Arm B under the thresholds below.**
+**Where we do/don't beat:** per-stream decode — lose to Arm A (best local 22.270 vs 20.3 ms) and Arm B (~71 tok/s); prefill rate — lose; prefix TTFT — no comparable-shape claim; aggregate tok/min — B=8/B=16 cross the c4 bars numerically on a different shape only. **No candidate is a win vs Arm A or Arm B under the thresholds below.**
 
 Harness² round 1 detail (`benchmarks/harness/decode_round1.json`, summary in `benchmarks/harness/decode_round1_summary.md`): single-variable candidates on the graphed local runner (capital ×32); ABBA medians C0 base 23.726 ms vs C1 `--scale-cache on` 22.866 ms / 43.73 tok/s, 32/32 exact on every run, selected by `scripts/opt_harness.py import-metrics` (`benchmarks/harness/decode_round1_selection.json`). The gain is graph-path-specific and contradicts the earlier eager paired scale-cache result, so the shipped default stays base (`--scale-cache` opt-in) pending a confirming multi-probe round. 22.87 ms remains above Arm A 20.3 ms — **not a win**.
+
+Harness² rounds 2–3 (integrated): round 2 (`benchmarks/harness/decode_round2.json`) confirmed scale-cache on all shapes (aggregate 22.850 vs 23.698 ms, -3.58%, exact everywhere), so `--scale-cache` now defaults to `on` for `--decode-mode graph` only (eager stays `off`). Round 3 (`benchmarks/harness/decode_round3.json`) promoted the M=1 GEMV kernel (aggregate 22.270 vs 22.820 ms, -2.41%, exact everywhere, no per-shape regression), so `--fp8-config gemv` is now the shipped default (M>1 as `new`). Local-runner only: 22.270 ms is still 1.97 ms above Arm A 20.3 ms and 3.10 ms above the 19.17 ms floor — **not a win vs Arm A or Arm B**.
 
 
 Bridge v2 detail: prefill 0.54 s (first, JIT) / 0.10–0.12 s, load 23.5 s, peak ~15.0 / ~15.1 GB/GPU. Re-check this window: 8-token capital probe 8/8 prefix exact at 18.98 tok/s, prefill 0.52 s. No candidate clears the win thresholds; Arm B retry MEASURED-WITH-DEVIATION (see below).

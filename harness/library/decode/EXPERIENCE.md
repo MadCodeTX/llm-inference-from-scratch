@@ -93,3 +93,17 @@
   single prompt/length and contradicted across decode modes).
 - **applicability limits**: graph decode, batch 1, capital ×32 only;
   no vLLM win (22.866 ms > Arm A 20.3 ms, different harness regardless).
+
+## D7 — Scale-cache confirmed on graph path; GEMV is the M=1 default
+
+- **cue**: rounds 2-3 confirming/promoting decode candidates.
+- **lesson**: `--scale-cache` defaults to `on` only for `--decode-mode
+  graph` (eager stays `off` unless explicit); `--fp8-config gemv`
+  (M=1 GEMV kernel, M>1 as `new`) is the shipped FP8 default.
+- **evidence**: round 2 `benchmarks/harness/decode_round2.json`:
+  C1 22.850 vs C0 23.698 ms aggregate (-3.58%), exact on all shapes;
+  round 3 `benchmarks/harness/decode_round3.json`: GEMV 22.270 vs
+  base 22.820 ms (-2.41%), exact everywhere, worst shape -2.39%.
+- **confidence**: high (ABBA, 12 runs/candidate/round, exact).
+- **applicability limits**: local TP2 graph runner only; 22.270 ms
+  still exceeds Arm A 20.3 ms — no vLLM/suite win claimed.

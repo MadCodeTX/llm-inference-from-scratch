@@ -40,7 +40,7 @@ def test_mode_switch_and_validation():
         assert set_config_mode("new") == "new"
         assert choose_config(1, 17408, 5120)["BLOCK_N"] == 32
     finally:
-        set_config_mode("new")
+        set_config_mode("gemv")
     with pytest.raises(ValueError):
         set_config_mode("auto")
     with pytest.raises(ValueError):
@@ -63,6 +63,35 @@ def test_prefill_buckets_use_measured_family():
     assert choose_config(1, 5120, 17408, mode="new")["BLOCK_M"] == 16
     # Just below the prefill floor keeps legacy/new decode behaviour.
     assert choose_config(63, 5120, 5120, mode="new") == choose_config(63, 5120, 5120, mode="old")
+
+
+def test_gemv_default_m1_only():
+    from inference_from_scratch.fp8_triton import M1_GEMV_CONFIG, gemv_enabled
+    assert M1_GEMV_CONFIG == {"BLOCK_N": 16, "BLOCK_K": 256,
+                              "num_warps": 4, "num_stages": 3}
+    # Selection: only mode "gemv" at exactly M=1 uses the GEMV kernel.
+    assert gemv_enabled(1, mode="gemv") is True
+    for m in (2, 8, 32, 64, 128):
+        assert gemv_enabled(m, mode="gemv") is False
+    for mode in ("new", "old"):
+        assert gemv_enabled(1, mode=mode) is False
+    with pytest.raises(ValueError):
+        gemv_enabled(1, mode="auto")
+    # Fallback: every (mode="gemv") dot selection is exactly "new".
+    for m in (1, 2, 8, 32, 63, 64, 128, 512):
+        for n, k in ((5120, 17408), (4096, 4096)):
+            assert choose_config(m, n, k, mode="gemv") == choose_config(m, n, k, mode="new")
+    # GEMV is the shipped default (round-3 promotion).
+    assert ft.config_mode() == "gemv"
+    assert choose_config(1, 5120, 17408, mode="new")["BLOCK_N"] == 32
+    try:
+        assert set_config_mode("gemv") == "gemv"
+        assert gemv_enabled(1) is True and gemv_enabled(4) is False
+        assert choose_config(128, 5120, 5120)["BLOCK_M"] == 64
+    finally:
+        set_config_mode("gemv")
+    with pytest.raises(ValueError):
+        set_config_mode("splitn")
 
 
 def test_existing_default_preserved_for_m_gt1():
