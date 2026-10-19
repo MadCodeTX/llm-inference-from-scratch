@@ -32,4 +32,9 @@ Chunkwise prefill already beat token-by-token static prefill by ~57x at
 512 tokens (1,316 vs 23 tok/s, `benchmarks/baseline/ours_tp2_prefill_bench.json`);
 the open problem is the remaining gap to Arm A's effective prompt rate.
 Chunk256 through the reference FP8 path (635 tok/s @512) is the standing
-warning: dispatch path matters more than chunk size alone.
+warning: dispatch path matters more than chunk size alone. Prefill round 1
+(`benchmarks/harness/prefill_round1.json`) rejected the `prefill-s2`
+(`num_stages=2`) candidate — slower at every shape/chunk (-1.3% to -7.5%,
+argmax equal) — and its code was removed; the shipped prefill family
+(`num_stages=3`, chunk512 best) is unchanged. No TTFT/serving win is
+claimed from the local prefill runner.

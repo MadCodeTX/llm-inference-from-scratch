@@ -16,3 +16,17 @@
 - **applicability limits**: ours-vs-ours local-runner rates only — Arm A's
   ~2.9–3.4k prompt tok/s is TTFT-derived context, so no TTFT-vs-vLLM claim
   follows from this entry.
+
+## P2 — Prefill num_stages=2 (prefill-s2) rejected and removed
+
+- **cue**: prefill sweep had fixed `num_stages=3`; stages=2 might raise
+  occupancy at chunk M.
+- **lesson**: do not retry `num_stages=2` on this kernel/box without
+  new evidence — it loses K-loop latency hiding at every shape.
+- **evidence**: `benchmarks/harness/prefill_round1.json` (ABBAAB, 3
+  runs/config): s2 slower everywhere (-1.3% to -7.5%; chunk512 2048:
+  1703.4 vs 1728.3 tok/s, 8192: 1608.5 vs 1629.9 tok/s), last-token
+  argmax equal across configs. Code removed on integration.
+- **confidence**: high (all 9 length/chunk shapes agree; exactness held).
+- **applicability limits**: ours-vs-ours local-runner rates only; no
+  TTFT-vs-vLLM claim follows.

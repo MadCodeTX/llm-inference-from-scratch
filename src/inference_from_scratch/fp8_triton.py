@@ -61,11 +61,13 @@ __all__ = [
     "PREFILL_TUNED",
     "PREFILL_MIN_M",
     "M1_GEMV_CONFIG",
+    "M1_GEMV_BK512_CONFIG",
+    "gemv_config",
     "gemv_enabled",
     "fp8_triton_linear",
 ]
 
-CONFIG_MODES = ("old", "new", "gemv")
+CONFIG_MODES = ("old", "new", "gemv", "gemv-bk512")
 
 
 def m_bucket(m: int) -> int:
@@ -119,6 +121,16 @@ _M1_TUNED = {"BLOCK_M": 16, "BLOCK_N": 32, "BLOCK_K": 128,
 # dequant, FP32 accumulate, BF16 out); M>1 selects exactly as "new".
 M1_GEMV_CONFIG = {"BLOCK_N": 16, "BLOCK_K": 256,
                   "num_warps": 4, "num_stages": 3}
+# Shipped M=1 GEMV default (mode "gemv-bk512", round-4 promotion):
+# identical GEMV maths to M1_GEMV_CONFIG, only BLOCK_K 256 -> 512
+# (four block-scale columns per step; the kernel loads scale per K
+# element). Promoted after Harness round 4
+# (benchmarks/harness/decode_round4.json): exact everywhere,
+# aggregate median 22.112 vs 22.271 ms (-0.71%), worst shape -0.67%
+# (no regression >1%); M>1 selects exactly as "new". Mode "gemv"
+# (BLOCK_K=256) remains available as the round-3 A/B baseline.
+M1_GEMV_BK512_CONFIG = {"BLOCK_N": 16, "BLOCK_K": 512,
+                        "num_warps": 4, "num_stages": 3}
 # Prefill family (M >= 64), from benchmarks/fp8_prefill_sweep.py
 # (RTX 4090, M=64/128/512, TP2 shard + full shapes): BLOCK_M=64/
 # BLOCK_N=32/num_warps=8 won or tied on every measured shape.
@@ -139,9 +151,9 @@ TUNED_CONFIGS: dict[tuple[int, int, int], dict] = {
     (1, 5120, 8704): dict(_M1_TUNED),
 }
 
-_CONFIG_MODE = os.environ.get("INFERENCE_FP8_TILE_CONFIG", "gemv").strip().lower()
+_CONFIG_MODE = os.environ.get("INFERENCE_FP8_TILE_CONFIG", "gemv-bk512").strip().lower()
 if _CONFIG_MODE not in CONFIG_MODES:
-    _CONFIG_MODE = "gemv"
+    _CONFIG_MODE = "gemv-bk512"
 
 
 def config_mode() -> str:
@@ -149,7 +161,7 @@ def config_mode() -> str:
 
 
 def set_config_mode(mode: str) -> str:
-    """Select 'old', 'new' or 'gemv' (default, M=1 GEMV) configs.
+    """Select 'old', 'new', 'gemv' or 'gemv-bk512' (default).
 
     Fixed selection only -- no runtime autotune, so CUDA-graph capture
     sees one deterministic config per shape.
@@ -190,17 +202,18 @@ def choose_config(m: int, n: int, k: int, mode: str | None = None) -> dict:
     column; ``BLOCK_N`` divides 128 so one N-tile lies in one scale
     row. Mode 'old' is the legacy heuristic; mode 'new' consults
     TUNED_CONFIGS keyed by (m_bucket, N, K) and falls back to the
-    legacy heuristic for unmeasured shapes. Mode 'gemv' (default)
-    is the M=1 GEMV path: the dot-kernel selection here is its M>1
+    legacy heuristic for unmeasured shapes. Mode 'gemv' is the M=1 GEMV path (BLOCK_K=256): the dot-kernel selection here is its M>1
     fallback and is exactly the 'new' selection; M=1 itself is
     dispatched to the GEMV kernel by :func:`fp8_triton_linear`
-    (see :func:`gemv_enabled`).
+    (see :func:`gemv_enabled`). Mode 'gemv-bk512' (the default) is
+    exactly 'gemv' for its M>1/dot selection and differs only in the
+    M=1 GEMV BLOCK_K (512 vs 256).
     """
     m, n, k = int(m), int(n), int(k)
     mode = config_mode() if mode is None else str(mode)
     if mode not in CONFIG_MODES:
         raise ValueError(f"unknown fp8 tile config mode {mode!r}, expected {CONFIG_MODES}")
-    if mode in ("new", "gemv"):
+    if mode in ("new", "gemv", "gemv-bk512"):
         if m >= PREFILL_MIN_M:
             # Prefill buckets (64/128/512/1024): one measured family
             # config for every (N, K); see PREFILL_TUNED note.
@@ -217,14 +230,24 @@ def choose_config(m: int, n: int, k: int, mode: str | None = None) -> dict:
 def gemv_enabled(m: int, mode: str | None = None) -> bool:
     """True when the M=1 GEMV kernel handles this call.
 
-    Only mode 'gemv' (the default) at exactly M=1; every other
-    (mode, M) keeps the dot kernel with the :func:`choose_config`
-    selection, so all M>1 behaviour is unchanged.
+    Only modes 'gemv' and 'gemv-bk512' (the default) at exactly
+    M=1; every other (mode, M) keeps the dot kernel with the
+    :func:`choose_config` selection, so all M>1 behaviour is unchanged.
     """
     mode = config_mode() if mode is None else str(mode)
     if mode not in CONFIG_MODES:
         raise ValueError(f"unknown fp8 tile config mode {mode!r}, expected {CONFIG_MODES}")
-    return mode == "gemv" and int(m) == 1
+    return mode in ("gemv", "gemv-bk512") and int(m) == 1
+
+
+def gemv_config(mode: str | None = None) -> dict:
+    """GEMV kernel config for ``mode`` (copy; caller may not mutate)."""
+    mode = config_mode() if mode is None else str(mode)
+    if mode not in CONFIG_MODES:
+        raise ValueError(f"unknown fp8 tile config mode {mode!r}, expected {CONFIG_MODES}")
+    if mode == "gemv-bk512":
+        return dict(M1_GEMV_BK512_CONFIG)
+    return dict(M1_GEMV_CONFIG)
 
 
 if _TRITON_AVAILABLE:
@@ -355,7 +378,7 @@ def fp8_triton_linear(
     if config is None and gemv_enabled(m, mode=config_mode):
         # Default M=1 GEMV; an explicit config keeps the dot kernel
         # (tile-sweep compatibility).
-        gcfg = M1_GEMV_CONFIG
+        gcfg = gemv_config(mode=config_mode)
         with torch.cuda.device(x.device):
             _fp8_dequant_gemv_kernel[(triton.cdiv(n, gcfg["BLOCK_N"]),)](
                 x2, w2, s2,

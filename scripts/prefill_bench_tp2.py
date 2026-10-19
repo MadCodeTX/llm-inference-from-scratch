@@ -74,12 +74,19 @@ def main() -> int:
     ap.add_argument("--snapshot", default=DEFAULT_SNAPSHOT)
     ap.add_argument("--out", default="benchmarks/baseline/ours_tp2_prefill_bench.json")
     ap.add_argument("--fp8-path", choices=["triton", "reference"], default="triton")
+    ap.add_argument("--fp8-config", choices=["old", "new", "gemv", "gemv-bk512"],
+                    default="gemv-bk512",
+                    help="Triton FP8 tile mode (default gemv-bk512, shipped "
+                         "baseline; M>=64 prefill family is identical in "
+                         "gemv/gemv-bk512)")
     ap.add_argument("--lengths", default="512,2048")
     ap.add_argument("--chunks", default="128,256",
                     help="comma list of chunkwise chunk sizes (v2: 128,512,1024)")
     ap.add_argument("--no-static", action="store_true",
                     help="skip the token-loop prefill_static rows")
     args = ap.parse_args()
+    from inference_from_scratch.fp8_triton import set_config_mode
+    set_config_mode(args.fp8_config)
 
     ctx = DistributedTPContext.from_env(backend="nccl", device_type="cuda")
     rank, dev = ctx.rank, ctx.device
@@ -157,6 +164,7 @@ def main() -> int:
     if rank == 0:
         out = {"script": "scripts/prefill_bench_tp2.py", "snapshot": str(snapshot),
                "world": ctx.world_size, "fp8_path": args.fp8_path,
+               "fp8_config": args.fp8_config,
                "lm_head_mode": "vocab", "triton_max_m": int(TRITON_MAX_M),
                "note": ("ours-vs-ours prefill only; NOT a TTFT comparison vs vLLM. "
                         "prefill_static capped at 512 (labelled, not run above). "

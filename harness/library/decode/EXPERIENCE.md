@@ -107,3 +107,22 @@
 - **confidence**: high (ABBA, 12 runs/candidate/round, exact).
 - **applicability limits**: local TP2 graph runner only; 22.270 ms
   still exceeds Arm A 20.3 ms — no vLLM/suite win claimed.
+
+## D8 — GEMV BLOCK_K=512 promoted; prefill stages=2 rejected (separate lane)
+
+- **cue**: round-4 profile of the adopted path (FP8 GEMV 13.95 ms/token
+  of 22.27 ms) and prefill round-1 sweep of the unmeasured `num_stages`
+  axis.
+- **lesson**: promote `gemv-bk512` (`BLOCK_K` 256→512, M=1 only, M>1 as
+  `new`) to the shipped FP8 default (`--fp8-config gemv-bk512`);
+  `gemv` remains the A/B baseline. Do not reuse `prefill-s2`: it was
+  slower everywhere and its code was removed.
+- **evidence**: `benchmarks/harness/decode_round4.json`: aggregate
+  22.112 vs 22.271 ms (-0.71%, 45.22 tok/s), per-shape -0.67% to
+  -0.72%, exact everywhere. Profile:
+  `benchmarks/profile/tp2_graph_profile_round4_bk512.json` (FP8
+  13.77 ms/token, exact).
+- **confidence**: high (ABBA 12 runs, exact, uniform per-shape gain).
+- **applicability limits**: local TP2 graph runner only; 22.112 ms
+  still exceeds Arm A 20.3 ms — no vLLM/suite win claimed. Next lever
+  is elementwise fusion (~4.5 ms/token), not GEMV tuning.

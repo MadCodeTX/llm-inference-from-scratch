@@ -95,6 +95,67 @@ def test_triton_gemv_m1_with_bias_matches_reference():
     assert rel < 0.02, rel
 
 
+@pytest.mark.parametrize("n,k", [(512, 512), (17408, 5120), (5120, 8704),
+                                 (200, 300)])
+def test_triton_gemv_bk512_m1_matches_reference_and_default(n, k):
+    """Shipped-default gemv-bk512 (BLOCK_K=512) vs ref + gemv baseline."""
+    from inference_from_scratch.fp8_triton import (
+        M1_GEMV_BK512_CONFIG, gemv_config, gemv_enabled)
+    assert gemv_enabled(1, mode="gemv-bk512") is True
+    assert gemv_config(mode="gemv-bk512") == M1_GEMV_BK512_CONFIG
+    assert M1_GEMV_BK512_CONFIG["BLOCK_K"] == 512
+    torch.manual_seed(0)
+    w = torch.randn(n, k) * 0.05
+    wq, ws = quantize_block_fp8(w.float(), block=(128, 128))
+    wq, ws = wq.cuda(), ws.cuda().to(torch.bfloat16)
+    x = torch.randn(1, k, dtype=torch.bfloat16, device="cuda")
+    bias = torch.randn(n, dtype=torch.bfloat16, device="cuda")
+    ref = F.linear(x, dequantize_block_fp8(wq, ws, out_dtype=torch.bfloat16))
+    ref_b = F.linear(x, dequantize_block_fp8(wq, ws, out_dtype=torch.bfloat16), bias)
+    got = fp8_triton_linear(x, wq, ws, config_mode="gemv-bk512")
+    got_b = fp8_triton_linear(x, wq, ws, bias=bias, config_mode="gemv-bk512")
+    base = fp8_triton_linear(x, wq, ws, config_mode="gemv")
+    rmax = ref.float().abs().max().item()
+    assert got.shape == (1, n) and got.dtype == torch.bfloat16
+    assert (got.float() - ref.float()).abs().max().item() / rmax < 0.02
+    assert (got_b.float() - ref_b.float()).abs().max().item() / \
+        ref_b.float().abs().max().item() < 0.02
+    assert (got.float() - base.float()).abs().max().item() / rmax < 0.02
+
+
+def test_triton_gemv_bk512_m_gt1_and_graph_replay():
+    """BK512: M>1 falls back to 'new'; M=1 survives CUDA-graph replay."""
+    from inference_from_scratch.fp8_triton import choose_config, gemv_enabled
+    torch.manual_seed(0)
+    n, k = 512, 512
+    w = torch.randn(n, k) * 0.05
+    wq, ws = quantize_block_fp8(w.float(), block=(128, 128))
+    wq, ws = wq.cuda(), ws.cuda().to(torch.bfloat16)
+    assert gemv_enabled(4, mode="gemv-bk512") is False
+    assert choose_config(4, n, k, mode="gemv-bk512") == \
+        choose_config(4, n, k, mode="new")
+    x4 = torch.randn(4, k, dtype=torch.bfloat16, device="cuda")
+    ref4 = F.linear(x4, dequantize_block_fp8(wq, ws, out_dtype=torch.bfloat16))
+    got4 = fp8_triton_linear(x4, wq, ws, config_mode="gemv-bk512")
+    assert (got4.float() - ref4.float()).abs().max().item() / \
+        ref4.float().abs().max().item() < 0.02
+    # Graph capture/replay (static input, replay twice, same output).
+    x = torch.randn(1, k, dtype=torch.bfloat16, device="cuda")
+    ref = F.linear(x, dequantize_block_fp8(wq, ws, out_dtype=torch.bfloat16))
+    for _ in range(3):
+        fp8_triton_linear(x, wq, ws, config_mode="gemv-bk512")
+    torch.cuda.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        out = fp8_triton_linear(x, wq, ws, config_mode="gemv-bk512")
+    graph.replay(); torch.cuda.synchronize()
+    first = out.clone()
+    graph.replay(); torch.cuda.synchronize()
+    assert torch.equal(out, first)
+    assert (out.float() - ref.float()).abs().max().item() / \
+        ref.float().abs().max().item() < 0.02
+
+
 def test_triton_gemv_explicit_config_bypasses_gemv():
     """Explicit config keeps the dot kernel even in gemv mode."""
     from inference_from_scratch.fp8_triton import choose_config

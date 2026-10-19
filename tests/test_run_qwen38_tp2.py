@@ -97,19 +97,24 @@ def test_decode_mode_flag_and_plan():
 
 def test_fp8_config_flag():
     args = _mod.build_parser().parse_args([])
-    assert args.fp8_config == "gemv"
+    assert args.fp8_config == "gemv-bk512"
     args = _mod.build_parser().parse_args(["--fp8-config", "old"])
     assert args.fp8_config == "old"
     args = _mod.build_parser().parse_args(["--fp8-config", "gemv"])
     assert args.fp8_config == "gemv"
+    args = _mod.build_parser().parse_args(["--fp8-config", "gemv-bk512"])
+    assert args.fp8_config == "gemv-bk512"
     try:
         assert _mod.validate_fp8_config("old") == "old"
         assert _mod.validate_fp8_config("gemv") == "gemv"
+        assert _mod.validate_fp8_config("gemv-bk512") == "gemv-bk512"
         assert _mod.validate_fp8_config("new") == "new"
     finally:
-        _mod.validate_fp8_config("gemv")
+        _mod.validate_fp8_config("gemv-bk512")
     with pytest.raises(ValueError):
         _mod.validate_fp8_config("bogus")
+    with pytest.raises(ValueError):
+        _mod.validate_fp8_config("prefill-s2")
 
 
 def test_compare_ids():

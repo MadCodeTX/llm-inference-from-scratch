@@ -68,7 +68,11 @@ def main() -> int:
     ap.add_argument("--snapshot", default=runner.DEFAULT_SNAPSHOT)
     ap.add_argument("--tokens", type=int, default=32, help="generated tokens (capital)")
     ap.add_argument("--profile-replays", type=int, default=16)
-    ap.add_argument("--delta", choices=list(runner.DELTA_MODES), default="ref")
+    ap.add_argument("--delta", choices=list(runner.DELTA_MODES), default="fused")
+    ap.add_argument("--fp8-config", choices=list(runner.FP8_CONFIG_MODES),
+                    default="gemv-bk512")
+    ap.add_argument("--scale-cache", choices=list(runner.SCALE_CACHE_MODES),
+                    default="on")
     ap.add_argument("--out", default="benchmarks/profile/tp2_graph_profile.json")
     ap.add_argument("--summary", default="benchmarks/profile/SUMMARY_graph.md")
     args = ap.parse_args()
@@ -92,14 +96,17 @@ def main() -> int:
     prompt_ids = tok.encode(probe["prompt"])
     assert prompt_ids == probe["prompt_token_ids"]
 
+    runner.validate_fp8_config(args.fp8_config)
     model, report = load_rank_state(
         snapshot, config=config, rank=rank, world=ctx.world_size, device=dev,
         fp8_mode="resident", ctx=ctx, use_triton=True, manifest=manifest,
-        lm_head_mode="vocab")
+        lm_head_mode="vocab", use_scale_cache=(args.scale_cache == "on"))
     torch.cuda.synchronize(dev)
     runner.apply_norm_mode(model, "fused")
     n_delta = runner.apply_delta_mode(model, args.delta)
-    print(f"[rank {rank}] loaded delta={args.delta} layers={n_delta}", flush=True)
+    print(f"[rank {rank}] loaded delta={args.delta} layers={n_delta} "
+          f"fp8_config={args.fp8_config} scale_cache={args.scale_cache}",
+          flush=True)
 
     gen_ids: list[int] = []
     with torch.inference_mode():
@@ -180,6 +187,8 @@ def main() -> int:
             "script": "scripts/profile_tp2_graph.py",
             "snapshot": str(snapshot), "world": ctx.world_size,
             "probe": "capital", "tokens": args.tokens, "delta_mode": args.delta,
+            "fp8_config": args.fp8_config, "scale_cache": args.scale_cache,
+            "norm_mode": "fused", "lm_head_mode": "vocab",
             "profile_replays": args.profile_replays,
             "generated_ids": gen_ids, "exact_vs_graph_reference": bool(exact),
             "clean_tpot_ms": clean_tpot, "clean_tok_per_s": (1e3 / clean_tpot if clean_tpot else None),
@@ -201,7 +210,8 @@ def main() -> int:
         lines = [
             "# TP2 graph-mode decode profile — measured",
             "",
-            f"Capital x{args.tokens}, graph mode, delta={args.delta}. "
+            f"Capital x{args.tokens}, graph mode, delta={args.delta}, "
+            f"fp8_config={args.fp8_config}, scale_cache={args.scale_cache}. "
             f"Clean TPOT {clean_tpot:.2f} ms/token; exact vs graph reference: {exact}.",
             "",
             "## Kernel categories (rank 0, per token)",

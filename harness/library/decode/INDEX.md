@@ -12,3 +12,4 @@ Index of adopted/rejected decode levers. Read before proposing on the
 | D5 fused gated-delta | elementwise/delta cost under graph | adopted (`--delta fused`, best 23.67 ms) |
 | D6 scale-cache graph-only gain | graphed decode, single-variable probe | superseded by D7 |
 | D7 scale-cache (graph) + GEMV default | rounds 2-3 confirmation | adopted (22.270 ms, local runner) |
+| D8 GEMV BLOCK_K=512 default | round-4 profile + ABBA | adopted (`gemv-bk512`, 22.112 ms, local runner) |

@@ -63,7 +63,7 @@ NORM_MODES = ("fused", "manual")
 LM_HEAD_MODES = ("replicated", "vocab")
 SCALE_CACHE_MODES = ("off", "on")
 DECODE_MODES = ("eager", "graph")
-FP8_CONFIG_MODES = ("old", "new", "gemv")
+FP8_CONFIG_MODES = ("old", "new", "gemv", "gemv-bk512")
 SPECULATIVE_MODES = ("off", "mtp1", "mtp1-graph", "mtp1-graph2")
 DELTA_MODES = ("ref", "fused")
 
@@ -387,10 +387,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--scale-cache", choices=list(SCALE_CACHE_MODES), default=None,
                     help="cached FP32 FP8 scales: on/off; default on for "
                          "--decode-mode graph (round-2 confirmed), off for eager")
-    ap.add_argument("--fp8-config", choices=list(FP8_CONFIG_MODES), default="gemv",
-                    help="Triton FP8 tile config: gemv (default, M=1 GEMV; "
-                         "M>1 as new; round-3 confirmed), new (M=1 BLOCK_N=32 "
-                         "tuned dot) or old (legacy BLOCK_N=128; A/B baseline)")
+    ap.add_argument("--fp8-config", choices=list(FP8_CONFIG_MODES), default="gemv-bk512",
+                    help="Triton FP8 tile config: gemv-bk512 (default, M=1 GEMV "
+                         "BLOCK_K=512; M>1 as new; round-4 promoted at 22.112 ms), "
+                         "gemv (round-3 M=1 GEMV BLOCK_K=256; A/B baseline), "
+                         "new (M=1 BLOCK_N=32 tuned dot) or old (legacy BLOCK_N=128)")
     ap.add_argument("--decode-mode", choices=list(DECODE_MODES), default="eager",
                     help="decode: eager (default until graph is measured) or graph "
                          "(one captured decode_token_static step replayed per token)")

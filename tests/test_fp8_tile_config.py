@@ -40,7 +40,7 @@ def test_mode_switch_and_validation():
         assert set_config_mode("new") == "new"
         assert choose_config(1, 17408, 5120)["BLOCK_N"] == 32
     finally:
-        set_config_mode("gemv")
+        set_config_mode("gemv-bk512")
     with pytest.raises(ValueError):
         set_config_mode("auto")
     with pytest.raises(ValueError):
@@ -81,17 +81,59 @@ def test_gemv_default_m1_only():
     for m in (1, 2, 8, 32, 63, 64, 128, 512):
         for n, k in ((5120, 17408), (4096, 4096)):
             assert choose_config(m, n, k, mode="gemv") == choose_config(m, n, k, mode="new")
-    # GEMV is the shipped default (round-3 promotion).
-    assert ft.config_mode() == "gemv"
+    # GEMV modes are shipped; round-4 default is gemv-bk512 (below).
+    assert ft.config_mode() == "gemv-bk512"
     assert choose_config(1, 5120, 17408, mode="new")["BLOCK_N"] == 32
     try:
         assert set_config_mode("gemv") == "gemv"
         assert gemv_enabled(1) is True and gemv_enabled(4) is False
         assert choose_config(128, 5120, 5120)["BLOCK_M"] == 64
     finally:
-        set_config_mode("gemv")
+        set_config_mode("gemv-bk512")
     with pytest.raises(ValueError):
         set_config_mode("splitn")
+
+
+def test_gemv_bk512_default():
+    from inference_from_scratch.fp8_triton import (
+        M1_GEMV_BK512_CONFIG, M1_GEMV_CONFIG, gemv_config, gemv_enabled)
+    assert M1_GEMV_BK512_CONFIG == {"BLOCK_N": 16, "BLOCK_K": 512,
+                                    "num_warps": 4, "num_stages": 3}
+    # Single variable vs the shipped GEMV config: only BLOCK_K.
+    assert {k: v for k, v in M1_GEMV_BK512_CONFIG.items() if k != "BLOCK_K"} == \
+        {k: v for k, v in M1_GEMV_CONFIG.items() if k != "BLOCK_K"}
+    assert gemv_config(mode="gemv-bk512") == M1_GEMV_BK512_CONFIG
+    assert gemv_config(mode="gemv") == M1_GEMV_CONFIG
+    assert gemv_config(mode="new") == M1_GEMV_CONFIG
+    # GEMV only at exactly M=1; M>1 dot selection is exactly "new".
+    assert gemv_enabled(1, mode="gemv-bk512") is True
+    for m in (2, 8, 32, 64, 128, 512):
+        assert gemv_enabled(m, mode="gemv-bk512") is False
+        assert choose_config(m, 5120, 17408, mode="gemv-bk512") == \
+            choose_config(m, 5120, 17408, mode="new")
+    # Round-4 promotion: gemv-bk512 is the shipped default.
+    assert ft.config_mode() == "gemv-bk512"
+    try:
+        assert set_config_mode("gemv-bk512") == "gemv-bk512"
+        assert gemv_enabled(1) is True and gemv_enabled(4) is False
+        assert gemv_config() == M1_GEMV_BK512_CONFIG
+    finally:
+        set_config_mode("gemv-bk512")
+    assert ft.config_mode() == "gemv-bk512"
+
+
+def test_prefill_s2_rejected_removed():
+    # Prefill round 1 rejected prefill-s2 (-1.3% to -7.5% everywhere);
+    # the mode was removed, not kept as an opt-in.
+    with pytest.raises(ValueError):
+        set_config_mode("prefill-s2")
+    with pytest.raises(ValueError):
+        choose_config(512, 5120, 17408, mode="prefill-s2")
+    with pytest.raises(ValueError):
+        ft.gemv_enabled(1, mode="prefill-s2")
+    assert ft.config_mode() == "gemv-bk512"
+    from inference_from_scratch.fp8_triton import PREFILL_TUNED
+    assert choose_config(512, 5120, 17408, mode="gemv-bk512") == PREFILL_TUNED
 
 
 def test_existing_default_preserved_for_m_gt1():
